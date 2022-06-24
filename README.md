@@ -4,7 +4,7 @@
 [![GoDoc](https://godoc.org/github.com/goccy/bigquery-emulator?status.svg)](https://pkg.go.dev/github.com/goccy/bigquery-emulator?tab=doc)
 
 
-BigQuery emulator server implemented by Go.
+BigQuery emulator server implemented in Go.  
 BigQuery emulator provides a way to launch a BigQuery server on your local machine for testing and development.
 
 # Features
