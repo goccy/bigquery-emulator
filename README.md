@@ -12,6 +12,12 @@ BigQuery emulator provides a way to launch a BigQuery server on your local machi
 - If you can choose the Go language as BigQuery client, you can launch a BigQuery emulator on the same process as the testing process by [httptest](https://pkg.go.dev/net/http/httptest) .
 - BigQuery emulator can be built as a static single binary and can be launched as a standalone process. So, you can use the BigQuery emulator from programs written in non-Go languages or such as the [bq](https://cloud.google.com/bigquery/docs/bq-command-line-tool) command, by specifying the address of the launched BigQuery emulator.
 
+# Status
+
+UNDER DEVELOPMENT
+
+( We'll share the current status in more detail later... )
+
 # Synopsis
 
 ```go
