@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/goccy/bigquery-emulator/types"
+	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -51,30 +52,44 @@ CREATE TABLE IF NOT EXISTS routines (
 }
 
 type Repository struct {
-	conn *sql.DB
+	db *sql.DB
 }
 
-func NewRepository(storagePath string) (*Repository, error) {
-	conn, err := sql.Open("zetasqlite", storagePath)
-	if err != nil {
-		return nil, err
-	}
+func NewRepository(db *sql.DB) (*Repository, error) {
 	for _, ddl := range schemata {
-		if _, err := conn.Exec(ddl); err != nil {
+		if _, err := db.Exec(ddl); err != nil {
 			return nil, err
 		}
 	}
 	return &Repository{
-		conn: conn,
+		db: db,
 	}, nil
 }
 
-func (r *Repository) Begin() (*sql.Tx, error) {
-	return r.conn.Begin()
+func (r *Repository) Begin(ctx context.Context) (*sql.Tx, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return conn.BeginTx(ctx, nil)
 }
 
-func (r *Repository) Close() error {
-	return r.conn.Close()
+func (r *Repository) getConnection(ctx context.Context) (*sql.Conn, error) {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	if err := conn.Raw(func(c interface{}) error {
+		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		if !ok {
+			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+		}
+		zetasqliteConn.SetNamePath([]string{})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to setup connection: %w", err)
+	}
+	return conn, nil
 }
 
 func (r *Repository) ProjectFromData(data *types.Project) *Project {
@@ -121,15 +136,13 @@ func (r *Repository) RoutineFromData(data *types.Routine) *Routine {
 	return NewRoutine(r, data.ID, data.Metadata)
 }
 
-func (r *Repository) query(ctx context.Context, tx *sql.Tx, query string, args ...interface{}) (*sql.Rows, error) {
-	if tx == nil {
-		return r.conn.Query(query, args...)
+func (r *Repository) FindProject(ctx context.Context, id string) (*Project, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return tx.Query(query, args...)
-}
-
-func (r *Repository) FindProject(ctx context.Context, tx *sql.Tx, id string) (*Project, error) {
-	projects, err := r.FindProjects(ctx, tx, []string{id})
+	defer conn.Close()
+	projects, err := r.findProjects(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -142,10 +155,10 @@ func (r *Repository) FindProject(ctx context.Context, tx *sql.Tx, id string) (*P
 	return projects[0], nil
 }
 
-func (r *Repository) FindProjects(ctx context.Context, tx *sql.Tx, ids []string) ([]*Project, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, datasetIDs, jobIDs FROM projects WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findProjects(ctx context.Context, conn *sql.Conn, ids []string) ([]*Project, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT id, datasetIDs, jobIDs FROM projects WHERE id IN UNNEST(@ids)", ids)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get projects: %w", err)
 	}
 	defer rows.Close()
 	projects := []*Project{}
@@ -158,11 +171,11 @@ func (r *Repository) FindProjects(ctx context.Context, tx *sql.Tx, ids []string)
 		if err := rows.Scan(&id, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.FindDatasets(ctx, tx, datasetIDs)
+		datasets, err := r.findDatasets(ctx, conn, datasetIDs)
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.FindJobs(ctx, tx, jobIDs)
+		jobs, err := r.findJobs(ctx, conn, jobIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -171,12 +184,19 @@ func (r *Repository) FindProjects(ctx context.Context, tx *sql.Tx, ids []string)
 	return projects, nil
 }
 
-func (r *Repository) FindAllProjects(ctx context.Context, tx *sql.Tx) ([]*Project, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, datasetIDs, jobIDs FROM projects")
+func (r *Repository) FindAllProjects(ctx context.Context) ([]*Project, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	rows, err := conn.QueryContext(ctx, "SELECT id, datasetIDs, jobIDs FROM projects")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	projects := []*Project{}
 	for rows.Next() {
 		var (
@@ -187,11 +207,11 @@ func (r *Repository) FindAllProjects(ctx context.Context, tx *sql.Tx) ([]*Projec
 		if err := rows.Scan(&id, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.FindDatasets(ctx, tx, datasetIDs)
+		datasets, err := r.findDatasets(ctx, conn, datasetIDs)
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.FindJobs(ctx, tx, jobIDs)
+		jobs, err := r.findJobs(ctx, conn, jobIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -201,7 +221,7 @@ func (r *Repository) FindAllProjects(ctx context.Context, tx *sql.Tx) ([]*Projec
 }
 
 func (r *Repository) AddProjectIfNotExists(ctx context.Context, tx *sql.Tx, project *Project) error {
-	p, err := r.FindProject(ctx, tx, project.ID)
+	p, err := r.FindProject(ctx, project.ID)
 	if err != nil {
 		return err
 	}
@@ -242,8 +262,13 @@ func (r *Repository) DeleteProject(ctx context.Context, tx *sql.Tx, project *Pro
 	return nil
 }
 
-func (r *Repository) FindJob(ctx context.Context, tx *sql.Tx, id string) (*Job, error) {
-	jobs, err := r.FindJobs(ctx, tx, []string{id})
+func (r *Repository) FindJob(ctx context.Context, id string) (*Job, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	jobs, err := r.findJobs(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -256,8 +281,8 @@ func (r *Repository) FindJob(ctx context.Context, tx *sql.Tx, id string) (*Job, 
 	return jobs[0], nil
 }
 
-func (r *Repository) FindJobs(ctx context.Context, tx *sql.Tx, ids []string) ([]*Job, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, metadata, result, error FROM jobs WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findJobs(ctx context.Context, conn *sql.Conn, ids []string) ([]*Job, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT id, metadata, result, error FROM jobs WHERE id IN UNNEST(@ids)", ids)
 	if err != nil {
 		return nil, err
 	}
@@ -354,8 +379,13 @@ func (r *Repository) DeleteJob(ctx context.Context, tx *sql.Tx, job *Job) error 
 	return nil
 }
 
-func (r *Repository) FindDataset(ctx context.Context, tx *sql.Tx, id string) (*Dataset, error) {
-	datasets, err := r.FindDatasets(ctx, tx, []string{id})
+func (r *Repository) FindDataset(ctx context.Context, id string) (*Dataset, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	datasets, err := r.findDatasets(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -368,8 +398,8 @@ func (r *Repository) FindDataset(ctx context.Context, tx *sql.Tx, id string) (*D
 	return datasets[0], nil
 }
 
-func (r *Repository) FindDatasets(ctx context.Context, tx *sql.Tx, ids []string) ([]*Dataset, error) {
-	rows, err := r.query(ctx, tx,
+func (r *Repository) findDatasets(ctx context.Context, conn *sql.Conn, ids []string) ([]*Dataset, error) {
+	rows, err := conn.QueryContext(ctx,
 		"SELECT id, tableIDs, modelIDs, routineIDs, metadata FROM datasets WHERE id IN UNNEST(@ids)",
 		ids,
 	)
@@ -390,15 +420,15 @@ func (r *Repository) FindDatasets(ctx context.Context, tx *sql.Tx, ids []string)
 		if err := rows.Scan(&id, &tableIDs, &modelIDs, &routineIDs, &metadata); err != nil {
 			return nil, err
 		}
-		tables, err := r.FindTables(ctx, tx, tableIDs)
+		tables, err := r.findTables(ctx, conn, tableIDs)
 		if err != nil {
 			return nil, err
 		}
-		models, err := r.FindModels(ctx, tx, modelIDs)
+		models, err := r.findModels(ctx, conn, modelIDs)
 		if err != nil {
 			return nil, err
 		}
-		routines, err := r.FindRoutines(ctx, tx, routineIDs)
+		routines, err := r.findRoutines(ctx, conn, routineIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -457,8 +487,13 @@ func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	return nil
 }
 
-func (r *Repository) FindTable(ctx context.Context, tx *sql.Tx, id string) (*Table, error) {
-	tables, err := r.FindTables(ctx, tx, []string{id})
+func (r *Repository) FindTable(ctx context.Context, id string) (*Table, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	tables, err := r.findTables(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -471,8 +506,8 @@ func (r *Repository) FindTable(ctx context.Context, tx *sql.Tx, id string) (*Tab
 	return tables[0], nil
 }
 
-func (r *Repository) FindTables(ctx context.Context, tx *sql.Tx, ids []string) ([]*Table, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, metadata FROM tables WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findTables(ctx context.Context, conn *sql.Conn, ids []string) ([]*Table, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT id, metadata FROM tables WHERE id IN UNNEST(@ids)", ids)
 	if err != nil {
 		return nil, err
 	}
@@ -536,8 +571,14 @@ func (r *Repository) DeleteTable(ctx context.Context, tx *sql.Tx, table *Table) 
 	return nil
 }
 
-func (r *Repository) FindModel(ctx context.Context, tx *sql.Tx, id string) (*Model, error) {
-	models, err := r.FindModels(ctx, tx, []string{id})
+func (r *Repository) FindModel(ctx context.Context, id string) (*Model, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	models, err := r.findModels(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -550,8 +591,8 @@ func (r *Repository) FindModel(ctx context.Context, tx *sql.Tx, id string) (*Mod
 	return models[0], nil
 }
 
-func (r *Repository) FindModels(ctx context.Context, tx *sql.Tx, ids []string) ([]*Model, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, metadata FROM models WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findModels(ctx context.Context, conn *sql.Conn, ids []string) ([]*Model, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT id, metadata FROM models WHERE id IN UNNEST(@ids)", ids)
 	if err != nil {
 		return nil, err
 	}
@@ -615,8 +656,14 @@ func (r *Repository) DeleteModel(ctx context.Context, tx *sql.Tx, model *Model) 
 	return nil
 }
 
-func (r *Repository) FindRoutine(ctx context.Context, tx *sql.Tx, id string) (*Routine, error) {
-	routines, err := r.FindRoutines(ctx, tx, []string{id})
+func (r *Repository) FindRoutine(ctx context.Context, id string) (*Routine, error) {
+	conn, err := r.getConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	routines, err := r.findRoutines(ctx, conn, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -629,8 +676,8 @@ func (r *Repository) FindRoutine(ctx context.Context, tx *sql.Tx, id string) (*R
 	return routines[0], nil
 }
 
-func (r *Repository) FindRoutines(ctx context.Context, tx *sql.Tx, ids []string) ([]*Routine, error) {
-	rows, err := r.query(ctx, tx, "SELECT id, metadata FROM routines WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findRoutines(ctx context.Context, conn *sql.Conn, ids []string) ([]*Routine, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT id, metadata FROM routines WHERE id IN UNNEST(@ids)", ids)
 	if err != nil {
 		return nil, err
 	}

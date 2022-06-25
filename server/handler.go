@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -64,17 +63,21 @@ type datasetsDeleteRequest struct {
 }
 
 func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin()
+	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
-	defer tx.Commit()
 	if err := r.project.DeleteDataset(ctx, tx, r.dataset.ID); err != nil {
-		return err
+		_ = tx.Rollback()
+		return fmt.Errorf("failed to delete dataset: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit delete dataset: %w", err)
+	}
+
 	if r.deleteContents {
 		if err := r.server.contentRepo.DeleteTables(ctx, r.project.ID, r.dataset.ID, r.dataset.TableIDs()); err != nil {
-			return err
+			return fmt.Errorf("failed to delete tables: %w", err)
 		}
 	}
 	return nil
@@ -147,9 +150,9 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 	if datasetID == "" {
 		return nil, fmt.Errorf("dataset id is empty")
 	}
-	tx, err := r.server.metaRepo.Begin()
+	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Commit()
 
@@ -349,14 +352,14 @@ type jobsDeleteRequest struct {
 }
 
 func (h *jobsDeleteHandler) Handle(ctx context.Context, r *jobsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin()
+	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Commit()
 
 	if err := r.project.DeleteJob(ctx, tx, r.job.ID); err != nil {
-		return err
+		return fmt.Errorf("failed to delete job: %w", err)
 	}
 	return nil
 }
@@ -458,25 +461,36 @@ type jobsInsertRequest struct {
 }
 
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
-	tx, err := r.server.metaRepo.Begin()
+	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job, nil, nil)
 	if err := r.project.AddJob(ctx, tx, job); err != nil {
-		return nil, err
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("failed to add job: %w", err)
 	}
-	defer tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit job: %w", err)
+	}
 
-	go func(tx *sql.Tx) {
-		tx, err := r.server.metaRepo.Begin()
+	go func() {
+		ctx := context.Background()
+		ctx = withProject(ctx, r.project)
+		response, err := r.server.contentRepo.Query(
+			ctx,
+			r.project.ID,
+			"",
+			job.Query(),
+			job.QueryParameters(),
+		)
+		tx, err := r.server.metaRepo.Begin(ctx)
 		if err != nil {
 			return
 		}
-		defer tx.Commit()
-		response, err := r.server.contentRepo.Query(r.project.ID, "", job.Query(), job.QueryParameters())
 		job.SetResult(ctx, tx, response, err)
-	}(tx)
+		tx.Commit()
+	}()
 	return job.Content(), nil
 }
 
@@ -549,6 +563,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*bi
 		datasetID = r.queryRequest.DefaultDataset.DatasetId
 	}
 	response, err := r.server.contentRepo.Query(
+		ctx,
 		r.project.ID,
 		datasetID,
 		r.queryRequest.Query,
@@ -588,14 +603,14 @@ type modelsDeleteRequest struct {
 }
 
 func (h *modelsDeleteHandler) Handle(ctx context.Context, r *modelsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin()
+	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Commit()
 
 	if err := r.dataset.DeleteModel(ctx, tx, r.model.ID); err != nil {
-		return err
+		return fmt.Errorf("failed to delete model: %w", err)
 	}
 	return nil
 }
@@ -757,13 +772,7 @@ type projectsListRequest struct {
 }
 
 func (h *projectsListHandler) Handle(ctx context.Context, r *projectsListRequest) (*bigqueryv2.ProjectList, error) {
-	tx, err := r.server.metaRepo.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-
-	projects, err := r.server.metaRepo.FindAllProjects(ctx, tx)
+	projects, err := r.server.metaRepo.FindAllProjects(ctx)
 	if err != nil {
 		return nil, err
 	}

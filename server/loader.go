@@ -16,7 +16,7 @@ func (s *Server) addProjects(ctx context.Context, projects []*types.Project) err
 }
 
 func (s *Server) addProject(ctx context.Context, project *types.Project) error {
-	tx, err := s.metaRepo.Begin()
+	tx, err := s.metaRepo.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -29,7 +29,7 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 		}
 	}
 	p := s.metaRepo.ProjectFromData(project)
-	if found, _ := s.metaRepo.FindProject(ctx, tx, p.ID); found != nil {
+	if found, _ := s.metaRepo.FindProject(ctx, p.ID); found != nil {
 		if err := s.metaRepo.UpdateProject(ctx, tx, p); err != nil {
 			return err
 		}

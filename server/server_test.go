@@ -3,7 +3,6 @@ package server_test
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -18,11 +17,10 @@ func TestDataset(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		dbName      = "bigquery.db"
 		projectName = "project"
 	)
 
-	bqServer, err := server.New(dbName)
+	bqServer, err := server.New(server.MemoryStorage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +32,6 @@ func TestDataset(t *testing.T) {
 		testServer.Close()
 		bqServer.Close()
 	}()
-
-	defer os.Remove(dbName)
 
 	client, err := bigquery.NewClient(
 		ctx,
@@ -358,7 +354,10 @@ func TestRoutine(t *testing.T) {
 		t.Fatal(err)
 	}
 	testServer := bqServer.TestServer()
-	defer testServer.Close()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
 
 	client, err := bigquery.NewClient(
 		ctx,
@@ -451,7 +450,10 @@ func TestRoutineWithQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	testServer := bqServer.TestServer()
-	defer testServer.Close()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
 
 	client, err := bigquery.NewClient(
 		ctx,
