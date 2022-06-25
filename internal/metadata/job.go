@@ -49,7 +49,7 @@ func (j *Job) Wait(ctx context.Context) (*bigqueryv2.QueryResponse, error) {
 	for {
 		select {
 		case <-ticker.C:
-			foundJob, err := j.repo.FindJob(ctx, nil, j.ID)
+			foundJob, err := j.repo.FindJob(ctx, j.ID)
 			if err != nil {
 				return nil, err
 			}

@@ -2,10 +2,10 @@ package contentdata
 
 import (
 	"context"
-	"database/sql/driver"
+	"database/sql"
 	"fmt"
-	"io"
 	"log"
+	"reflect"
 	"strings"
 
 	"github.com/goccy/bigquery-emulator/types"
@@ -14,151 +14,87 @@ import (
 )
 
 type Repository struct {
-	storagePath                 string
-	projectIDToConn             map[string]*zetasqlite.ZetaSQLiteConn
-	projectIDAndDatasetIDToConn map[string]*zetasqlite.ZetaSQLiteConn
+	db *sql.DB
 }
 
-func NewRepository(storagePath string) *Repository {
+func NewRepository(db *sql.DB) *Repository {
 	return &Repository{
-		storagePath:                 storagePath,
-		projectIDToConn:             map[string]*zetasqlite.ZetaSQLiteConn{},
-		projectIDAndDatasetIDToConn: map[string]*zetasqlite.ZetaSQLiteConn{},
+		db: db,
 	}
 }
 
-func (r *Repository) Close() error {
-	for _, c := range r.projectIDToConn {
-		c.Close()
-	}
-	for _, c := range r.projectIDAndDatasetIDToConn {
-		c.Close()
-	}
-	return nil
-}
-
-func (r *Repository) exec(conn *zetasqlite.ZetaSQLiteConn, query string, args []driver.Value) error {
-	stmt, err := conn.Prepare(query)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	if _, err := stmt.Exec(args); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *Repository) getConnection(projectID, datasetID string) (*zetasqlite.ZetaSQLiteConn, error) {
-	if datasetID == "" {
-		return r.getConnectionByProjectID(projectID)
-	}
-	return r.getConnectionByProjectIDAndDatasetID(projectID, datasetID)
-}
-
-func (r *Repository) getConnectionByProjectID(projectID string) (*zetasqlite.ZetaSQLiteConn, error) {
+func (r *Repository) getConnection(ctx context.Context, projectID, datasetID string) (*sql.Conn, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("invalid projectID. projectID is empty")
 	}
-	conn, exists := r.projectIDToConn[projectID]
-	if exists {
-		return conn, nil
-	}
-
-	driver := &zetasqlite.ZetaSQLiteDriver{
-		ConnectHook: func(conn *zetasqlite.ZetaSQLiteConn) error {
-			conn.SetNamePath([]string{projectID})
-			return nil
-		},
-	}
-	driverConn, err := driver.Open(r.storagePath)
+	conn, err := r.db.Conn(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
-	conn = driverConn.(*zetasqlite.ZetaSQLiteConn)
-	r.projectIDToConn[projectID] = conn
+	if err := conn.Raw(func(c interface{}) error {
+		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		if !ok {
+			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+		}
+		if datasetID == "" {
+			zetasqliteConn.SetNamePath([]string{projectID})
+		} else {
+			zetasqliteConn.SetNamePath([]string{projectID, datasetID})
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to setup connection: %w", err)
+	}
 	return conn, nil
 }
 
-func (r *Repository) getConnectionByProjectIDAndDatasetID(projectID, datasetID string) (*zetasqlite.ZetaSQLiteConn, error) {
-	if projectID == "" {
-		return nil, fmt.Errorf("invalid projectID. projectID is empty")
-	}
-	if datasetID == "" {
-		return nil, fmt.Errorf("invalid datasetID: datasetID is empty")
-	}
-
-	connName := fmt.Sprintf("project_%s_dataset_%s", projectID, datasetID)
-
-	conn, exists := r.projectIDAndDatasetIDToConn[connName]
-	if exists {
-		return conn, nil
-	}
-
-	driver := &zetasqlite.ZetaSQLiteDriver{
-		ConnectHook: func(conn *zetasqlite.ZetaSQLiteConn) error {
-			conn.SetNamePath([]string{projectID, datasetID})
-			return nil
-		},
-	}
-	driverConn, err := driver.Open(r.storagePath)
+func (r *Repository) Query(ctx context.Context, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*bigqueryv2.QueryResponse, error) {
+	conn, err := r.getConnection(ctx, projectID, datasetID)
 	if err != nil {
 		return nil, err
 	}
-	conn = driverConn.(*zetasqlite.ZetaSQLiteConn)
-	r.projectIDAndDatasetIDToConn[connName] = conn
-	return conn, nil
-}
+	defer conn.Close()
 
-func (r *Repository) Query(projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*bigqueryv2.QueryResponse, error) {
-	conn, err := r.getConnection(projectID, datasetID)
-	if err != nil {
-		return nil, err
-	}
-	stmt, err := conn.Prepare(query)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	values := []driver.Value{}
+	values := []interface{}{}
 	for _, param := range params {
 		// param.Name
 		values = append(values, param.ParameterValue.Value)
 	}
-	queryStmt, ok := stmt.(*zetasqlite.QueryStmt)
-	if !ok {
-		if _, err := stmt.Exec(values); err != nil {
-			return nil, err
-		}
-		return &bigqueryv2.QueryResponse{
-			DmlStats:    &bigqueryv2.DmlStatistics{},
-			JobComplete: true,
-		}, nil
-	}
-
 	fields := []*bigqueryv2.TableFieldSchema{}
-	rows, err := stmt.Query(values)
+	rows, err := conn.QueryContext(ctx, query, values...)
 	if err != nil {
 		return nil, err
 	}
-	for _, column := range queryStmt.OutputColumns() {
+	defer rows.Close()
+	tableRows := []*bigqueryv2.TableRow{}
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get column types: %w", err)
+	}
+	colNames, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get column names: %w", err)
+	}
+	for i := 0; i < len(colTypes); i++ {
 		fields = append(fields, &bigqueryv2.TableFieldSchema{
-			Name: column.Name,
-			Type: string(types.TypeFromKind(column.Type.Kind).FieldType()),
+			Name: colNames[i],
+			Type: string(types.Type(colTypes[i].DatabaseTypeName()).FieldType()),
 		})
 	}
-	tableRows := []*bigqueryv2.TableRow{}
-	for {
-		values := make([]driver.Value, len(rows.Columns()))
-		if err := rows.Next(values); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
+
+	for rows.Next() {
+		values := make([]interface{}, 0, len(colNames))
+		for i := 0; i < len(colNames); i++ {
+			var v interface{}
+			values = append(values, &v)
+		}
+		if err := rows.Scan(values...); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		cells := make([]*bigqueryv2.TableCell, 0, len(values))
 		for _, value := range values {
-			cells = append(cells, &bigqueryv2.TableCell{V: fmt.Sprint(value)})
+			v := fmt.Sprint(reflect.ValueOf(value).Elem().Interface())
+			cells = append(cells, &bigqueryv2.TableCell{V: v})
 		}
 		tableRows = append(tableRows, &bigqueryv2.TableRow{
 			F: cells,
@@ -175,10 +111,11 @@ func (r *Repository) Query(projectID, datasetID, query string, params []*bigquer
 }
 
 func (r *Repository) CreateOrReplaceTable(ctx context.Context, projectID, datasetID string, table *types.Table) error {
-	conn, err := r.getConnection(projectID, datasetID)
+	conn, err := r.getConnection(ctx, projectID, datasetID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection: %w", err)
 	}
+	defer conn.Close()
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
 		columns = append(columns,
@@ -189,20 +126,21 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, projectID, datase
 		"CREATE OR REPLACE TABLE `%s` (%s)",
 		table.ID, strings.Join(columns, ","),
 	)
-	if err := r.exec(conn, ddl, nil); err != nil {
-		return err
+	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("failed to execute DDL %s: %w", ddl, err)
 	}
 	return nil
 }
 
 func (r *Repository) AddTableData(ctx context.Context, projectID, datasetID string, table *types.Table) error {
-	conn, err := r.getConnection(projectID, datasetID)
+	conn, err := r.getConnection(ctx, projectID, datasetID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection: %w", err)
 	}
+	defer conn.Close()
 	for _, data := range table.Data {
 		columns := make([]string, 0, len(data))
-		values := make([]driver.Value, 0, len(data))
+		values := make([]interface{}, 0, len(data))
 		params := make([]string, 0, len(data))
 		for k, v := range data {
 			columns = append(columns, fmt.Sprintf("`%s`", k))
@@ -215,22 +153,24 @@ func (r *Repository) AddTableData(ctx context.Context, projectID, datasetID stri
 			strings.Join(columns, ","),
 			strings.Join(params, ","),
 		)
-		if err := r.exec(conn, query, values); err != nil {
-			return err
+		if _, err := conn.ExecContext(ctx, query, values...); err != nil {
+			return fmt.Errorf("failed to insert data %s: %w", query, err)
 		}
 	}
 	return nil
 }
 
 func (r *Repository) DeleteTables(ctx context.Context, projectID, datasetID string, tableIDs []string) error {
-	conn, err := r.getConnection(projectID, datasetID)
+	conn, err := r.getConnection(ctx, projectID, datasetID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection: %w", err)
 	}
+	defer conn.Close()
 	for _, tableID := range tableIDs {
 		log.Printf("delete table %s", tableID)
-		if err := r.exec(conn, fmt.Sprintf("DROP TABLE `%s`", tableID), nil); err != nil {
-			return err
+		query := fmt.Sprintf("DROP TABLE `%s`", tableID)
+		if _, err := conn.ExecContext(ctx, query); err != nil {
+			return fmt.Errorf("failed to delete table %s: %w", query, err)
 		}
 	}
 	return nil
@@ -296,12 +236,13 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, routine *bigquery
 		retType,
 		routine.DefinitionBody,
 	)
-	conn, err := r.getConnection(ref.ProjectId, ref.DatasetId)
+	conn, err := r.getConnection(ctx, ref.ProjectId, ref.DatasetId)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection: %w", err)
 	}
-	if err := r.exec(conn, query, nil); err != nil {
-		return err
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to create function %s: %w", query, err)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 type Server struct {
 	Handler     http.Handler
 	storage     Storage
+	db          *sql.DB
 	metaRepo    *metadata.Repository
 	contentRepo *contentdata.Repository
 	fileCleanup func() error
@@ -27,7 +29,7 @@ func New(storage Storage) (*Server, error) {
 	if storage == TempStorage {
 		f, err := os.CreateTemp("", "")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to create temporary file: %w", err)
 		}
 		storage = Storage(fmt.Sprintf("file:%s?cache=shared", f.Name()))
 		server.storage = storage
@@ -35,13 +37,17 @@ func New(storage Storage) (*Server, error) {
 			return os.Remove(f.Name())
 		}
 	}
-
-	metaRepo, err := metadata.NewRepository(string(storage))
+	db, err := sql.Open("zetasqlite", string(storage))
+	if err != nil {
+		return nil, err
+	}
+	server.db = db
+	metaRepo, err := metadata.NewRepository(db)
 	if err != nil {
 		return nil, err
 	}
 	server.metaRepo = metaRepo
-	server.contentRepo = contentdata.NewRepository(string(storage))
+	server.contentRepo = contentdata.NewRepository(db)
 
 	r := mux.NewRouter()
 	for _, handler := range handlers {
@@ -61,24 +67,29 @@ func New(storage Storage) (*Server, error) {
 }
 
 func (s *Server) Close() error {
-	if s.fileCleanup != nil {
-		if err := s.fileCleanup(); err != nil {
-			log.Printf("failed to cleanup file %s", err.Error())
+	defer func() {
+		if s.fileCleanup != nil {
+			if err := s.fileCleanup(); err != nil {
+				log.Printf("failed to cleanup file: %s", err.Error())
+			}
 		}
+	}()
+	if err := s.db.Close(); err != nil {
+		log.Printf("failed to close database: %s", err.Error())
+		return err
 	}
-	s.metaRepo.Close()
-	s.contentRepo.Close()
 	return nil
 }
 
 func (s *Server) SetProject(id string) error {
-	tx, err := s.metaRepo.Begin()
+	ctx := context.Background()
+	tx, err := s.metaRepo.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Commit()
 	if err := s.metaRepo.AddProjectIfNotExists(
-		context.Background(),
+		ctx,
 		tx,
 		metadata.NewProject(s.metaRepo, id, nil, nil),
 	); err != nil {

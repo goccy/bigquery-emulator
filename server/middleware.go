@@ -96,7 +96,7 @@ func withProjectMiddleware() func(http.Handler) http.Handler {
 			projectID, exists := projectIDFromParams(params)
 			if exists {
 				server := serverFromContext(ctx)
-				project, err := server.metaRepo.FindProject(ctx, nil, projectID)
+				project, err := server.metaRepo.FindProject(ctx, projectID)
 				if err != nil {
 					w.WriteHeader(http.StatusInternalServerError)
 					fmt.Fprintln(w, err)
