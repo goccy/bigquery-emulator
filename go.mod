@@ -9,6 +9,7 @@ require (
 	github.com/goccy/go-zetasql v0.2.5
 	github.com/goccy/go-zetasqlite v0.2.0
 	github.com/gorilla/mux v1.8.0
+	github.com/jessevdk/go-flags v1.5.0
 	google.golang.org/api v0.81.0
 )
 

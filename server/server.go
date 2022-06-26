@@ -22,6 +22,7 @@ type Server struct {
 	metaRepo    *metadata.Repository
 	contentRepo *contentdata.Repository
 	fileCleanup func() error
+	httpServer  *http.Server
 }
 
 func New(storage Storage) (*Server, error) {
@@ -114,7 +115,16 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
+	s.httpServer = srv
 	return srv.ListenAndServe()
+}
+
+func (s *Server) Stop(ctx context.Context) error {
+	defer s.Close()
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
 }
 
 func (s *Server) TestServer() *httptest.Server {

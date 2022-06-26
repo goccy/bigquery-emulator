@@ -1,0 +1,35 @@
+project_name: bigquery-emulator
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - main: ./cmd/bigquery-emulator
+    binary: bigquery-emulator
+    goos:
+      - linux
+      - darwin
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.revision={{ .ShortCommit }}
+      - -extldflags "-static"
+    tags:
+      - osusergo
+      - netgo
+      - static_build
+    env:
+      - CGO_ENABLED=1
+      - CXX=clang++
+      - CC=clang
+      - CGO_LDFLAGS="-static"
+
+archives:
+  - name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
+    replacements:
+      darwin: darwin
+      linux: linux
+      386: i386
+      amd64: x86_64
+
+release:
+  prerelease: auto
