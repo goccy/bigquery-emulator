@@ -18,6 +18,7 @@ type option struct {
 	Port         uint16 `description:"specify the port number" long:"port" default:"9050"`
 	Database     string `description:"specify the database file" long:"database"`
 	DataFromYAML string `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
+	Version      string `description:"print version" long:"version" short:"v"`
 }
 
 type exitCode int
@@ -25,6 +26,11 @@ type exitCode int
 const (
 	exitOK    exitCode = 0
 	exitError exitCode = 1
+)
+
+var (
+	version  string
+	revision string
 )
 
 func main() {
@@ -59,6 +65,10 @@ func parseOpt() ([]string, option, error) {
 }
 
 func runServer(args []string, opt option) error {
+	if opt.Version != "" {
+		fmt.Fprintf(os.Stdout, "version: %s (%s)", version, revision)
+		return nil
+	}
 	var db server.Storage
 	if opt.Database == "" {
 		db = server.TempStorage

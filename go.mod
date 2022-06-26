@@ -9,6 +9,7 @@ require (
 	github.com/goccy/go-zetasql v0.2.5
 	github.com/goccy/go-zetasqlite v0.2.0
 	github.com/gorilla/mux v1.8.0
+	github.com/jessevdk/go-flags v1.5.0
 	google.golang.org/api v0.81.0
 )
 
@@ -23,7 +24,6 @@ require (
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/go-cmp v0.5.8 // indirect
 	github.com/googleapis/gax-go/v2 v2.4.0 // indirect
-	github.com/jessevdk/go-flags v1.5.0 // indirect
 	github.com/leodido/go-urn v1.2.1 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
