@@ -1,5 +1,7 @@
 FROM golang:1.18.3-bullseye
 
+ARG VERSION
+
 WORKDIR /work
 
 RUN apt-get update && apt-get install -y --no-install-recommends clang
