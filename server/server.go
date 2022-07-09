@@ -54,6 +54,7 @@ func New(storage Storage) (*Server, error) {
 	for _, handler := range handlers {
 		r.Handle(handler.Path, handler.Handler).Methods(handler.HTTPMethod)
 	}
+	r.Handle(discoveryAPIEndpoint, newDiscoveryHandler(server)).Methods("GET")
 	r.PathPrefix("/").Handler(&defaultHandler{})
 	r.Use(recoveryMiddleware())
 	r.Use(withServerMiddleware(server))

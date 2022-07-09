@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 	"github.com/gorilla/mux"
@@ -35,6 +38,47 @@ func encodeResponse(w http.ResponseWriter, response interface{}) {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintln(w, err.Error())
 	}
+}
+
+const discoveryAPIEndpoint = "/discovery/v1/apis/bigquery/v2/rest"
+
+//go:embed resources/discovery.json
+var bigqueryAPIJSON []byte
+
+var (
+	discoveryAPIOnce     sync.Once
+	discoveryAPIResponse map[string]interface{}
+)
+
+type discoveryHandler struct {
+	server *Server
+}
+
+func newDiscoveryHandler(server *Server) *discoveryHandler {
+	return &discoveryHandler{server: server}
+}
+
+func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var decodeJSONErr error
+	discoveryAPIOnce.Do(func() {
+		if err := json.Unmarshal(bigqueryAPIJSON, &discoveryAPIResponse); err != nil {
+			decodeJSONErr = err
+			return
+		}
+		addr := h.server.httpServer.Addr
+		if !strings.HasPrefix(addr, "http") {
+			addr = "http://" + addr
+		}
+		discoveryAPIResponse["mtlsRootUrl"] = addr
+		discoveryAPIResponse["rootUrl"] = addr
+		discoveryAPIResponse["baseUrl"] = addr
+	})
+	if decodeJSONErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, decodeJSONErr.Error())
+		return
+	}
+	encodeResponse(w, discoveryAPIResponse)
 }
 
 func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -491,7 +535,16 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.SetResult(ctx, tx, response, err)
 		tx.Commit()
 	}()
-	return job.Content(), nil
+	content := *job.Content()
+	content.Status = &bigqueryv2.JobStatus{
+		State: "DONE",
+	}
+	content.Statistics = &bigqueryv2.JobStatistics{
+		Query: &bigqueryv2.JobStatistics2{
+			StatementType: "SELECT",
+		},
+	}
+	return &content, nil
 }
 
 func (h *jobsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
