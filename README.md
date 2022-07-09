@@ -55,6 +55,29 @@ $ ./bigquery-emulator --project=test
 [bigquery-emulator] listening at 0.0.0.0:9050
 ```
 
+## How to use from bq client
+
+### 1. Start the standalone server
+
+```console
+$ ./bigquery-emulator --project=test --data-from-yaml=./server/testdata/data.yaml
+[bigquery-emulator] listening at 0.0.0.0:9050
+```
+
+* `server/testdata/data.yaml` is [here](https://github.com/goccy/bigquery-emulator/blob/main/server/testdata/data.yaml)
+
+### 2. Call endpoint from bq client
+
+```console
+$ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT * FROM dataset1.table_a WHERE id = 1"
+
++----+-------+
+| id | name  |
++----+-------+
+|  1 | alice |
++----+-------+
+```
+
 # Status
 
 The BigQuery emulator is still under development.
