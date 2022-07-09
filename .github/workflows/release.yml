@@ -18,10 +18,14 @@ jobs:
             asset_name: bigquery-emulator-darwin-amd64
     steps:
     - uses: actions/checkout@v3
+    - name: extract version from tags
+      id: meta
+      run: |
+        echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/}
     - name: build
       run: make emulator/build
       env:
-        VERSION: ${{ github.ref }}
+        VERSION: ${{ steps.meta.outputs.VERSION }}
     - name: Upload binaries to release
       uses: svenstaro/upload-release-action@v2
       with:
