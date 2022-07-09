@@ -13,7 +13,7 @@ COPY . ./
 
 RUN make emulator/build
 
-FROM alpine:latest AS emulator
+FROM debian:bullseye AS emulator
 
 COPY --from=0 /work/bigquery-emulator /bin/bigquery-emulator
 
