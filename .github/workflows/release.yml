@@ -1,24 +1,31 @@
-name: release
+name: publish
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - v*
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
+  publish:
+    name: Publish for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: bigquery-emulator
+            asset_name: bigquery-emulator-linux-amd64
+          - os: macos-latest
+            artifact_name: bigquery-emulator
+            asset_name: bigquery-emulator-darwin-amd64
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-      - name: Setup Go
-        uses: actions/setup-go@v1
-        with:
-          go-version: 1.18
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v1
-        with:
-          version: latest
-          args: release --rm-dist
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v3
+    - name: build
+      run: make emulator/build
+      env:
+        VERSION: ${{ github.ref }}
+    - name: Upload binaries to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ${{ matrix.artifact_name }}
+        asset_name: ${{ matrix.asset_name }}
+        tag: ${{ github.ref }}
