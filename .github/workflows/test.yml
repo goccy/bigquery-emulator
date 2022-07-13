@@ -1,10 +1,37 @@
-name: test
+name: build and test
 on:
   push:
     branches:
       - main
   pull_request:
 jobs:
+  build:
+    name: Build
+    strategy:
+      matrix:
+        os: [ "ubuntu-latest", "macos-latest" ]
+        go-version: [ "1.18" ]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: setup Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v2
+      with:
+        go-version: ${{ matrix.go-version }}
+    - name: checkout
+      uses: actions/checkout@v3
+    - name: build
+      run: make emulator/build
+      env:
+        CC: clang
+        CXX: clang++
+        VERSION: test
+    - name: show version
+      run: |
+        ./bigquery-emulator --version
+    - name: show linking info
+      if: ${{ matrix.os }} == "ubuntu-latest"
+      run: |
+        ldd bigquery-emulator || true
   test:
     name: Test
     strategy:
