@@ -42,6 +42,7 @@ jobs:
     - name: download modules
       run: |
         go mod download
+    - uses: rui314/setup-mold@v1
     - name: build
       run: make emulator/build
       env:
