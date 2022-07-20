@@ -53,8 +53,11 @@ func New(storage Storage) (*Server, error) {
 	r := mux.NewRouter()
 	for _, handler := range handlers {
 		r.Handle(handler.Path, handler.Handler).Methods(handler.HTTPMethod)
+		r.Handle(fmt.Sprintf("/bigquery/v2%s", handler.Path), handler.Handler).Methods(handler.HTTPMethod)
 	}
 	r.Handle(discoveryAPIEndpoint, newDiscoveryHandler(server)).Methods("GET")
+	r.Handle(uploadAPIEndpoint, &uploadHandler{}).Methods("POST")
+	r.Handle(uploadAPIEndpoint, &uploadContentHandler{}).Methods("PUT")
 	r.PathPrefix("/").Handler(&defaultHandler{})
 	r.Use(recoveryMiddleware())
 	r.Use(withServerMiddleware(server))

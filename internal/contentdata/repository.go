@@ -48,6 +48,27 @@ func (r *Repository) getConnection(ctx context.Context, projectID, datasetID str
 	return conn, nil
 }
 
+func (r *Repository) CreateTable(ctx context.Context, table *bigqueryv2.Table) error {
+	ref := table.TableReference
+	if ref == nil {
+		return fmt.Errorf("TableReference is nil")
+	}
+	conn, err := r.getConnection(ctx, ref.ProjectId, ref.DatasetId)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	fields := make([]string, 0, len(table.Schema.Fields))
+	for _, field := range table.Schema.Fields {
+		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, types.Type(field.Type).ZetaSQLTypeKind()))
+	}
+	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", ref.TableId, strings.Join(fields, ","))
+	if _, err := conn.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to create table %s: %w", query, err)
+	}
+	return nil
+}
+
 func (r *Repository) Query(ctx context.Context, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*bigqueryv2.QueryResponse, error) {
 	conn, err := r.getConnection(ctx, projectID, datasetID)
 	if err != nil {
@@ -61,8 +82,10 @@ func (r *Repository) Query(ctx context.Context, projectID, datasetID, query stri
 		values = append(values, param.ParameterValue.Value)
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
+	log.Printf("query: %s. values: %v", query, values)
 	rows, err := conn.QueryContext(ctx, query, values...)
 	if err != nil {
+		log.Printf("query error: %+v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -82,6 +105,7 @@ func (r *Repository) Query(ctx context.Context, projectID, datasetID, query stri
 		})
 	}
 
+	result := [][]interface{}{}
 	for rows.Next() {
 		values := make([]interface{}, 0, len(colNames))
 		for i := 0; i < len(colNames); i++ {
@@ -92,14 +116,18 @@ func (r *Repository) Query(ctx context.Context, projectID, datasetID, query stri
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		cells := make([]*bigqueryv2.TableCell, 0, len(values))
+		resultValues := make([]interface{}, 0, len(values))
 		for _, value := range values {
 			v := fmt.Sprint(reflect.ValueOf(value).Elem().Interface())
 			cells = append(cells, &bigqueryv2.TableCell{V: v})
+			resultValues = append(resultValues, v)
 		}
+		result = append(result, resultValues)
 		tableRows = append(tableRows, &bigqueryv2.TableRow{
 			F: cells,
 		})
 	}
+	log.Printf("rows: %v", result)
 	return &bigqueryv2.QueryResponse{
 		Rows: tableRows,
 		Schema: &bigqueryv2.TableSchema{
