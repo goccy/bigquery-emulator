@@ -19,6 +19,29 @@ jobs:
         go-version: ${{ matrix.go-version }}
     - name: checkout
       uses: actions/checkout@v3
+    - name: cache for linux
+      uses: actions/cache@v3
+      if: runner.os == 'ubuntu-latest'
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: cache for macOS
+      uses: actions/cache@v3
+      if: runner.os == 'macos-latest'
+      with:
+        path: |
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: download modules
+      run: |
+        go mod download
     - name: build
       run: make emulator/build
       env:
@@ -33,6 +56,7 @@ jobs:
       run: |
         ldd bigquery-emulator || true
   test:
+    needs: build
     name: Test
     strategy:
       matrix:
@@ -46,6 +70,29 @@ jobs:
         go-version: ${{ matrix.go-version }}
     - name: checkout
       uses: actions/checkout@v3
+    - name: cache for linux
+      uses: actions/cache@v3
+      if: runner.os == 'ubuntu-latest'
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: cache for macOS
+      uses: actions/cache@v3
+      if: runner.os == 'macos-latest'
+      with:
+        path: |
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: download modules
+      run: |
+        go mod download
     - name: test
       run: go test -v ./... -count=1
       env:
