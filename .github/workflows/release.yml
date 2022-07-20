@@ -9,6 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        go-version: [ "1.18" ]
         include:
           - os: ubuntu-latest
             artifact_name: bigquery-emulator
@@ -16,12 +17,39 @@ jobs:
           - os: macos-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-darwin-amd64
+
     steps:
-    - uses: actions/checkout@v3
+    - name: setup Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v2
+      with:
+        go-version: ${{ matrix.go-version }}
+    - name: checkout
+      uses: actions/checkout@v3
     - name: extract version from tags
       id: meta
       run: |
         echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/}
+    - uses: rui314/setup-mold@v1
+    - name: cache for linux
+      uses: actions/cache@v3
+      if: runner.os == 'Linux'
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: cache for macOS
+      uses: actions/cache@v3
+      if: runner.os == 'macOS'
+      with:
+        path: |
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
     - name: build
       run: make emulator/build
       env:
