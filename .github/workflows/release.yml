@@ -9,14 +9,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        go-version: [ "1.18" ]
         include:
           - os: ubuntu-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-linux-amd64
+            go-version: "1.18"
           - os: macos-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-darwin-amd64
+            go-version: "1.18"
 
     steps:
     - name: setup Go ${{ matrix.go-version }}
