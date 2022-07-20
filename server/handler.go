@@ -3,16 +3,20 @@ package server
 import (
 	"context"
 	_ "embed"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goccy/bigquery-emulator/internal/metadata"
+	"github.com/goccy/bigquery-emulator/types"
 	"github.com/gorilla/mux"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
@@ -21,6 +25,7 @@ func writeBadRequest(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
+	log.Printf("%+v", err)
 	w.WriteHeader(http.StatusBadRequest)
 	fmt.Fprintln(w, err.Error())
 }
@@ -29,18 +34,23 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
+	log.Printf("%+v", err)
 	w.WriteHeader(http.StatusBadRequest)
 	fmt.Fprintln(w, err.Error())
 }
 
 func encodeResponse(w http.ResponseWriter, response interface{}) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("%+v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintln(w, err.Error())
 	}
 }
 
-const discoveryAPIEndpoint = "/discovery/v1/apis/bigquery/v2/rest"
+const (
+	discoveryAPIEndpoint = "/discovery/v1/apis/bigquery/v2/rest"
+	uploadAPIEndpoint    = "/upload/bigquery/v2/projects/{projectId}/jobs"
+)
 
 //go:embed resources/discovery.json
 var bigqueryAPIJSON []byte
@@ -79,6 +89,250 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encodeResponse(w, discoveryAPIResponse)
+}
+
+type uploadHandler struct {
+}
+
+type UploadJobConfigurationLoad struct {
+	AllowJaggedRows                    bool                                   `json:"allowJaggedRows,omitempty"`
+	AllowQuotedNewlines                bool                                   `json:"allowQuotedNewlines,omitempty"`
+	Autodetect                         bool                                   `json:"autodetect,omitempty"`
+	Clustering                         *bigqueryv2.Clustering                 `json:"clustering,omitempty"`
+	CreateDisposition                  string                                 `json:"createDisposition,omitempty"`
+	DecimalTargetTypes                 []string                               `json:"decimalTargetTypes,omitempty"`
+	DestinationEncryptionConfiguration *bigqueryv2.EncryptionConfiguration    `json:"destinationEncryptionConfiguration,omitempty"`
+	DestinationTable                   *bigqueryv2.TableReference             `json:"destinationTable,omitempty"`
+	DestinationTableProperties         *bigqueryv2.DestinationTableProperties `json:"destinationTableProperties,omitempty"`
+	Encoding                           string                                 `json:"encoding,omitempty"`
+	FieldDelimiter                     string                                 `json:"fieldDelimiter,omitempty"`
+	HivePartitioningOptions            *bigqueryv2.HivePartitioningOptions    `json:"hivePartitioningOptions,omitempty"`
+	IgnoreUnknownValues                bool                                   `json:"ignoreUnknownValues,omitempty"`
+	JsonExtension                      string                                 `json:"jsonExtension,omitempty"`
+	MaxBadRecords                      int64                                  `json:"maxBadRecords,omitempty"`
+	NullMarker                         string                                 `json:"nullMarker,omitempty"`
+	ParquetOptions                     *bigqueryv2.ParquetOptions             `json:"parquetOptions,omitempty"`
+	PreserveAsciiControlCharacters     bool                                   `json:"preserveAsciiControlCharacters,omitempty"`
+	ProjectionFields                   []string                               `json:"projectionFields,omitempty"`
+	Quote                              *string                                `json:"quote,omitempty"`
+	RangePartitioning                  *bigqueryv2.RangePartitioning          `json:"rangePartitioning,omitempty"`
+	Schema                             *bigqueryv2.TableSchema                `json:"schema,omitempty"`
+	SchemaInline                       string                                 `json:"schemaInline,omitempty"`
+	SchemaInlineFormat                 string                                 `json:"schemaInlineFormat,omitempty"`
+	SchemaUpdateOptions                []string                               `json:"schemaUpdateOptions,omitempty"`
+	SkipLeadingRows                    json.Number                            `json:"skipLeadingRows,omitempty"`
+	SourceFormat                       string                                 `json:"sourceFormat,omitempty"`
+	SourceUris                         []string                               `json:"sourceUris,omitempty"`
+	TimePartitioning                   *bigqueryv2.TimePartitioning           `json:"timePartitioning,omitempty"`
+	UseAvroLogicalTypes                bool                                   `json:"useAvroLogicalTypes,omitempty"`
+	WriteDisposition                   string                                 `json:"writeDisposition,omitempty"`
+}
+
+type UploadJobConfiguration struct {
+	Load *UploadJobConfigurationLoad `json:"load"`
+}
+
+type UploadJob struct {
+	JobReference  *bigqueryv2.JobReference `json:"jobReference"`
+	Configuration *UploadJobConfiguration  `json:"configuration"`
+}
+
+func (j *UploadJob) ToJob() *bigqueryv2.Job {
+	load := j.Configuration.Load
+	skipLeadingRows, _ := load.SkipLeadingRows.Int64()
+	return &bigqueryv2.Job{
+		JobReference: j.JobReference,
+		Configuration: &bigqueryv2.JobConfiguration{
+			Load: &bigqueryv2.JobConfigurationLoad{
+				AllowJaggedRows:                    load.AllowJaggedRows,
+				AllowQuotedNewlines:                load.AllowQuotedNewlines,
+				Autodetect:                         load.Autodetect,
+				Clustering:                         load.Clustering,
+				CreateDisposition:                  load.CreateDisposition,
+				DecimalTargetTypes:                 load.DecimalTargetTypes,
+				DestinationEncryptionConfiguration: load.DestinationEncryptionConfiguration,
+				DestinationTable:                   load.DestinationTable,
+				DestinationTableProperties:         load.DestinationTableProperties,
+				Encoding:                           load.Encoding,
+				FieldDelimiter:                     load.FieldDelimiter,
+				HivePartitioningOptions:            load.HivePartitioningOptions,
+				IgnoreUnknownValues:                load.IgnoreUnknownValues,
+				JsonExtension:                      load.JsonExtension,
+				MaxBadRecords:                      load.MaxBadRecords,
+				NullMarker:                         load.NullMarker,
+				ParquetOptions:                     load.ParquetOptions,
+				PreserveAsciiControlCharacters:     load.PreserveAsciiControlCharacters,
+				ProjectionFields:                   load.ProjectionFields,
+				Quote:                              load.Quote,
+				RangePartitioning:                  load.RangePartitioning,
+				Schema:                             load.Schema,
+				SchemaInline:                       load.SchemaInline,
+				SchemaInlineFormat:                 load.SchemaInlineFormat,
+				SchemaUpdateOptions:                load.SchemaUpdateOptions,
+				SkipLeadingRows:                    skipLeadingRows,
+				SourceFormat:                       load.SourceFormat,
+				SourceUris:                         load.SourceUris,
+				TimePartitioning:                   load.TimePartitioning,
+				UseAvroLogicalTypes:                load.UseAvroLogicalTypes,
+				WriteDisposition:                   load.WriteDisposition,
+			},
+		},
+	}
+}
+
+func (h *uploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	server := serverFromContext(ctx)
+	project := projectFromContext(ctx)
+	var job UploadJob
+	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+		writeBadRequest(w, err)
+		return
+	}
+	res, err := h.Handle(ctx, &uploadRequest{
+		server:  server,
+		project: project,
+		job:     &job,
+	})
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	addr := server.httpServer.Addr
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+	addr = strings.TrimRight(addr, "/")
+	w.Header().Add(
+		"Location",
+		fmt.Sprintf(
+			"%s/upload/bigquery/v2/projects/%s/jobs?uploadType=resumable&upload_id=%s",
+			addr,
+			project.ID,
+			job.JobReference.JobId,
+		),
+	)
+	encodeResponse(w, res)
+}
+
+type uploadRequest struct {
+	server  *Server
+	project *metadata.Project
+	job     *UploadJob
+}
+
+func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*bigqueryv2.Job, error) {
+	tx, err := r.server.metaRepo.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
+	if err := r.project.AddJob(ctx, tx, job); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit job: %w", err)
+	}
+	return job.Content(), nil
+}
+
+type uploadContentHandler struct{}
+
+func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	server := serverFromContext(ctx)
+	project := projectFromContext(ctx)
+	query := r.URL.Query()
+	uploadType := query["uploadType"]
+	if len(uploadType) == 0 {
+		writeBadRequest(w, fmt.Errorf("uploadType parameter is not found"))
+		return
+	}
+	if uploadType[0] != "resumable" {
+		writeBadRequest(w, fmt.Errorf("uploadType parameter is not resumable %s", uploadType[0]))
+		return
+	}
+	uploadID := query["upload_id"]
+	if len(uploadID) == 0 {
+		writeBadRequest(w, fmt.Errorf("upload_id parameter is not found"))
+		return
+	}
+	jobID := uploadID[0]
+	job := project.Job(jobID)
+	if err := h.Handle(ctx, &uploadContentRequest{
+		server:  server,
+		project: project,
+		job:     job,
+		reader:  r.Body,
+	}); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	content := job.Content()
+	content.Status = &bigqueryv2.JobStatus{State: "DONE"}
+	encodeResponse(w, content)
+}
+
+type uploadContentRequest struct {
+	server  *Server
+	project *metadata.Project
+	job     *metadata.Job
+	reader  io.Reader
+}
+
+func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
+	load := r.job.Content().Configuration.Load
+	sourceFormat := load.SourceFormat
+	switch sourceFormat {
+	case "CSV":
+		records, err := csv.NewReader(r.reader).ReadAll()
+		if err != nil {
+			return fmt.Errorf("failed to read csv: %w", err)
+		}
+		if len(records) == 0 {
+			return fmt.Errorf("failed to find csv header")
+		}
+		if len(records) == 1 {
+			return nil
+		}
+		tableRef := load.DestinationTable
+		dataset := r.project.Dataset(tableRef.DatasetId)
+		table := dataset.Table(tableRef.TableId)
+		tableContent, err := table.Content()
+		if err != nil {
+			return err
+		}
+		columnToType := map[string]types.Type{}
+		for _, field := range tableContent.Schema.Fields {
+			columnToType[field.Name] = types.Type(field.Type)
+		}
+		header := records[0]
+		columns := []*types.Column{}
+		for _, col := range header {
+			columns = append(columns, &types.Column{
+				Name: col,
+				Type: columnToType[col],
+			})
+		}
+		data := types.Data{}
+		for _, record := range records[1:] {
+			rowData := map[string]interface{}{}
+			for idx, colData := range record {
+				rowData[columns[idx].Name] = colData
+			}
+			data = append(data, rowData)
+		}
+		tableDef := &types.Table{
+			ID:      tableRef.TableId,
+			Columns: columns,
+			Data:    data,
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -505,6 +759,12 @@ type jobsInsertRequest struct {
 }
 
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+	if r.job.Configuration == nil {
+		return nil, fmt.Errorf("unspecified job configuration")
+	}
+	if r.job.Configuration.Query == nil {
+		return nil, fmt.Errorf("unspecified job configuration query")
+	}
 	tx, err := r.server.metaRepo.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -518,10 +778,12 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		return nil, fmt.Errorf("failed to commit job: %w", err)
 	}
 
+	hasDestinationTable := r.job.Configuration.Query.DestinationTable != nil
+
 	go func() {
 		ctx := context.Background()
 		ctx = withProject(ctx, r.project)
-		response, err := r.server.contentRepo.Query(
+		response, jobErr := r.server.contentRepo.Query(
 			ctx,
 			r.project.ID,
 			"",
@@ -532,10 +794,45 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		if err != nil {
 			return
 		}
-		job.SetResult(ctx, tx, response, err)
+		job.SetResult(ctx, tx, response, jobErr)
 		tx.Commit()
+		if hasDestinationTable && jobErr == nil {
+			// insert results to destination table
+			tableRef := r.job.Configuration.Query.DestinationTable
+			columns := []*types.Column{}
+			for _, field := range response.Schema.Fields {
+				columns = append(columns, &types.Column{
+					Name: field.Name,
+					Type: types.Type(field.Type),
+				})
+			}
+			data := types.Data{}
+			for _, row := range response.Rows {
+				rowData := map[string]interface{}{}
+				for idx, cell := range row.F {
+					rowData[columns[idx].Name] = cell.V
+				}
+				data = append(data, rowData)
+			}
+			tableDef := &types.Table{
+				ID:      tableRef.TableId,
+				Columns: columns,
+				Data:    data,
+			}
+			if err := r.server.contentRepo.AddTableData(ctx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+				log.Printf("[ERROR] failed to add table data: %+v", err)
+				return
+			}
+		}
 	}()
 	content := *job.Content()
+	if !hasDestinationTable {
+		content.Configuration.Query.DestinationTable = &bigqueryv2.TableReference{
+			ProjectId: r.project.ID,
+			DatasetId: "anonymous",
+			TableId:   "anonymous",
+		}
+	}
 	content.Status = &bigqueryv2.JobStatus{
 		State: "DONE",
 	}
@@ -1213,7 +1510,11 @@ type tablesGetRequest struct {
 }
 
 func (h *tablesGetHandler) Handle(ctx context.Context, r *tablesGetRequest) (*bigqueryv2.Table, error) {
-	return nil, fmt.Errorf("bigquery.tables.get")
+	table, err := r.table.Content()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get table content: %w", err)
+	}
+	return table, nil
 }
 
 func (h *tablesGetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1249,10 +1550,16 @@ func (h *tablesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
+	var table bigqueryv2.Table
+	if err := json.NewDecoder(r.Body).Decode(&table); err != nil {
+		writeBadRequest(w, err)
+		return
+	}
 	res, err := h.Handle(ctx, &tablesInsertRequest{
 		server:  server,
 		project: project,
 		dataset: dataset,
+		table:   &table,
 	})
 	if err != nil {
 		writeInternalError(w, err)
@@ -1265,10 +1572,48 @@ type tablesInsertRequest struct {
 	server  *Server
 	project *metadata.Project
 	dataset *metadata.Dataset
+	table   *bigqueryv2.Table
 }
 
 func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, error) {
-	return nil, fmt.Errorf("unsupported bigquery.tables.insert")
+	encodedTableData, err := json.Marshal(r.table)
+	if err != nil {
+		return nil, err
+	}
+	var tableMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+		return nil, err
+	}
+
+	// TODO: needs to use transaction
+	if err := r.server.contentRepo.CreateTable(ctx, r.table); err != nil {
+		return nil, err
+	}
+
+	tx, err := r.server.metaRepo.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	if err := r.dataset.AddTable(
+		ctx,
+		tx,
+		metadata.NewTable(
+			r.server.metaRepo,
+			r.table.TableReference.TableId,
+			tableMetadata,
+		),
+	); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit table: %w", err)
+	}
+	table := *r.table
+	table.Id = r.table.TableReference.TableId
+	table.CreationTime = time.Now().Unix()
+	return &table, nil
 }
 
 func (h *tablesListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

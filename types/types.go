@@ -15,7 +15,7 @@ type Project struct {
 
 type Dataset struct {
 	ID       string     `yaml:"id" validate:"required"`
-	Tables   []*Table   `yaml:"tables" validate:"required"`
+	Tables   []*Table   `yaml:"tables"`
 	Models   []*Model   `yaml:"models"`
 	Routines []*Routine `yaml:"routines"`
 }
@@ -23,7 +23,7 @@ type Dataset struct {
 type Table struct {
 	ID       string                 `yaml:"id" validate:"required"`
 	Columns  []*Column              `yaml:"columns" validate:"required"`
-	Data     Data                   `yaml:"data" validate:"required"`
+	Data     Data                   `yaml:"data"`
 	Metadata map[string]interface{} `yaml:"metadata"`
 }
 

@@ -19,6 +19,30 @@ jobs:
         go-version: ${{ matrix.go-version }}
     - name: checkout
       uses: actions/checkout@v3
+    - name: cache for linux
+      uses: actions/cache@v3
+      if: runner.os == 'Linux'
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: cache for macOS
+      uses: actions/cache@v3
+      if: runner.os == 'macOS'
+      with:
+        path: |
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: download modules
+      run: |
+        go mod download
+    - uses: rui314/setup-mold@v1
     - name: build
       run: make emulator/build
       env:
@@ -29,15 +53,16 @@ jobs:
       run: |
         ./bigquery-emulator --version
     - name: show linking info
-      if: ${{ matrix.os }} == "ubuntu-latest"
+      if: runner.os == 'Linux'
       run: |
         ldd bigquery-emulator || true
   test:
+    needs: build
     name: Test
     strategy:
       matrix:
         os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.17", "1.18" ]
+        go-version: [ "1.18" ]
     runs-on: ${{ matrix.os }}
     steps:
     - name: setup Go ${{ matrix.go-version }}
@@ -46,6 +71,29 @@ jobs:
         go-version: ${{ matrix.go-version }}
     - name: checkout
       uses: actions/checkout@v3
+    - name: cache for linux
+      uses: actions/cache@v3
+      if: runner.os == 'Linux'
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: cache for macOS
+      uses: actions/cache@v3
+      if: runner.os == 'macOS'
+      with:
+        path: |
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: download modules
+      run: |
+        go mod download
     - name: test
       run: go test -v ./... -count=1
       env:
