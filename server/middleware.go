@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -28,6 +29,9 @@ func withServerMiddleware(s *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Printf("%s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+			defer func(now time.Time) {
+				log.Printf("%s %s?%s: %vms", r.Method, r.URL.Path, r.URL.RawQuery, time.Since(now).Milliseconds())
+			}(time.Now())
 			ctx := r.Context()
 			next.ServeHTTP(
 				w,
@@ -106,6 +110,7 @@ func withProjectMiddleware() func(http.Handler) http.Handler {
 					return
 				}
 				if project == nil {
+					log.Printf("project %s is not found", projectID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "project %s is not found", projectID)
 					return
@@ -130,6 +135,7 @@ func withDatasetMiddleware() func(http.Handler) http.Handler {
 				project := projectFromContext(ctx)
 				dataset := project.Dataset(datasetID)
 				if dataset == nil {
+					log.Printf("dataset %s is not found", datasetID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "dataset %s is not found", datasetID)
 					return
@@ -154,6 +160,7 @@ func withJobMiddleware() func(http.Handler) http.Handler {
 				project := projectFromContext(ctx)
 				job := project.Job(jobID)
 				if job == nil {
+					log.Printf("job %s is not found", jobID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "job %s is not found", jobID)
 					return
@@ -178,6 +185,7 @@ func withTableMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				table := dataset.Table(tableID)
 				if table == nil {
+					log.Printf("table %s is not found", tableID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "table %s is not found", tableID)
 					return
@@ -202,6 +210,7 @@ func withModelMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				model := dataset.Model(modelID)
 				if model == nil {
+					log.Printf("model %s is not found", modelID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "model %s is not found", modelID)
 					return
@@ -226,6 +235,7 @@ func withRoutineMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				routine := dataset.Routine(routineID)
 				if routine == nil {
+					log.Printf("routine %s is not found", routineID)
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "routine %s is not found", routineID)
 					return

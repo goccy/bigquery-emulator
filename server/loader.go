@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/goccy/bigquery-emulator/types"
 )
@@ -16,41 +17,60 @@ func (s *Server) addProjects(ctx context.Context, projects []*types.Project) err
 }
 
 func (s *Server) addProject(ctx context.Context, project *types.Project) error {
-	tx, err := s.metaRepo.Begin(ctx)
+	conn, err := s.connMgr.Connection(ctx, project.ID, "")
 	if err != nil {
 		return err
 	}
-	defer tx.Commit()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
 	for _, dataset := range project.Datasets {
 		for _, table := range dataset.Tables {
-			if err := s.addTableData(ctx, project, dataset, table); err != nil {
+			tx.SetProjectAndDataset(project.ID, dataset.ID)
+			if err := tx.ContentRepoMode(); err != nil {
+				return err
+			}
+			if err := s.addTableData(ctx, tx.Tx(), project, dataset, table); err != nil {
 				return err
 			}
 		}
 	}
+
+	if err := tx.MetadataRepoMode(); err != nil {
+		return err
+	}
 	p := s.metaRepo.ProjectFromData(project)
-	if found, _ := s.metaRepo.FindProject(ctx, p.ID); found != nil {
-		if err := s.metaRepo.UpdateProject(ctx, tx, p); err != nil {
+	found, err := s.metaRepo.FindProjectWithConn(ctx, tx.Tx(), p.ID)
+	if err != nil {
+		return err
+	}
+	if found != nil {
+		if err := s.metaRepo.UpdateProject(ctx, tx.Tx(), p); err != nil {
 			return err
 		}
 	} else {
-		if err := s.metaRepo.AddProject(ctx, tx, p); err != nil {
+		if err := s.metaRepo.AddProjectIfNotExists(ctx, tx.Tx(), p); err != nil {
 			return err
 		}
 	}
 	for _, dataset := range p.Datasets() {
-		if err := dataset.Insert(ctx, tx); err != nil {
+		if err := dataset.Insert(ctx, tx.Tx()); err != nil {
 			return err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (s *Server) addTableData(ctx context.Context, project *types.Project, dataset *types.Dataset, table *types.Table) error {
-	if err := s.contentRepo.CreateOrReplaceTable(ctx, project.ID, dataset.ID, table); err != nil {
+func (s *Server) addTableData(ctx context.Context, tx *sql.Tx, project *types.Project, dataset *types.Dataset, table *types.Table) error {
+	if err := s.contentRepo.CreateOrReplaceTable(ctx, tx, project.ID, dataset.ID, table); err != nil {
 		return err
 	}
-	if err := s.contentRepo.AddTableData(ctx, project.ID, dataset.ID, table); err != nil {
+	if err := s.contentRepo.AddTableData(ctx, tx, project.ID, dataset.ID, table); err != nil {
 		return err
 	}
 	return nil

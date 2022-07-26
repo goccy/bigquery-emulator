@@ -5,11 +5,15 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"time"
 
+	"golang.org/x/net/netutil"
+
+	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/contentdata"
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 	"github.com/gorilla/mux"
@@ -19,6 +23,7 @@ type Server struct {
 	Handler     http.Handler
 	storage     Storage
 	db          *sql.DB
+	connMgr     *connection.Manager
 	metaRepo    *metadata.Repository
 	contentRepo *contentdata.Repository
 	fileCleanup func() error
@@ -47,6 +52,7 @@ func New(storage Storage) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	server.connMgr = connection.NewManager(db)
 	server.metaRepo = metaRepo
 	server.contentRepo = contentdata.NewRepository(db)
 
@@ -88,16 +94,25 @@ func (s *Server) Close() error {
 
 func (s *Server) SetProject(id string) error {
 	ctx := context.Background()
-	tx, err := s.metaRepo.Begin(ctx)
+	conn, err := s.connMgr.Connection(ctx, id, "")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
-	defer tx.Commit()
+	if err := tx.MetadataRepoMode(); err != nil {
+		return err
+	}
 	if err := s.metaRepo.AddProjectIfNotExists(
 		ctx,
-		tx,
+		tx.Tx(),
 		metadata.NewProject(s.metaRepo, id, nil, nil),
 	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return nil
@@ -120,7 +135,11 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 		ReadTimeout:  15 * time.Second,
 	}
 	s.httpServer = srv
-	return srv.ListenAndServe()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return srv.Serve(netutil.LimitListener(ln, 1))
 }
 
 func (s *Server) Stop(ctx context.Context) error {

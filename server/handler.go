@@ -222,13 +222,20 @@ type uploadRequest struct {
 }
 
 func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*bigqueryv2.Job, error) {
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.MetadataRepoMode(); err != nil {
+		return nil, fmt.Errorf("failed to get metadata repository tx: %w", err)
+	}
 	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
-	if err := r.project.AddJob(ctx, tx, job); err != nil {
-		_ = tx.Rollback()
+	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
 		return nil, fmt.Errorf("failed to add job: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -328,7 +335,22 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 			Columns: columns,
 			Data:    data,
 		}
-		if err := r.server.contentRepo.AddTableData(ctx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+		conn, err := r.server.connMgr.Connection(ctx, tableRef.ProjectId, tableRef.DatasetId)
+		if err != nil {
+			return fmt.Errorf("failed to get connection: %w", err)
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.RollbackIfNotCommitted()
+		if err := tx.ContentRepoMode(); err != nil {
+			return err
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tx.Tx(), tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
@@ -361,22 +383,31 @@ type datasetsDeleteRequest struct {
 }
 
 func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
-	if err := r.project.DeleteDataset(ctx, tx, r.dataset.ID); err != nil {
-		_ = tx.Rollback()
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.MetadataRepoMode(); err != nil {
+		return fmt.Errorf("failed to get metadata repository tx: %w", err)
+	}
+	if err := r.project.DeleteDataset(ctx, tx.Tx(), r.dataset.ID); err != nil {
 		return fmt.Errorf("failed to delete dataset: %w", err)
+	}
+	if r.deleteContents {
+		if err := tx.ContentRepoMode(); err != nil {
+			return fmt.Errorf("failed to get content repository tx: %w", err)
+		}
+		if err := r.server.contentRepo.DeleteTables(ctx, tx.Tx(), r.project.ID, r.dataset.ID, r.dataset.TableIDs()); err != nil {
+			return fmt.Errorf("failed to delete tables: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit delete dataset: %w", err)
-	}
-
-	if r.deleteContents {
-		if err := r.server.contentRepo.DeleteTables(ctx, r.project.ID, r.dataset.ID, r.dataset.TableIDs()); err != nil {
-			return fmt.Errorf("failed to delete tables: %w", err)
-		}
 	}
 	return nil
 }
@@ -448,15 +479,19 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 	if datasetID == "" {
 		return nil, fmt.Errorf("dataset id is empty")
 	}
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
-	defer tx.Commit()
+	defer tx.RollbackIfNotCommitted()
 
 	if err := r.project.AddDataset(
 		ctx,
-		tx,
+		tx.Tx(),
 		metadata.NewDataset(
 			r.server.metaRepo,
 			datasetID,
@@ -466,6 +501,9 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return &bigqueryv2.DatasetListDatasets{
@@ -650,14 +688,24 @@ type jobsDeleteRequest struct {
 }
 
 func (h *jobsDeleteHandler) Handle(ctx context.Context, r *jobsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
-	defer tx.Commit()
+	defer tx.RollbackIfNotCommitted()
 
-	if err := r.project.DeleteJob(ctx, tx, r.job.ID); err != nil {
+	if err := tx.MetadataRepoMode(); err != nil {
+		return err
+	}
+	if err := r.project.DeleteJob(ctx, tx.Tx(), r.job.ID); err != nil {
 		return fmt.Errorf("failed to delete job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -765,66 +813,77 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	if r.job.Configuration.Query == nil {
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.MetadataRepoMode(); err != nil {
+		return nil, err
+	}
 	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job, nil, nil)
-	if err := r.project.AddJob(ctx, tx, job); err != nil {
-		_ = tx.Rollback()
+	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
 		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+
+	hasDestinationTable := r.job.Configuration.Query.DestinationTable != nil
+	if err := tx.ContentRepoMode(); err != nil {
+		return nil, fmt.Errorf("failed to get content repo tx: %w", err)
+	}
+	response, jobErr := r.server.contentRepo.Query(
+		ctx,
+		tx.Tx(),
+		r.project.ID,
+		"",
+		job.Query(),
+		job.QueryParameters(),
+	)
+
+	if err := tx.MetadataRepoMode(); err != nil {
+		return nil, err
+	}
+	job.SetResult(ctx, tx.Tx(), response, jobErr)
+
+	if hasDestinationTable && jobErr == nil {
+		// insert results to destination table
+		tableRef := r.job.Configuration.Query.DestinationTable
+		columns := []*types.Column{}
+		for _, field := range response.Schema.Fields {
+			columns = append(columns, &types.Column{
+				Name: field.Name,
+				Type: types.Type(field.Type),
+			})
+		}
+		data := types.Data{}
+		for _, row := range response.Rows {
+			rowData := map[string]interface{}{}
+			for idx, cell := range row.F {
+				if cell != nil {
+					rowData[columns[idx].Name] = cell.V
+				}
+			}
+			data = append(data, rowData)
+		}
+		tableDef := &types.Table{
+			ID:      tableRef.TableId,
+			Columns: columns,
+			Data:    data,
+		}
+		tx.SetProjectAndDataset(tableRef.ProjectId, tableRef.DatasetId)
+		if err := tx.ContentRepoMode(); err != nil {
+			return nil, fmt.Errorf("failed to get content repo tx: %w", err)
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tx.Tx(), tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+			return nil, fmt.Errorf("failed to add table data: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit job: %w", err)
 	}
-
-	hasDestinationTable := r.job.Configuration.Query.DestinationTable != nil
-
-	go func() {
-		ctx := context.Background()
-		ctx = withProject(ctx, r.project)
-		response, jobErr := r.server.contentRepo.Query(
-			ctx,
-			r.project.ID,
-			"",
-			job.Query(),
-			job.QueryParameters(),
-		)
-		tx, err := r.server.metaRepo.Begin(ctx)
-		if err != nil {
-			return
-		}
-		job.SetResult(ctx, tx, response, jobErr)
-		tx.Commit()
-		if hasDestinationTable && jobErr == nil {
-			// insert results to destination table
-			tableRef := r.job.Configuration.Query.DestinationTable
-			columns := []*types.Column{}
-			for _, field := range response.Schema.Fields {
-				columns = append(columns, &types.Column{
-					Name: field.Name,
-					Type: types.Type(field.Type),
-				})
-			}
-			data := types.Data{}
-			for _, row := range response.Rows {
-				rowData := map[string]interface{}{}
-				for idx, cell := range row.F {
-					rowData[columns[idx].Name] = cell.V
-				}
-				data = append(data, rowData)
-			}
-			tableDef := &types.Table{
-				ID:      tableRef.TableId,
-				Columns: columns,
-				Data:    data,
-			}
-			if err := r.server.contentRepo.AddTableData(ctx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-				log.Printf("[ERROR] failed to add table data: %+v", err)
-				return
-			}
-		}
-	}()
 	content := *job.Content()
 	if !hasDestinationTable {
 		content.Configuration.Query.DestinationTable = &bigqueryv2.TableReference{
@@ -912,14 +971,30 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*bi
 	if r.queryRequest.DefaultDataset != nil {
 		datasetID = r.queryRequest.DefaultDataset.DatasetId
 	}
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.ContentRepoMode(); err != nil {
+		return nil, err
+	}
 	response, err := r.server.contentRepo.Query(
 		ctx,
+		tx.Tx(),
 		r.project.ID,
 		datasetID,
 		r.queryRequest.Query,
 		r.queryRequest.QueryParameters,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	response.JobReference = &bigqueryv2.JobReference{
@@ -953,14 +1028,24 @@ type modelsDeleteRequest struct {
 }
 
 func (h *modelsDeleteHandler) Handle(ctx context.Context, r *modelsDeleteRequest) error {
-	tx, err := r.server.metaRepo.Begin(ctx)
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
-	defer tx.Commit()
+	defer tx.RollbackIfNotCommitted()
 
-	if err := r.dataset.DeleteModel(ctx, tx, r.model.ID); err != nil {
+	if err := tx.MetadataRepoMode(); err != nil {
+		return err
+	}
+	if err := r.dataset.DeleteModel(ctx, tx.Tx(), r.model.ID); err != nil {
 		return fmt.Errorf("failed to delete model: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1226,7 +1311,22 @@ type routinesInsertRequest struct {
 }
 
 func (h *routinesInsertHandler) Handle(ctx context.Context, r *routinesInsertRequest) (*bigqueryv2.Routine, error) {
-	if err := r.server.contentRepo.AddRoutineByMetaData(ctx, r.routine); err != nil {
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.ContentRepoMode(); err != nil {
+		return nil, err
+	}
+	if err := r.server.contentRepo.AddRoutineByMetaData(ctx, tx.Tx(), r.routine); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return r.routine, nil
@@ -1585,26 +1685,33 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, err
 	}
 
-	// TODO: needs to use transaction
-	if err := r.server.contentRepo.CreateTable(ctx, r.table); err != nil {
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
 		return nil, err
 	}
-
-	tx, err := r.server.metaRepo.Begin(ctx)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, err
 	}
-
+	defer tx.RollbackIfNotCommitted()
+	if err := tx.ContentRepoMode(); err != nil {
+		return nil, err
+	}
+	if err := r.server.contentRepo.CreateTable(ctx, tx.Tx(), r.table); err != nil {
+		return nil, err
+	}
+	if err := tx.MetadataRepoMode(); err != nil {
+		return nil, err
+	}
 	if err := r.dataset.AddTable(
 		ctx,
-		tx,
+		tx.Tx(),
 		metadata.NewTable(
 			r.server.metaRepo,
 			r.table.TableReference.TableId,
 			tableMetadata,
 		),
 	); err != nil {
-		_ = tx.Rollback()
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
