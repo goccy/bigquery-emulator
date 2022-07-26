@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -29,9 +28,6 @@ func withServerMiddleware(s *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Printf("%s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
-			defer func(now time.Time) {
-				log.Printf("%s %s?%s: %vms", r.Method, r.URL.Path, r.URL.RawQuery, time.Since(now).Milliseconds())
-			}(time.Now())
 			ctx := r.Context()
 			next.ServeHTTP(
 				w,
