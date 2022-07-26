@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -64,7 +65,7 @@ func (r *Repository) CreateTable(ctx context.Context, tx *sql.Tx, table *bigquer
 	return nil
 }
 
-func (r *Repository) Query(ctx context.Context, tx *sql.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*bigqueryv2.QueryResponse, error) {
+func (r *Repository) Query(ctx context.Context, tx *sql.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*internaltypes.QueryResponse, error) {
 	values := []interface{}{}
 	for _, param := range params {
 		// param.Name
@@ -78,7 +79,7 @@ func (r *Repository) Query(ctx context.Context, tx *sql.Tx, projectID, datasetID
 		return nil, err
 	}
 	defer rows.Close()
-	tableRows := []*bigqueryv2.TableRow{}
+	tableRows := []*internaltypes.TableRow{}
 	colTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column types: %w", err)
@@ -104,30 +105,30 @@ func (r *Repository) Query(ctx context.Context, tx *sql.Tx, projectID, datasetID
 		if err := rows.Scan(values...); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		cells := make([]*bigqueryv2.TableCell, 0, len(values))
+		cells := make([]*internaltypes.TableCell, 0, len(values))
 		resultValues := make([]interface{}, 0, len(values))
 		for _, value := range values {
 			v := reflect.ValueOf(value).Elem().Interface()
 			if v == nil {
-				cells = append(cells, nil)
+				cells = append(cells, &internaltypes.TableCell{V: nil})
 			} else {
-				cells = append(cells, &bigqueryv2.TableCell{V: fmt.Sprint(v)})
+				cells = append(cells, &internaltypes.TableCell{V: fmt.Sprint(v)})
 			}
 			resultValues = append(resultValues, v)
 		}
 		result = append(result, resultValues)
-		tableRows = append(tableRows, &bigqueryv2.TableRow{
+		tableRows = append(tableRows, &internaltypes.TableRow{
 			F: cells,
 		})
 	}
 	log.Printf("rows: %v", result)
-	return &bigqueryv2.QueryResponse{
-		Rows: tableRows,
+	return &internaltypes.QueryResponse{
 		Schema: &bigqueryv2.TableSchema{
 			Fields: fields,
 		},
 		TotalRows:   uint64(len(tableRows)),
 		JobComplete: true,
+		Rows:        tableRows,
 	}, nil
 }
 

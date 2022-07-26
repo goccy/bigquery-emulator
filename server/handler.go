@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goccy/bigquery-emulator/internal/metadata"
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/gorilla/mux"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -326,7 +327,11 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		for _, record := range records[1:] {
 			rowData := map[string]interface{}{}
 			for idx, colData := range record {
-				rowData[columns[idx].Name] = colData
+				if colData == "" {
+					rowData[columns[idx].Name] = nil
+				} else {
+					rowData[columns[idx].Name] = colData
+				}
 			}
 			data = append(data, rowData)
 		}
@@ -762,20 +767,20 @@ type jobsGetQueryResultsRequest struct {
 	job     *metadata.Job
 }
 
-func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*bigqueryv2.GetQueryResultsResponse, error) {
+func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*internaltypes.GetQueryResultsResponse, error) {
 	response, err := r.job.Wait(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &bigqueryv2.GetQueryResultsResponse{
+	return &internaltypes.GetQueryResultsResponse{
 		JobReference: &bigqueryv2.JobReference{
 			ProjectId: r.project.ID,
 			JobId:     r.job.ID,
 		},
-		Rows:        response.Rows,
 		Schema:      response.Schema,
 		TotalRows:   response.TotalRows,
 		JobComplete: true,
+		Rows:        response.Rows,
 	}, nil
 }
 
@@ -862,7 +867,9 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		for _, row := range response.Rows {
 			rowData := map[string]interface{}{}
 			for idx, cell := range row.F {
-				if cell != nil {
+				if cell.V == nil {
+					rowData[columns[idx].Name] = nil
+				} else {
 					rowData[columns[idx].Name] = cell.V
 				}
 			}
@@ -966,7 +973,7 @@ type jobsQueryRequest struct {
 	queryRequest *bigqueryv2.QueryRequest
 }
 
-func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*bigqueryv2.QueryResponse, error) {
+func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*internaltypes.QueryResponse, error) {
 	var datasetID string
 	if r.queryRequest.DefaultDataset != nil {
 		datasetID = r.queryRequest.DefaultDataset.DatasetId

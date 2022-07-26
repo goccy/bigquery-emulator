@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -331,7 +332,7 @@ func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, ids []string) ([]
 				return nil, fmt.Errorf("failed to decode metadata content %s: %w", metadata, err)
 			}
 		}
-		var response bigqueryv2.QueryResponse
+		var response internaltypes.QueryResponse
 		if len(result) > 0 {
 			if err := json.Unmarshal([]byte(result), &response); err != nil {
 				return nil, fmt.Errorf("failed to decode job response %s: %w", result, err)
