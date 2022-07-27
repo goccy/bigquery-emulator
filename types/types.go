@@ -64,7 +64,7 @@ func TypeFromKind(kind int) Type {
 	case types.BOOL:
 		return BOOL
 	case types.FLOAT:
-		return FLOAT64
+		return FLOAT
 	case types.DOUBLE:
 		return FLOAT64
 	case types.STRING:
@@ -123,8 +123,14 @@ func (t Type) ZetaSQLTypeKind() types.TypeKind {
 		return types.NUMERIC
 	case BIGDECIMAL:
 		return types.BIG_NUMERIC
-	case FLOAT64:
+	case FLOAT:
 		return types.FLOAT
+	case FLOAT64:
+		return types.DOUBLE
+	case DOUBLE:
+		return types.DOUBLE
+	case BOOLEAN:
+		return types.BOOL
 	case BOOL:
 		return types.BOOL
 	case STRING:
@@ -149,6 +155,8 @@ func (t Type) ZetaSQLTypeKind() types.TypeKind {
 		return types.GEOGRAPHY
 	case JSON:
 		return types.JSON
+	case RECORD:
+		return types.STRUCT
 	}
 	return types.UNKNOWN
 }
@@ -177,8 +185,14 @@ func (t Type) FieldType() FieldType {
 		return FieldNumeric
 	case BIGDECIMAL:
 		return FieldBignumeric
+	case FLOAT:
+		return FieldFloat
 	case FLOAT64:
 		return FieldFloat
+	case DOUBLE:
+		return FieldFloat
+	case BOOLEAN:
+		return FieldBoolean
 	case BOOL:
 		return FieldBoolean
 	case STRING:
@@ -203,6 +217,8 @@ func (t Type) FieldType() FieldType {
 		return FieldRecord
 	case JSON:
 		return FieldRecord
+	case RECORD:
+		return FieldRecord
 	}
 	return ""
 }
@@ -219,8 +235,11 @@ const (
 	BIGNUMERIC Type = "BIGNUMERIC"
 	DECIMAL    Type = "DECIMAL"
 	BIGDECIMAL Type = "BIGDECIMAL"
+	BOOLEAN    Type = "BOOLEAN"
 	BOOL       Type = "BOOL"
+	FLOAT      Type = "FLOAT"
 	FLOAT64    Type = "FLOAT64"
+	DOUBLE     Type = "DOUBLE"
 	STRING     Type = "STRING"
 	BYTES      Type = "BYTES"
 	DATE       Type = "DATE"
@@ -232,6 +251,7 @@ const (
 	STRUCT     Type = "STRUCT"
 	GEOGRAPHY  Type = "GEOGRAPHY"
 	JSON       Type = "JSON"
+	RECORD     Type = "RECORD"
 )
 
 type FieldType string

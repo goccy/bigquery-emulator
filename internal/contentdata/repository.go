@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"strings"
 
+	"github.com/goccy/bigquery-emulator/internal/connection"
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
+	"github.com/goccy/go-zetasql"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
@@ -48,33 +52,36 @@ func (r *Repository) getConnection(ctx context.Context, projectID, datasetID str
 	return conn, nil
 }
 
-func (r *Repository) CreateTable(ctx context.Context, table *bigqueryv2.Table) error {
+func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
 	ref := table.TableReference
 	if ref == nil {
 		return fmt.Errorf("TableReference is nil")
 	}
-	conn, err := r.getConnection(ctx, ref.ProjectId, ref.DatasetId)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
 	fields := make([]string, 0, len(table.Schema.Fields))
 	for _, field := range table.Schema.Fields {
 		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, types.Type(field.Type).ZetaSQLTypeKind()))
 	}
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", ref.TableId, strings.Join(fields, ","))
-	if _, err := conn.ExecContext(ctx, query); err != nil {
+	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", query, err)
 	}
 	return nil
 }
 
-func (r *Repository) Query(ctx context.Context, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*bigqueryv2.QueryResponse, error) {
-	conn, err := r.getConnection(ctx, projectID, datasetID)
-	if err != nil {
+func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*internaltypes.QueryResponse, error) {
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
 
 	values := []interface{}{}
 	for _, param := range params {
@@ -83,13 +90,13 @@ func (r *Repository) Query(ctx context.Context, projectID, datasetID, query stri
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
 	log.Printf("query: %s. values: %v", query, values)
-	rows, err := conn.QueryContext(ctx, query, values...)
+	rows, err := tx.Tx().QueryContext(ctx, query, values...)
 	if err != nil {
 		log.Printf("query error: %+v", err)
 		return nil, err
 	}
 	defer rows.Close()
-	tableRows := []*bigqueryv2.TableRow{}
+	tableRows := []*internaltypes.TableRow{}
 	colTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column types: %w", err)
@@ -115,35 +122,45 @@ func (r *Repository) Query(ctx context.Context, projectID, datasetID, query stri
 		if err := rows.Scan(values...); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		cells := make([]*bigqueryv2.TableCell, 0, len(values))
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("failed to execute query: %w", err)
+		}
+		cells := make([]*internaltypes.TableCell, 0, len(values))
 		resultValues := make([]interface{}, 0, len(values))
 		for _, value := range values {
-			v := fmt.Sprint(reflect.ValueOf(value).Elem().Interface())
-			cells = append(cells, &bigqueryv2.TableCell{V: v})
+			v := reflect.ValueOf(value).Elem().Interface()
+			if v == nil {
+				cells = append(cells, &internaltypes.TableCell{V: nil})
+			} else {
+				cells = append(cells, &internaltypes.TableCell{V: fmt.Sprint(v)})
+			}
 			resultValues = append(resultValues, v)
 		}
 		result = append(result, resultValues)
-		tableRows = append(tableRows, &bigqueryv2.TableRow{
+		tableRows = append(tableRows, &internaltypes.TableRow{
 			F: cells,
 		})
 	}
 	log.Printf("rows: %v", result)
-	return &bigqueryv2.QueryResponse{
-		Rows: tableRows,
+	return &internaltypes.QueryResponse{
 		Schema: &bigqueryv2.TableSchema{
 			Fields: fields,
 		},
 		TotalRows:   uint64(len(tableRows)),
 		JobComplete: true,
+		Rows:        tableRows,
 	}, nil
 }
 
-func (r *Repository) CreateOrReplaceTable(ctx context.Context, projectID, datasetID string, table *types.Table) error {
-	conn, err := r.getConnection(ctx, projectID, datasetID)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
+func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
 		columns = append(columns,
@@ -154,50 +171,68 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, projectID, datase
 		"CREATE OR REPLACE TABLE `%s` (%s)",
 		table.ID, strings.Join(columns, ","),
 	)
-	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+	if _, err := tx.Tx().ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("failed to execute DDL %s: %w", ddl, err)
 	}
 	return nil
 }
 
-func (r *Repository) AddTableData(ctx context.Context, projectID, datasetID string, table *types.Table) error {
-	conn, err := r.getConnection(ctx, projectID, datasetID)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
+func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
+	if len(table.Data) == 0 {
+		return nil
 	}
-	defer conn.Close()
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	if err := tx.SetParameterMode(zetasql.ParameterPositional); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+		_ = tx.SetParameterMode(zetasql.ParameterNamed)
+	}()
+
+	var columns []string
+	for col := range table.Data[0] {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns)
+	rows := make([]string, 0, len(table.Data))
+	values := make([]interface{}, 0, len(table.Data)*len(columns))
 	for _, data := range table.Data {
-		columns := make([]string, 0, len(data))
-		values := make([]interface{}, 0, len(data))
-		params := make([]string, 0, len(data))
-		for k, v := range data {
-			columns = append(columns, fmt.Sprintf("`%s`", k))
-			values = append(values, v)
-			params = append(params, fmt.Sprintf("@%s", k))
+		placeholders := make([]string, 0, len(data))
+		for _, col := range columns {
+			values = append(values, data[col])
+			placeholders = append(placeholders, "?")
 		}
-		query := fmt.Sprintf(
-			"INSERT `%s` (%s) VALUES (%s)",
-			table.ID,
-			strings.Join(columns, ","),
-			strings.Join(params, ","),
-		)
-		if _, err := conn.ExecContext(ctx, query, values...); err != nil {
-			return fmt.Errorf("failed to insert data %s: %w", query, err)
-		}
+		rows = append(rows, fmt.Sprintf("(%s)", strings.Join(placeholders, ",")))
+	}
+	query := fmt.Sprintf(
+		"INSERT `%s` (%s) VALUES %s",
+		table.ID,
+		strings.Join(columns, ","),
+		strings.Join(rows, ","),
+	)
+	if _, err := tx.Tx().ExecContext(ctx, query, values...); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (r *Repository) DeleteTables(ctx context.Context, projectID, datasetID string, tableIDs []string) error {
-	conn, err := r.getConnection(ctx, projectID, datasetID)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
+func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tableIDs []string) error {
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+
 	for _, tableID := range tableIDs {
 		log.Printf("delete table %s", tableID)
 		query := fmt.Sprintf("DROP TABLE `%s`", tableID)
-		if _, err := conn.ExecContext(ctx, query); err != nil {
+		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to delete table %s: %w", query, err)
 		}
 	}
@@ -219,7 +254,16 @@ const (
 	LanguageTypeJavaScript RoutineLanguageType = "JavaScript"
 )
 
-func (r *Repository) AddRoutineByMetaData(ctx context.Context, routine *bigqueryv2.Routine) error {
+func (r *Repository) AddRoutineByMetaData(ctx context.Context, tx *connection.Tx, routine *bigqueryv2.Routine) error {
+	ref := routine.RoutineReference
+	tx.SetProjectAndDataset(ref.ProjectId, ref.DatasetId)
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+
 	var routineType string
 	switch RoutineType(routine.RoutineType) {
 	case ScalarFunctionType:
@@ -255,7 +299,6 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, routine *bigquery
 	if routine.DefinitionBody == "" {
 		return fmt.Errorf("invalid body: missing function body")
 	}
-	ref := routine.RoutineReference
 	query := fmt.Sprintf(
 		"%s `%s`(%s)%s AS (%s)",
 		routineType,
@@ -264,12 +307,7 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, routine *bigquery
 		retType,
 		routine.DefinitionBody,
 	)
-	conn, err := r.getConnection(ctx, ref.ProjectId, ref.DatasetId)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, query); err != nil {
+	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create function %s: %w", query, err)
 	}
 	return nil
