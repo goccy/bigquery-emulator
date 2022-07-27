@@ -6,10 +6,11 @@ require (
 	cloud.google.com/go/bigquery v1.32.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-yaml v1.9.5
-	github.com/goccy/go-zetasql v0.2.8
-	github.com/goccy/go-zetasqlite v0.4.0
+	github.com/goccy/go-zetasql v0.2.9
+	github.com/goccy/go-zetasqlite v0.4.1
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
+	golang.org/x/net v0.0.0-20220520000938-2e3eb7b945c2
 	google.golang.org/api v0.81.0
 )
 
@@ -20,6 +21,7 @@ require (
 	github.com/fatih/color v1.10.0 // indirect
 	github.com/go-playground/locales v0.14.0 // indirect
 	github.com/go-playground/universal-translator v0.18.0 // indirect
+	github.com/goccy/go-json v0.9.10 // indirect
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/go-cmp v0.5.8 // indirect
@@ -30,7 +32,6 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.14 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3 // indirect
-	golang.org/x/net v0.0.0-20220520000938-2e3eb7b945c2 // indirect
 	golang.org/x/oauth2 v0.0.0-20220411215720-9780585627b5 // indirect
 	golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a // indirect
 	golang.org/x/text v0.3.7 // indirect
