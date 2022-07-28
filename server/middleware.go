@@ -2,18 +2,20 @@ package server
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
+
+	"github.com/goccy/bigquery-emulator/internal/logger"
 )
 
-func recoveryMiddleware() func(http.Handler) http.Handler {
+func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					log.Printf("%+v", err)
+					s.logger.Error(fmt.Sprintf("%+v", err))
 					w.WriteHeader(http.StatusInternalServerError)
 					fmt.Fprintln(w, err)
 					return
@@ -24,14 +26,33 @@ func recoveryMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+func loggerMiddleware(s *Server) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			next.ServeHTTP(w, r.WithContext(logger.WithLogger(ctx, s.logger)))
+		})
+	}
+}
+
+func accessLogMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logger.Logger(r.Context()).Info(
+				fmt.Sprintf("%s %s", r.Method, r.URL.Path),
+				zap.String("query", r.URL.RawQuery),
+			)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func withServerMiddleware(s *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("%s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
-			ctx := r.Context()
 			next.ServeHTTP(
 				w,
-				r.WithContext(withServer(ctx, s)),
+				r.WithContext(withServer(r.Context(), s)),
 			)
 		})
 	}
@@ -106,7 +127,7 @@ func withProjectMiddleware() func(http.Handler) http.Handler {
 					return
 				}
 				if project == nil {
-					log.Printf("project %s is not found", projectID)
+					logger.Logger(ctx).Info("projectID is not found", zap.String("projectID", projectID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "project %s is not found", projectID)
 					return
@@ -131,7 +152,7 @@ func withDatasetMiddleware() func(http.Handler) http.Handler {
 				project := projectFromContext(ctx)
 				dataset := project.Dataset(datasetID)
 				if dataset == nil {
-					log.Printf("dataset %s is not found", datasetID)
+					logger.Logger(ctx).Info("dataset is not found", zap.String("datasetID", datasetID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "dataset %s is not found", datasetID)
 					return
@@ -156,7 +177,7 @@ func withJobMiddleware() func(http.Handler) http.Handler {
 				project := projectFromContext(ctx)
 				job := project.Job(jobID)
 				if job == nil {
-					log.Printf("job %s is not found", jobID)
+					logger.Logger(ctx).Info("job is not found", zap.String("jobID", jobID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "job %s is not found", jobID)
 					return
@@ -181,7 +202,7 @@ func withTableMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				table := dataset.Table(tableID)
 				if table == nil {
-					log.Printf("table %s is not found", tableID)
+					logger.Logger(ctx).Info("table is not found", zap.String("tableID", tableID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "table %s is not found", tableID)
 					return
@@ -206,7 +227,7 @@ func withModelMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				model := dataset.Model(modelID)
 				if model == nil {
-					log.Printf("model %s is not found", modelID)
+					logger.Logger(ctx).Info("model is not found", zap.String("modelID", modelID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "model %s is not found", modelID)
 					return
@@ -231,7 +252,7 @@ func withRoutineMiddleware() func(http.Handler) http.Handler {
 				dataset := datasetFromContext(ctx)
 				routine := dataset.Routine(routineID)
 				if routine == nil {
-					log.Printf("routine %s is not found", routineID)
+					logger.Logger(ctx).Info("routine is not found", zap.String("routineID", routineID))
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, "routine %s is not found", routineID)
 					return
