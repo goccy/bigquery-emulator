@@ -4,17 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"reflect"
 	"sort"
 	"strings"
 
-	"github.com/goccy/bigquery-emulator/internal/connection"
-	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
-	"github.com/goccy/bigquery-emulator/types"
 	"github.com/goccy/go-zetasql"
 	"github.com/goccy/go-zetasqlite"
+	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+
+	"github.com/goccy/bigquery-emulator/internal/connection"
+	"github.com/goccy/bigquery-emulator/internal/logger"
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
+	"github.com/goccy/bigquery-emulator/types"
 )
 
 type Repository struct {
@@ -89,10 +91,13 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		values = append(values, param.ParameterValue.Value)
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
-	log.Printf("query: %s. values: %v", query, values)
+	logger.Logger(ctx).Info(
+		"",
+		zap.String("query", query),
+		zap.Any("values", values),
+	)
 	rows, err := tx.Tx().QueryContext(ctx, query, values...)
 	if err != nil {
-		log.Printf("query error: %+v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -141,7 +146,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 			F: cells,
 		})
 	}
-	log.Printf("rows: %v", result)
+	logger.Logger(ctx).Debug("query result", zap.Any("rows", result))
 	return &internaltypes.QueryResponse{
 		Schema: &bigqueryv2.TableSchema{
 			Fields: fields,
@@ -230,7 +235,7 @@ func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projec
 	}()
 
 	for _, tableID := range tableIDs {
-		log.Printf("delete table %s", tableID)
+		logger.Logger(ctx).Debug("delete table", zap.String("tableID", tableID))
 		query := fmt.Sprintf("DROP TABLE `%s`", tableID)
 		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to delete table %s: %w", query, err)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/net/netutil"
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
@@ -20,14 +21,16 @@ import (
 )
 
 type Server struct {
-	Handler     http.Handler
-	storage     Storage
-	db          *sql.DB
-	connMgr     *connection.Manager
-	metaRepo    *metadata.Repository
-	contentRepo *contentdata.Repository
-	fileCleanup func() error
-	httpServer  *http.Server
+	Handler      http.Handler
+	storage      Storage
+	db           *sql.DB
+	loggerConfig *zap.Config
+	logger       *zap.Logger
+	connMgr      *connection.Manager
+	metaRepo     *metadata.Repository
+	contentRepo  *contentdata.Repository
+	fileCleanup  func() error
+	httpServer   *http.Server
 }
 
 func New(storage Storage) (*Server, error) {
@@ -48,6 +51,19 @@ func New(storage Storage) (*Server, error) {
 		return nil, err
 	}
 	server.db = db
+	server.loggerConfig = &zap.Config{
+		Level:             zap.NewAtomicLevelAt(zap.ErrorLevel),
+		Development:       false,
+		Encoding:          "console",
+		DisableStacktrace: true,
+		EncoderConfig:     zap.NewDevelopmentEncoderConfig(),
+		OutputPaths:       []string{"stderr"},
+		ErrorOutputPaths:  []string{"stderr"},
+	}
+	if _, err := server.loggerConfig.Build(); err != nil {
+		return nil, fmt.Errorf("invalid default logger config: %w", err)
+	}
+	server.logger = zap.NewNop()
 	metaRepo, err := metadata.NewRepository(db)
 	if err != nil {
 		return nil, err
@@ -65,7 +81,9 @@ func New(storage Storage) (*Server, error) {
 	r.Handle(uploadAPIEndpoint, &uploadHandler{}).Methods("POST")
 	r.Handle(uploadAPIEndpoint, &uploadContentHandler{}).Methods("PUT")
 	r.PathPrefix("/").Handler(&defaultHandler{})
-	r.Use(recoveryMiddleware())
+	r.Use(recoveryMiddleware(server))
+	r.Use(loggerMiddleware(server))
+	r.Use(accessLogMiddleware())
 	r.Use(withServerMiddleware(server))
 	r.Use(withProjectMiddleware())
 	r.Use(withDatasetMiddleware())
@@ -115,6 +133,66 @@ func (s *Server) SetProject(id string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	return nil
+}
+
+type LogLevel string
+
+const (
+	LogLevelUnknown LogLevel = "unknown"
+	LogLevelDebug   LogLevel = "debug"
+	LogLevelInfo    LogLevel = "info"
+	LogLevelWarn    LogLevel = "warn"
+	LogLevelError   LogLevel = "error"
+	LogLevelFatal   LogLevel = "fatal"
+)
+
+func (s *Server) SetLogLevel(level LogLevel) error {
+	var atomicLevel zap.AtomicLevel
+	switch level {
+	case LogLevelDebug:
+		atomicLevel = zap.NewAtomicLevelAt(zap.DebugLevel)
+	case LogLevelInfo:
+		atomicLevel = zap.NewAtomicLevelAt(zap.InfoLevel)
+	case LogLevelWarn:
+		atomicLevel = zap.NewAtomicLevelAt(zap.WarnLevel)
+	case LogLevelError:
+		atomicLevel = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	case LogLevelFatal:
+		atomicLevel = zap.NewAtomicLevelAt(zap.FatalLevel)
+	default:
+		return fmt.Errorf("unexpected log level %s", level)
+	}
+	s.loggerConfig.Level = atomicLevel
+	logger, err := s.loggerConfig.Build()
+	if err != nil {
+		return err
+	}
+	s.logger = logger
+	return nil
+}
+
+type LogFormat string
+
+const (
+	LogFormatConsole LogFormat = "console"
+	LogFormatJSON    LogFormat = "json"
+)
+
+func (s *Server) SetLogFormat(format LogFormat) error {
+	switch format {
+	case LogFormatConsole:
+		s.loggerConfig.Encoding = "console"
+	case LogFormatJSON:
+		s.loggerConfig.Encoding = "json"
+	default:
+		return fmt.Errorf("unexpected log format %s", format)
+	}
+	logger, err := s.loggerConfig.Build()
+	if err != nil {
+		return err
+	}
+	s.logger = logger
 	return nil
 }
 

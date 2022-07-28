@@ -10,15 +10,19 @@ import (
 	"syscall"
 
 	"github.com/goccy/bigquery-emulator/server"
+	"github.com/goccy/bigquery-emulator/types"
 	"github.com/jessevdk/go-flags"
 )
 
 type option struct {
-	Project      string `description:"specify the project name" long:"project"`
-	Port         uint16 `description:"specify the port number" long:"port" default:"9050"`
-	Database     string `description:"specify the database file" long:"database"`
-	DataFromYAML string `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
-	Version      bool   `description:"print version" long:"version" short:"v"`
+	Project      string           `description:"specify the project name" long:"project"`
+	Dataset      string           `description:"specify the dataset name" long:"dataset"`
+	Port         uint16           `description:"specify the port number" long:"port" default:"9050"`
+	LogLevel     server.LogLevel  `description:"specify the log level (debug/info/warn/error)" long:"log-level" default:"error"`
+	LogFormat    server.LogFormat `description:"sepcify the log format (console/json)" long:"log-format" default:"console"`
+	Database     string           `description:"specify the database file if required. if not specified, it will be on memory" long:"database"`
+	DataFromYAML string           `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
+	Version      bool             `description:"print version" long:"version" short:"v"`
 }
 
 type exitCode int
@@ -78,11 +82,24 @@ func runServer(args []string, opt option) error {
 	} else {
 		db = server.Storage(fmt.Sprintf("file:%s?cache=shared", opt.Database))
 	}
+	project := types.NewProject(opt.Project)
+	if opt.Dataset != "" {
+		project.Datasets = append(project.Datasets, types.NewDataset(opt.Dataset))
+	}
 	bqServer, err := server.New(db)
 	if err != nil {
 		return err
 	}
-	if err := bqServer.SetProject(opt.Project); err != nil {
+	if err := bqServer.SetProject(project.ID); err != nil {
+		return err
+	}
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		return err
+	}
+	if err := bqServer.SetLogLevel(opt.LogLevel); err != nil {
+		return err
+	}
+	if err := bqServer.SetLogFormat(opt.LogFormat); err != nil {
 		return err
 	}
 	if opt.DataFromYAML != "" {

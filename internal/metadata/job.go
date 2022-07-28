@@ -3,7 +3,7 @@ package metadata
 import (
 	"context"
 	"database/sql"
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,12 +29,13 @@ func (j *Job) QueryParameters() []*bigqueryv2.QueryParameter {
 	return j.content.Configuration.Query.QueryParameters
 }
 
-func (j *Job) SetResult(ctx context.Context, tx *sql.Tx, response *internaltypes.QueryResponse, err error) {
+func (j *Job) SetResult(ctx context.Context, tx *sql.Tx, response *internaltypes.QueryResponse, err error) error {
 	j.response = response
 	j.err = err
 	if err := j.repo.UpdateJob(ctx, tx, j); err != nil {
-		log.Printf("failed to update job: %s", err.Error())
+		return fmt.Errorf("failed to update job: %w", err)
 	}
+	return nil
 }
 
 func (j *Job) Content() *bigqueryv2.Job {
