@@ -39,8 +39,11 @@ Usage:
 
 Application Options:
       --project=        specify the project name
+      --dataset=        specify the dataset name
       --port=           specify the port number (default: 9050)
-      --database=       specify the database file
+      --log-level=      specify the log level (debug/info/warn/error) (default: error)
+      --log-format=     sepcify the log format (console/json) (default: console)
+      --database=       specify the database file if required. if not specified, it will be on memory
       --data-from-yaml= specify the path to the YAML file that contains the initial data
   -v, --version         print version
 
