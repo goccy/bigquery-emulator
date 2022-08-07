@@ -288,6 +288,32 @@ type uploadContentRequest struct {
 	reader  io.Reader
 }
 
+func (h *uploadContentHandler) getCandidateName(col string, columnNames []string) string {
+	var (
+		foundName  string
+		foundCount int
+	)
+	for _, name := range columnNames {
+		if strings.Contains(name, col) {
+			foundName = name
+			foundCount++
+		}
+	}
+	if foundCount == 1 {
+		return foundName
+	}
+	return ""
+}
+
+func (h *uploadContentHandler) existsColumnNameInCSVHeader(col string, header []string) bool {
+	for _, h := range header {
+		if col == h {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	sourceFormat := load.SourceFormat
@@ -316,20 +342,38 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		}
 		header := records[0]
 		columns := []*types.Column{}
+		var ignoreHeader bool
 		for _, col := range header {
+			if _, exists := columnToType[col]; !exists {
+				ignoreHeader = true
+				break
+			}
 			columns = append(columns, &types.Column{
 				Name: col,
 				Type: columnToType[col],
 			})
 		}
+		if ignoreHeader {
+			columns = []*types.Column{}
+			for _, field := range tableContent.Schema.Fields {
+				columns = append(columns, &types.Column{
+					Name: field.Name,
+					Type: types.Type(field.Type),
+				})
+			}
+		}
 		data := types.Data{}
 		for _, record := range records[1:] {
 			rowData := map[string]interface{}{}
-			for idx, colData := range record {
+			if len(record) != len(columns) {
+				return fmt.Errorf("invalid column number: found broken row data: %v", record)
+			}
+			for i := 0; i < len(record); i++ {
+				colData := record[i]
 				if colData == "" {
-					rowData[columns[idx].Name] = nil
+					rowData[columns[i].Name] = nil
 				} else {
-					rowData[columns[idx].Name] = colData
+					rowData[columns[i].Name] = colData
 				}
 			}
 			data = append(data, rowData)
