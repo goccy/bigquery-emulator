@@ -4,19 +4,19 @@ import bigqueryv2 "google.golang.org/api/bigquery/v2"
 
 type (
 	GetQueryResultsResponse struct {
-		JobReference *bigqueryv2.JobReference `json:"jobReference,omitempty"`
-		Schema       *bigqueryv2.TableSchema  `json:"schema,omitempty"`
-		Rows         []*TableRow              `json:"rows,omitempty"`
-		TotalRows    uint64                   `json:"totalRows,omitempty,string"`
-		JobComplete  bool                     `json:"jobComplete,omitempty"`
+		JobReference *bigqueryv2.JobReference `json:"jobReference"`
+		Schema       *bigqueryv2.TableSchema  `json:"schema"`
+		Rows         []*TableRow              `json:"rows"`
+		TotalRows    uint64                   `json:"totalRows,string"`
+		JobComplete  bool                     `json:"jobComplete"`
 	}
 
 	QueryResponse struct {
-		JobReference *bigqueryv2.JobReference `json:"jobReference,omitempty"`
-		Schema       *bigqueryv2.TableSchema  `json:"schema,omitempty"`
-		Rows         []*TableRow              `json:"rows,omitempty"`
-		TotalRows    uint64                   `json:"totalRows,omitempty,string"`
-		JobComplete  bool                     `json:"jobComplete,omitempty"`
+		JobReference *bigqueryv2.JobReference `json:"jobReference"`
+		Schema       *bigqueryv2.TableSchema  `json:"schema"`
+		Rows         []*TableRow              `json:"rows"`
+		TotalRows    uint64                   `json:"totalRows,string"`
+		JobComplete  bool                     `json:"jobComplete"`
 	}
 
 	TableRow struct {
