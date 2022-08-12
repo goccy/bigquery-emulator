@@ -849,6 +849,9 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	if r.job.Configuration.Query == nil {
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
+	if r.job.JobReference.JobId == "" {
+		r.job.JobReference.JobId = randomID() // generate job id
+	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -1020,9 +1023,13 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	jobID := r.queryRequest.RequestId
+	if jobID == "" {
+		jobID = randomID() // generate job id
+	}
 	response.JobReference = &bigqueryv2.JobReference{
 		ProjectId: r.project.ID,
-		JobId:     r.queryRequest.RequestId,
+		JobId:     jobID,
 	}
 	return response, nil
 }
