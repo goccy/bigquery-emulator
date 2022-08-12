@@ -15,6 +15,10 @@ type Table struct {
 	repo     *Repository
 }
 
+func (t *Table) Update(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
+	return t.repo.UpdateTable(ctx, tx, t)
+}
+
 func (t *Table) Insert(ctx context.Context, tx *sql.Tx) error {
 	return t.repo.AddTable(ctx, tx, t)
 }

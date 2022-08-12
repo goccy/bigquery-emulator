@@ -67,13 +67,30 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	}
 	fields := make([]string, 0, len(table.Schema.Fields))
 	for _, field := range table.Schema.Fields {
-		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, types.Type(field.Type).ZetaSQLTypeKind()))
+		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, r.encodeSchemaField(field)))
 	}
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", ref.TableId, strings.Join(fields, ","))
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", query, err)
 	}
 	return nil
+}
+
+func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) string {
+	var elem string
+	if field.Type == "RECORD" {
+		types := make([]string, 0, len(field.Fields))
+		for _, f := range field.Fields {
+			types = append(types, r.encodeSchemaField(f))
+		}
+		elem = fmt.Sprintf("STRUCT<%s>", strings.Join(types, ","))
+	} else {
+		elem = types.Type(field.Type).ZetaSQLTypeKind().String()
+	}
+	if field.Mode == "REPEATED" {
+		return fmt.Sprintf("ARRAY<%s>", elem)
+	}
+	return elem
 }
 
 func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*internaltypes.QueryResponse, error) {
@@ -101,26 +118,30 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		return nil, err
 	}
 	defer rows.Close()
+	colNames, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	columnTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
 	tableRows := []*internaltypes.TableRow{}
-	colTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column types: %w", err)
 	}
-	colNames, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-	for i := 0; i < len(colTypes); i++ {
+	for i := 0; i < len(columnTypes); i++ {
+		typeName := columnTypes[i].DatabaseTypeName()
 		fields = append(fields, &bigqueryv2.TableFieldSchema{
 			Name: colNames[i],
-			Type: string(types.Type(colTypes[i].DatabaseTypeName()).FieldType()),
+			Type: string(types.Type(typeName).FieldType()),
 		})
 	}
 
 	result := [][]interface{}{}
 	for rows.Next() {
-		values := make([]interface{}, 0, len(colNames))
-		for i := 0; i < len(colNames); i++ {
+		values := make([]interface{}, 0, len(columnTypes))
+		for i := 0; i < len(columnTypes); i++ {
 			var v interface{}
 			values = append(values, &v)
 		}
@@ -134,11 +155,11 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		resultValues := make([]interface{}, 0, len(values))
 		for _, value := range values {
 			v := reflect.ValueOf(value).Elem().Interface()
-			if v == nil {
-				cells = append(cells, &internaltypes.TableCell{V: nil})
-			} else {
-				cells = append(cells, &internaltypes.TableCell{V: fmt.Sprint(v)})
+			cell, err := r.convertValueToCell(v)
+			if err != nil {
+				return nil, err
 			}
+			cells = append(cells, cell)
 			resultValues = append(resultValues, v)
 		}
 		result = append(result, resultValues)
@@ -155,6 +176,47 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		JobComplete: true,
 		Rows:        tableRows,
 	}, nil
+}
+
+// zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.
+// we need to convert them to specifically TableRow and TableCell type.
+func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.TableCell, error) {
+	if value == nil {
+		return &internaltypes.TableCell{V: nil}, nil
+	}
+	rv := reflect.ValueOf(value)
+	kind := rv.Type().Kind()
+	if kind != reflect.Slice && kind != reflect.Array {
+		return &internaltypes.TableCell{V: fmt.Sprint(value)}, nil
+	}
+	elemType := rv.Type().Elem()
+	if elemType.Kind() == reflect.Map {
+		// value is struct type
+		var cells []*internaltypes.TableCell
+		for i := 0; i < rv.Len(); i++ {
+			fieldV := rv.Index(i)
+			keys := fieldV.MapKeys()
+			if len(keys) != 1 {
+				return nil, fmt.Errorf("unexpected key number of field map value. expected 1 but got %d", len(keys))
+			}
+			cell, err := r.convertValueToCell(fieldV.MapIndex(keys[0]).Interface())
+			if err != nil {
+				return nil, err
+			}
+			cells = append(cells, cell)
+		}
+		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}}, nil
+	}
+	// array type
+	var cells []*internaltypes.TableCell
+	for i := 0; i < rv.Len(); i++ {
+		cell, err := r.convertValueToCell(rv.Index(i).Interface())
+		if err != nil {
+			return nil, err
+		}
+		cells = append(cells, cell)
+	}
+	return &internaltypes.TableCell{V: cells}, nil
 }
 
 func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
@@ -213,10 +275,14 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		}
 		rows = append(rows, fmt.Sprintf("(%s)", strings.Join(placeholders, ",")))
 	}
+	columnsWithEscape := make([]string, 0, len(columns))
+	for _, col := range columns {
+		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", col))
+	}
 	query := fmt.Sprintf(
 		"INSERT `%s` (%s) VALUES %s",
 		table.ID,
-		strings.Join(columns, ","),
+		strings.Join(columnsWithEscape, ","),
 		strings.Join(rows, ","),
 	)
 	if _, err := tx.Tx().ExecContext(ctx, query, values...); err != nil {

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/bigquery"
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/goccy/bigquery-emulator/types"
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
@@ -247,6 +249,149 @@ func TestQuery(t *testing.T) {
 			t.Fatal(err)
 		}
 		fmt.Println("row = ", row)
+	}
+}
+
+type TableSchema struct {
+	Int      int
+	Str      string
+	Float    float64
+	Struct   *StructType
+	Array    []*StructType
+	IntArray []int
+}
+
+type StructType struct {
+	A int
+	B string
+	C float64
+}
+
+func (s *TableSchema) Save() (map[string]bigquery.Value, string, error) {
+	return map[string]bigquery.Value{
+		"Int":      s.Int,
+		"Str":      s.Str,
+		"Float":    s.Float,
+		"Struct":   s.Struct,
+		"Array":    s.Array,
+		"IntArray": s.IntArray,
+	}, "", nil
+}
+
+func TestTable(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		table1Name  = "table1"
+		table2Name  = "table2"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	table1 := client.Dataset(datasetName).Table(table1Name)
+	if err := table1.Create(ctx, nil); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	schema, err := bigquery.InferSchema(TableSchema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table2 := client.Dataset(datasetName).Table(table2Name)
+	if err := table2.Create(ctx, &bigquery.TableMetadata{
+		Name:           "table2",
+		Schema:         schema,
+		ExpirationTime: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tableIter := client.Dataset(datasetName).Tables(ctx)
+	var tableCount int
+	for {
+		if _, err := tableIter.Next(); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		tableCount++
+	}
+	if tableCount != 2 {
+		t.Fatalf("failed to get tables. expected 2 but got %d", tableCount)
+	}
+	insertRow := &TableSchema{
+		Int:   1,
+		Str:   "2",
+		Float: 3,
+		Struct: &StructType{
+			A: 4,
+			B: "5",
+			C: 6,
+		},
+		Array: []*StructType{
+			{
+				A: 7,
+				B: "8",
+				C: 9,
+			},
+		},
+		IntArray: []int{10},
+	}
+	if err := table2.Inserter().Put(ctx, []*TableSchema{insertRow}); err != nil {
+		t.Fatal(err)
+	}
+	iter := table2.Read(ctx)
+	var rows []*TableSchema
+	for {
+		var row TableSchema
+		if err := iter.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, &row)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("failed to get table data. got rows are %d", len(rows))
+	}
+	if diff := cmp.Diff(insertRow, rows[0]); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+
+	if _, err := table2.Update(ctx, bigquery.TableMetadataToUpdate{
+		Description: "updated table",
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := table2.Delete(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

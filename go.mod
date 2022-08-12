@@ -6,8 +6,9 @@ require (
 	cloud.google.com/go/bigquery v1.32.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-yaml v1.9.5
-	github.com/goccy/go-zetasql v0.3.0
-	github.com/goccy/go-zetasqlite v0.5.0
+	github.com/goccy/go-zetasql v0.3.1
+	github.com/goccy/go-zetasqlite v0.6.0
+	github.com/google/go-cmp v0.5.8
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
 	go.uber.org/zap v1.21.0
@@ -26,7 +27,6 @@ require (
 	github.com/goccy/go-json v0.9.10 // indirect
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
-	github.com/google/go-cmp v0.5.8 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/googleapis/gax-go/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.2.1 // indirect
