@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1538,8 +1539,104 @@ type tabledataInsertAllRequest struct {
 	req     *bigqueryv2.TableDataInsertAllRequest
 }
 
+func normalizeInsertValue(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	if field.Mode == "REPEATED" {
+		if kind != reflect.Slice && kind != reflect.Array {
+			return nil, fmt.Errorf("invalid value type %T for ARRAY column", v)
+		}
+		values := make([]interface{}, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			value, err := normalizeInsertValue(rv.Index(i).Interface(), &bigqueryv2.TableFieldSchema{
+				Fields: field.Fields,
+			})
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		}
+		return values, nil
+	}
+	if kind == reflect.Map {
+		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+		for _, f := range field.Fields {
+			fieldMap[f.Name] = f
+		}
+		columnNameToValueMap := map[string]interface{}{}
+		for _, key := range rv.MapKeys() {
+			if key.Kind() != reflect.String {
+				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
+			}
+			columnName := key.Interface().(string)
+			value, err := normalizeInsertValue(rv.MapIndex(key).Interface(), fieldMap[columnName])
+			if err != nil {
+				return nil, err
+			}
+			columnNameToValueMap[columnName] = value
+		}
+		fields := make([]map[string]interface{}, 0, len(fieldMap))
+		for _, f := range field.Fields {
+			value, exists := columnNameToValueMap[f.Name]
+			if !exists {
+				return nil, fmt.Errorf("failed to find value from %s", f.Name)
+			}
+			fields = append(fields, map[string]interface{}{f.Name: value})
+		}
+		return fields, nil
+	}
+	return v, nil
+}
+
 func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInsertAllRequest) (*bigqueryv2.TableDataInsertAllResponse, error) {
-	return nil, fmt.Errorf("unsupported bigquery.tabledata.insertAll")
+	content, err := r.table.Content()
+	if err != nil {
+		return nil, err
+	}
+	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+	for _, field := range content.Schema.Fields {
+		nameToFieldMap[field.Name] = field
+	}
+	data := types.Data{}
+	for _, row := range r.req.Rows {
+		rowData := map[string]interface{}{}
+		for k, v := range row.Json {
+			field, exists := nameToFieldMap[k]
+			if !exists {
+				return nil, fmt.Errorf("unknown column name %s", k)
+			}
+			if field.Type == "RECORD" {
+				value, err := normalizeInsertValue(v, field)
+				if err != nil {
+					return nil, err
+				}
+				rowData[k] = value
+			} else {
+				rowData[k] = v
+			}
+		}
+		data = append(data, rowData)
+	}
+	tableDef := &types.Table{
+		ID:   r.table.ID,
+		Data: data,
+	}
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &bigqueryv2.TableDataInsertAllResponse{}, nil
 }
 
 func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1568,8 +1665,31 @@ type tabledataListRequest struct {
 	table   *metadata.Table
 }
 
-func (h *tabledataListHandler) Handle(ctx context.Context, r *tabledataListRequest) (*bigqueryv2.TableDataList, error) {
-	return nil, fmt.Errorf("unsupported bigquery.tabledata.list")
+func (h *tabledataListHandler) Handle(ctx context.Context, r *tabledataListRequest) (*internaltypes.TableDataList, error) {
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.RollbackIfNotCommitted()
+	response, err := r.server.contentRepo.Query(
+		ctx,
+		tx,
+		r.project.ID,
+		r.dataset.ID,
+		fmt.Sprintf("SELECT * FROM `%s`", r.table.ID),
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &internaltypes.TableDataList{
+		Rows:      response.Rows,
+		TotalRows: response.TotalRows,
+	}, nil
 }
 
 func (h *tablesDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1596,7 +1716,22 @@ type tablesDeleteRequest struct {
 }
 
 func (h *tablesDeleteHandler) Handle(ctx context.Context, r *tablesDeleteRequest) error {
-	return fmt.Errorf("unsupported bigquery.tables.delete")
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.table.Delete(ctx, tx.Tx()); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h *tablesGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1710,8 +1845,10 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
-		return nil, err
+	if r.table.Schema != nil {
+		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			return nil, err
+		}
 	}
 	if err := r.dataset.AddTable(
 		ctx,
@@ -1757,7 +1894,21 @@ type tablesListRequest struct {
 }
 
 func (h *tablesListHandler) Handle(ctx context.Context, r *tablesListRequest) (*bigqueryv2.TableList, error) {
-	return nil, fmt.Errorf("bigquery.tables.list")
+	var tables []*bigqueryv2.TableListTables
+	for _, tableID := range r.dataset.TableIDs() {
+		tables = append(tables, &bigqueryv2.TableListTables{
+			Id: tableID,
+			TableReference: &bigqueryv2.TableReference{
+				ProjectId: r.project.ID,
+				DatasetId: r.dataset.ID,
+				TableId:   tableID,
+			},
+		})
+	}
+	return &bigqueryv2.TableList{
+		Tables:     tables,
+		TotalItems: int64(len(tables)),
+	}, nil
 }
 
 func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1766,11 +1917,17 @@ func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
 	table := tableFromContext(ctx)
+	var newTable bigqueryv2.Table
+	if err := json.NewDecoder(r.Body).Decode(&newTable); err != nil {
+		writeBadRequest(ctx, w, err)
+		return
+	}
 	res, err := h.Handle(ctx, &tablesPatchRequest{
-		server:  server,
-		project: project,
-		dataset: dataset,
-		table:   table,
+		server:   server,
+		project:  project,
+		dataset:  dataset,
+		table:    table,
+		newTable: &newTable,
 	})
 	if err != nil {
 		writeInternalError(ctx, w, err)
@@ -1780,14 +1937,39 @@ func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type tablesPatchRequest struct {
-	server  *Server
-	project *metadata.Project
-	dataset *metadata.Dataset
-	table   *metadata.Table
+	server   *Server
+	project  *metadata.Project
+	dataset  *metadata.Dataset
+	table    *metadata.Table
+	newTable *bigqueryv2.Table
 }
 
 func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	return nil, fmt.Errorf("unsupported bigquery.tables.patch")
+	encodedTableData, err := json.Marshal(r.newTable)
+	if err != nil {
+		return nil, err
+	}
+	var tableMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+		return nil, err
+	}
+
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r.newTable, nil
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

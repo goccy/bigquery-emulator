@@ -19,6 +19,11 @@ type (
 		JobComplete  bool                     `json:"jobComplete"`
 	}
 
+	TableDataList struct {
+		Rows      []*TableRow `json:"rows"`
+		TotalRows uint64      `json:"totalRows,string"`
+	}
+
 	TableRow struct {
 		F []*TableCell `json:"f,omitempty"`
 	}
