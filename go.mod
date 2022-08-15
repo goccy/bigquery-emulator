@@ -6,8 +6,8 @@ require (
 	cloud.google.com/go/bigquery v1.32.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-yaml v1.9.5
-	github.com/goccy/go-zetasql v0.3.1
-	github.com/goccy/go-zetasqlite v0.6.0
+	github.com/goccy/go-zetasql v0.3.2
+	github.com/goccy/go-zetasqlite v0.6.1
 	github.com/google/go-cmp v0.5.8
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
