@@ -81,11 +81,47 @@ $ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT * FROM dataset1.t
 +----+-------+
 ```
 
+## How to use from python client
+
+### 1. Start the standalone server
+
+```console
+$ ./bigquery-emulator --project=test --dataset=dataset1
+[bigquery-emulator] listening at 0.0.0.0:9050
+```
+
+### 2. Call endpoint from python client
+
+Create ClientOptions with api_endpoint option and use AnonymousCredentials to disable authentication.
+
+```python
+from google.api_core.client_options import ClientOptions
+from google.auth.credentials import AnonymousCredentials
+from google.cloud import bigquery
+from google.cloud.bigquery import QueryJobConfig
+
+client_options = ClientOptions(api_endpoint="http://0.0.0.0:9050")
+client = bigquery.Client(
+  "test",
+  client_options=client_options,
+  credentials=AnonymousCredentials(),
+)
+client.query(query="...", job_config=QueryJobConfig())
+```
+
+If you use a DataFrame as the download destination for the query results,
+you have to disable BigQueryStorage client by `create_bqstorage_client=False`.
+
+https://cloud.google.com/bigquery/docs/samples/bigquery-query-results-dataframe?hl=en
+
+```python
+result = client.query(sql).to_dataframe(create_bqstorage_client=False)
+```
+
 # Status
 
-The BigQuery emulator is still under development.
-Many features are not yet supported.  
-See [here](https://github.com/goccy/go-zetasqlite#status) for details on currently available queries.
+BigQuery emulator supports many queries. See here for details.  
+https://github.com/goccy/go-zetasqlite#status
 
 # Synopsis
 
