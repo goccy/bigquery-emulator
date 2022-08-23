@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-zetasql"
+	zetasqltypes "github.com/goccy/go-zetasql/types"
 	"github.com/goccy/go-zetasqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -93,6 +94,39 @@ func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) strin
 	return elem
 }
 
+func (r *Repository) zetasqlTypeToTableFieldSchema(name string, t zetasqltypes.Type) *bigqueryv2.TableFieldSchema {
+	kind := t.Kind()
+	typ := string(types.TypeFromKind(int(kind)).FieldType())
+	switch kind {
+	case zetasqltypes.ARRAY:
+		at := t.AsArray()
+		elem := r.zetasqlTypeToTableFieldSchema("", at.ElementType())
+		return &bigqueryv2.TableFieldSchema{
+			Name:   name,
+			Type:   elem.Type,
+			Fields: elem.Fields,
+			Mode:   "REPEATED",
+		}
+	case zetasqltypes.STRUCT:
+		st := t.AsStruct()
+		fieldNum := st.NumFields()
+		fields := make([]*bigqueryv2.TableFieldSchema, 0, fieldNum)
+		for i := 0; i < st.NumFields(); i++ {
+			field := st.Field(i)
+			fields = append(fields, r.zetasqlTypeToTableFieldSchema(field.Name(), field.Type()))
+		}
+		return &bigqueryv2.TableFieldSchema{
+			Name:   name,
+			Type:   typ,
+			Fields: fields,
+		}
+	}
+	return &bigqueryv2.TableFieldSchema{
+		Name: name,
+		Type: typ,
+	}
+}
+
 func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*internaltypes.QueryResponse, error) {
 	tx.SetProjectAndDataset(projectID, datasetID)
 	if err := tx.ContentRepoMode(); err != nil {
@@ -131,11 +165,15 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		return nil, fmt.Errorf("failed to get column types: %w", err)
 	}
 	for i := 0; i < len(columnTypes); i++ {
-		typeName := columnTypes[i].DatabaseTypeName()
-		fields = append(fields, &bigqueryv2.TableFieldSchema{
-			Name: colNames[i],
-			Type: string(types.Type(typeName).FieldType()),
-		})
+		typ, err := zetasqlite.UnmarshalDatabaseTypeName(columnTypes[i].DatabaseTypeName())
+		if err != nil {
+			return nil, err
+		}
+		zetasqlType, err := typ.ToZetaSQLType()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, r.zetasqlTypeToTableFieldSchema(colNames[i], zetasqlType))
 	}
 
 	result := [][]interface{}{}

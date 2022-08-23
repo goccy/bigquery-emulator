@@ -1732,8 +1732,19 @@ func (h *tablesDeleteHandler) Handle(ctx context.Context, r *tablesDeleteRequest
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
+	// delete table metadata
 	if err := r.table.Delete(ctx, tx.Tx()); err != nil {
 		return err
+	}
+	// delete table
+	if err := r.server.contentRepo.DeleteTables(
+		ctx,
+		tx,
+		r.project.ID,
+		r.dataset.ID,
+		[]string{r.table.ID},
+	); err != nil {
+		return fmt.Errorf("failed to delete table %s: %w", r.table.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
