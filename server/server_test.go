@@ -15,6 +15,52 @@ import (
 	"google.golang.org/api/option"
 )
 
+func TestSimpleQuery(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		"test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	t.Run("array", func(t *testing.T) {
+		query := client.Query("SELECT [1, 2, 3] as a")
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			fmt.Println("row = ", row)
+		}
+	})
+}
+
 func TestDataset(t *testing.T) {
 	ctx := context.Background()
 
@@ -393,6 +439,14 @@ func TestTable(t *testing.T) {
 	if err := table2.Delete(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// recreate table2
+	if err := table2.Create(ctx, &bigquery.TableMetadata{
+		Name:           "table2",
+		Schema:         schema,
+		ExpirationTime: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDataFromStruct(t *testing.T) {
@@ -469,6 +523,137 @@ func TestDataFromStruct(t *testing.T) {
 			t.Fatal(err)
 		}
 		fmt.Println("row = ", row)
+	}
+}
+
+func TestMultiDatasets(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName  = "test"
+		datasetName1 = "dataset1"
+		datasetName2 = "dataset2"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectName,
+				types.NewDataset(
+					"dataset1",
+					types.NewTable(
+						"a",
+						[]*types.Column{
+							types.NewColumn("id", types.INTEGER),
+							types.NewColumn("name1", types.STRING),
+						},
+						types.Data{
+							{
+								"id":    1,
+								"name1": "alice",
+							},
+						},
+					),
+				),
+				types.NewDataset(
+					"dataset2",
+					types.NewTable(
+						"a",
+						[]*types.Column{
+							types.NewColumn("id", types.INTEGER),
+							types.NewColumn("name2", types.STRING),
+						},
+						types.Data{
+							{
+								"id":    1,
+								"name2": "bob",
+							},
+						},
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	{
+		query := client.Query("SELECT * FROM `test.dataset1.a` WHERE id = @id")
+		query.QueryConfig.Parameters = []bigquery.QueryParameter{
+			{Name: "id", Value: 1},
+		}
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			fmt.Println("row = ", row)
+		}
+	}
+	{
+		query := client.Query("SELECT * FROM `test.dataset2.a` WHERE id = @id")
+		query.QueryConfig.Parameters = []bigquery.QueryParameter{
+			{Name: "id", Value: 1},
+		}
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			fmt.Println("row = ", row)
+		}
+	}
+	{
+		query := client.Query("SELECT name1 FROM `test.dataset2.a` WHERE id = @id")
+		query.QueryConfig.Parameters = []bigquery.QueryParameter{
+			{Name: "id", Value: 1},
+		}
+		if _, err := query.Read(ctx); err == nil {
+			t.Fatal("expected error")
+		}
+	}
+	{
+		table := client.Dataset(datasetName1).Table("a")
+		if table.DatasetID != datasetName1 {
+			t.Fatalf("failed to get table")
+		}
+		if table.TableID != "a" {
+			t.Fatalf("failed to get table")
+		}
 	}
 }
 
