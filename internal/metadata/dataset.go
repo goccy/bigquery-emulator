@@ -11,6 +11,7 @@ import (
 
 type Dataset struct {
 	ID         string
+	ProjectID  string
 	tables     []*Table
 	tableMap   map[string]*Table
 	models     []*Model
@@ -187,7 +188,8 @@ func (d *Dataset) Routines() []*Routine {
 
 func NewDataset(
 	repo *Repository,
-	id string,
+	projectID string,
+	datasetID string,
 	content *bigqueryv2.Dataset,
 	tables []*Table,
 	models []*Model,
@@ -207,7 +209,8 @@ func NewDataset(
 	}
 
 	return &Dataset{
-		ID:         id,
+		ID:         datasetID,
+		ProjectID:  projectID,
 		tables:     tables,
 		tableMap:   tableMap,
 		models:     models,

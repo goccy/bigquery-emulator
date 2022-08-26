@@ -235,7 +235,7 @@ func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*bigquery
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
-	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
+	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
 	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
 		return nil, fmt.Errorf("failed to add job: %w", err)
 	}
@@ -534,6 +534,7 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 		tx.Tx(),
 		metadata.NewDataset(
 			r.server.metaRepo,
+			r.project.ID,
 			datasetID,
 			r.dataset,
 			nil,
@@ -861,7 +862,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
-	job := metadata.NewJob(r.server.metaRepo, r.job.JobReference.JobId, r.job, nil, nil)
+	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, r.job, nil, nil)
 	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
 		return nil, fmt.Errorf("failed to add job: %w", err)
 	}
@@ -1873,6 +1874,8 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		tx.Tx(),
 		metadata.NewTable(
 			r.server.metaRepo,
+			r.project.ID,
+			r.dataset.ID,
 			r.table.TableReference.TableId,
 			tableMetadata,
 		),

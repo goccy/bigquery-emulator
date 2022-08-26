@@ -1,10 +1,12 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"cloud.google.com/go/bigquery"
 	"github.com/goccy/go-zetasql/types"
+	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
 type Project struct {
@@ -318,10 +320,25 @@ func NewDataset(id string, tables ...*Table) *Dataset {
 }
 
 func NewTable(id string, columns []*Column, data Data) *Table {
+	fields := make([]*bigqueryv2.TableFieldSchema, len(columns))
+	for i, col := range columns {
+		fields[i] = &bigqueryv2.TableFieldSchema{
+			Name: col.Name,
+			Type: string(col.Type.FieldType()),
+		}
+	}
+	encodedTableData, _ := json.Marshal(&bigqueryv2.Table{
+		Schema: &bigqueryv2.TableSchema{
+			Fields: fields,
+		},
+	})
+	var tableMetadata map[string]interface{}
+	_ = json.Unmarshal(encodedTableData, &tableMetadata)
 	return &Table{
-		ID:      id,
-		Columns: columns,
-		Data:    data,
+		ID:       id,
+		Columns:  columns,
+		Data:     data,
+		Metadata: tableMetadata,
 	}
 }
 

@@ -526,6 +526,18 @@ func TestDataFromStruct(t *testing.T) {
 	}
 }
 
+type dataset2Table struct {
+	ID    int64
+	Name2 string
+}
+
+func (t *dataset2Table) Save() (map[string]bigquery.Value, string, error) {
+	return map[string]bigquery.Value{
+		"id":    t.ID,
+		"name2": t.Name2,
+	}, "", nil
+}
+
 func TestMultiDatasets(t *testing.T) {
 	ctx := context.Background()
 
@@ -645,6 +657,12 @@ func TestMultiDatasets(t *testing.T) {
 		if _, err := query.Read(ctx); err == nil {
 			t.Fatal("expected error")
 		}
+	}
+	if err := client.Dataset(datasetName2).Table("a").Inserter().Put(
+		ctx,
+		[]*dataset2Table{{ID: 3, Name2: "name3"}},
+	); err != nil {
+		t.Fatal(err)
 	}
 	{
 		table := client.Dataset(datasetName1).Table("a")

@@ -10,9 +10,11 @@ import (
 )
 
 type Table struct {
-	ID       string
-	metadata map[string]interface{}
-	repo     *Repository
+	ID        string
+	ProjectID string
+	DatasetID string
+	metadata  map[string]interface{}
+	repo      *Repository
 }
 
 func (t *Table) Update(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
@@ -39,10 +41,12 @@ func (t *Table) Content() (*bigqueryv2.Table, error) {
 	return &v, nil
 }
 
-func NewTable(repo *Repository, id string, metadata map[string]interface{}) *Table {
+func NewTable(repo *Repository, projectID, datasetID, tableID string, metadata map[string]interface{}) *Table {
 	return &Table{
-		ID:       id,
-		metadata: metadata,
-		repo:     repo,
+		ID:        tableID,
+		ProjectID: projectID,
+		DatasetID: datasetID,
+		metadata:  metadata,
+		repo:      repo,
 	}
 }
