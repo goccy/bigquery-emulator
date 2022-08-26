@@ -13,6 +13,7 @@ import (
 
 type Job struct {
 	ID        string
+	ProjectID string
 	content   *bigqueryv2.Job
 	response  *internaltypes.QueryResponse
 	err       error
@@ -51,7 +52,7 @@ func (j *Job) Wait(ctx context.Context) (*internaltypes.QueryResponse, error) {
 	for {
 		select {
 		case <-ticker.C:
-			foundJob, err := j.repo.FindJob(ctx, j.ID)
+			foundJob, err := j.repo.FindJob(ctx, j.ProjectID, j.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -77,12 +78,13 @@ func (j *Job) Delete(ctx context.Context, tx *sql.Tx) error {
 	return j.repo.DeleteJob(ctx, tx, j)
 }
 
-func NewJob(repo *Repository, id string, content *bigqueryv2.Job, response *internaltypes.QueryResponse, err error) *Job {
+func NewJob(repo *Repository, projectID, jobID string, content *bigqueryv2.Job, response *internaltypes.QueryResponse, err error) *Job {
 	return &Job{
-		ID:       id,
-		content:  content,
-		response: response,
-		err:      err,
-		repo:     repo,
+		ID:        jobID,
+		ProjectID: projectID,
+		content:   content,
+		response:  response,
+		err:       err,
+		repo:      repo,
 	}
 }

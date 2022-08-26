@@ -22,14 +22,16 @@ CREATE TABLE IF NOT EXISTS projects (
 )`,
 	`
 CREATE TABLE IF NOT EXISTS jobs (
-  id       STRING NOT NULL,
-  metadata STRING,
-  result   STRING,
-  error    STRING
+  id        STRING NOT NULL,
+  projectID STRING NOT NULL,
+  metadata  STRING,
+  result    STRING,
+  error     STRING
 )`,
 	`
 CREATE TABLE IF NOT EXISTS datasets (
   id         STRING NOT NULL,
+  projectID  STRING NOT NULL,
   tableIDs   ARRAY<STRING>,
   modelIDs   ARRAY<STRING>,
   routineIDs ARRAY<STRING>,
@@ -37,18 +39,24 @@ CREATE TABLE IF NOT EXISTS datasets (
 )`,
 	`
 CREATE TABLE IF NOT EXISTS tables (
-  id       STRING NOT NULL,
-  metadata STRING
+  id        STRING NOT NULL,
+  projectID STRING NOT NULL,
+  datasetID STRING NOT NULL,
+  metadata  STRING
 )`,
 	`
 CREATE TABLE IF NOT EXISTS models (
-  id       STRING NOT NULL,
-  metadata STRING
+  id        STRING NOT NULL,
+  projectID STRING NOT NULL,
+  datasetID STRING NOT NULL,
+  metadata  STRING
 )`,
 	`
 CREATE TABLE IF NOT EXISTS routines (
-  id       STRING NOT NULL,
-  metadata STRING
+  id        STRING NOT NULL,
+  projectID STRING NOT NULL,
+  datasetID STRING NOT NULL,
+  metadata  STRING
 )`,
 }
 
@@ -93,45 +101,45 @@ func (r *Repository) getConnection(ctx context.Context) (*sql.Conn, error) {
 func (r *Repository) ProjectFromData(data *types.Project) *Project {
 	datasets := make([]*Dataset, 0, len(data.Datasets))
 	for _, ds := range data.Datasets {
-		datasets = append(datasets, r.DatasetFromData(ds))
+		datasets = append(datasets, r.DatasetFromData(data.ID, ds))
 	}
 	jobs := make([]*Job, 0, len(data.Jobs))
 	for _, j := range data.Jobs {
-		jobs = append(jobs, r.JobFromData(j))
+		jobs = append(jobs, r.JobFromData(data.ID, j))
 	}
 	return NewProject(r, data.ID, datasets, jobs)
 }
 
-func (r *Repository) DatasetFromData(data *types.Dataset) *Dataset {
+func (r *Repository) DatasetFromData(projectID string, data *types.Dataset) *Dataset {
 	tables := make([]*Table, 0, len(data.Tables))
 	for _, table := range data.Tables {
-		tables = append(tables, r.TableFromData(table))
+		tables = append(tables, r.TableFromData(projectID, data.ID, table))
 	}
 	models := make([]*Model, 0, len(data.Models))
 	for _, model := range data.Models {
-		models = append(models, r.ModelFromData(model))
+		models = append(models, r.ModelFromData(projectID, data.ID, model))
 	}
 	routines := make([]*Routine, 0, len(data.Routines))
 	for _, routine := range data.Routines {
-		routines = append(routines, r.RoutineFromData(routine))
+		routines = append(routines, r.RoutineFromData(projectID, data.ID, routine))
 	}
-	return NewDataset(r, data.ID, nil, tables, models, routines)
+	return NewDataset(r, projectID, data.ID, nil, tables, models, routines)
 }
 
-func (r *Repository) JobFromData(data *types.Job) *Job {
-	return NewJob(r, data.ID, nil, nil, nil)
+func (r *Repository) JobFromData(projectID string, data *types.Job) *Job {
+	return NewJob(r, projectID, data.ID, nil, nil, nil)
 }
 
-func (r *Repository) TableFromData(data *types.Table) *Table {
-	return NewTable(r, data.ID, data.Metadata)
+func (r *Repository) TableFromData(projectID, datasetID string, data *types.Table) *Table {
+	return NewTable(r, projectID, datasetID, data.ID, data.Metadata)
 }
 
-func (r *Repository) ModelFromData(data *types.Model) *Model {
-	return NewModel(r, data.ID, data.Metadata)
+func (r *Repository) ModelFromData(projectID, datasetID string, data *types.Model) *Model {
+	return NewModel(r, projectID, datasetID, data.ID, data.Metadata)
 }
 
-func (r *Repository) RoutineFromData(data *types.Routine) *Routine {
-	return NewRoutine(r, data.ID, data.Metadata)
+func (r *Repository) RoutineFromData(projectID, datasetID string, data *types.Routine) *Routine {
+	return NewRoutine(r, projectID, datasetID, data.ID, data.Metadata)
 }
 
 func (r *Repository) FindProjectWithConn(ctx context.Context, tx *sql.Tx, id string) (*Project, error) {
@@ -181,22 +189,22 @@ func (r *Repository) findProjects(ctx context.Context, tx *sql.Tx, ids []string)
 	projects := []*Project{}
 	for rows.Next() {
 		var (
-			id         string
+			projectID  string
 			datasetIDs []string
 			jobIDs     []string
 		)
-		if err := rows.Scan(&id, &datasetIDs, &jobIDs); err != nil {
+		if err := rows.Scan(&projectID, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.findDatasets(ctx, tx, datasetIDs)
+		datasets, err := r.findDatasets(ctx, tx, projectID, datasetIDs)
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.findJobs(ctx, tx, jobIDs)
+		jobs, err := r.findJobs(ctx, tx, projectID, jobIDs)
 		if err != nil {
 			return nil, err
 		}
-		projects = append(projects, NewProject(r, id, datasets, jobs))
+		projects = append(projects, NewProject(r, projectID, datasets, jobs))
 	}
 	return projects, nil
 }
@@ -223,22 +231,22 @@ func (r *Repository) FindAllProjects(ctx context.Context) ([]*Project, error) {
 	projects := []*Project{}
 	for rows.Next() {
 		var (
-			id         string
+			projectID  string
 			datasetIDs []string
 			jobIDs     []string
 		)
-		if err := rows.Scan(&id, &datasetIDs, &jobIDs); err != nil {
+		if err := rows.Scan(&projectID, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.findDatasets(ctx, tx, datasetIDs)
+		datasets, err := r.findDatasets(ctx, tx, projectID, datasetIDs)
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.findJobs(ctx, tx, jobIDs)
+		jobs, err := r.findJobs(ctx, tx, projectID, jobIDs)
 		if err != nil {
 			return nil, err
 		}
-		projects = append(projects, NewProject(r, id, datasets, jobs))
+		projects = append(projects, NewProject(r, projectID, datasets, jobs))
 	}
 	return projects, nil
 }
@@ -285,7 +293,7 @@ func (r *Repository) DeleteProject(ctx context.Context, tx *sql.Tx, project *Pro
 	return nil
 }
 
-func (r *Repository) FindJob(ctx context.Context, id string) (*Job, error) {
+func (r *Repository) FindJob(ctx context.Context, projectID, jobID string) (*Job, error) {
 	conn, err := r.getConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -296,21 +304,26 @@ func (r *Repository) FindJob(ctx context.Context, id string) (*Job, error) {
 		return nil, err
 	}
 	defer tx.Commit()
-	jobs, err := r.findJobs(ctx, tx, []string{id})
+	jobs, err := r.findJobs(ctx, tx, projectID, []string{jobID})
 	if err != nil {
 		return nil, err
 	}
 	if len(jobs) != 1 {
 		return nil, nil
 	}
-	if jobs[0].ID != id {
+	if jobs[0].ID != jobID {
 		return nil, nil
 	}
 	return jobs[0], nil
 }
 
-func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, ids []string) ([]*Job, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT id, metadata, result, error FROM jobs WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, projectID string, jobIDs []string) ([]*Job, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		"SELECT id, projectID, metadata, result, error FROM jobs WHERE projectID = @projectID AND id IN UNNEST(@jobIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("jobIDs", jobIDs),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -318,12 +331,13 @@ func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, ids []string) ([]
 	jobs := []*Job{}
 	for rows.Next() {
 		var (
-			id       string
-			metadata string
-			result   string
-			jobErr   string
+			jobID     string
+			projectID string
+			metadata  string
+			result    string
+			jobErr    string
 		)
-		if err := rows.Scan(&id, &metadata, &result, &jobErr); err != nil {
+		if err := rows.Scan(&jobID, &projectID, &metadata, &result, &jobErr); err != nil {
 			return nil, err
 		}
 		var content bigqueryv2.Job
@@ -344,7 +358,7 @@ func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, ids []string) ([]
 		}
 		jobs = append(
 			jobs,
-			NewJob(r, id, &content, &response, resErr),
+			NewJob(r, projectID, jobID, &content, &response, resErr),
 		)
 	}
 	return jobs, nil
@@ -364,8 +378,9 @@ func (r *Repository) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
 		jobErr = job.err.Error()
 	}
 	if _, err := tx.Exec(
-		"INSERT jobs (id, metadata, result, error) VALUES (@id, @metadata, @result, @error)",
+		"INSERT jobs (id, projectID, metadata, result, error) VALUES (@id, @projectID, @metadata, @result, @error)",
 		sql.Named("id", job.ID),
+		sql.Named("projectID", job.ProjectID),
 		sql.Named("metadata", metadata),
 		sql.Named("result", result),
 		sql.Named("error", jobErr),
@@ -389,8 +404,9 @@ func (r *Repository) UpdateJob(ctx context.Context, tx *sql.Tx, job *Job) error 
 		jobErr = job.err.Error()
 	}
 	if _, err := tx.Exec(
-		"UPDATE jobs SET metadata = @metadata, result = @result, error = @error WHERE id = @id",
+		"UPDATE jobs SET metadata = @metadata, result = @result, error = @error WHERE projectID = @projectID AND id = @id",
 		sql.Named("id", job.ID),
+		sql.Named("projectID", job.ProjectID),
 		sql.Named("metadata", metadata),
 		sql.Named("result", result),
 		sql.Named("error", jobErr),
@@ -401,13 +417,17 @@ func (r *Repository) UpdateJob(ctx context.Context, tx *sql.Tx, job *Job) error 
 }
 
 func (r *Repository) DeleteJob(ctx context.Context, tx *sql.Tx, job *Job) error {
-	if _, err := tx.Exec("DELETE FROM jobs WHERE id = @id", job.ID); err != nil {
+	if _, err := tx.Exec(
+		"DELETE FROM jobs WHERE projectID = @projectID AND id = @id",
+		job.ProjectID,
+		job.ID,
+	); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *Repository) FindDataset(ctx context.Context, id string) (*Dataset, error) {
+func (r *Repository) FindDataset(ctx context.Context, projectID, datasetID string) (*Dataset, error) {
 	conn, err := r.getConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -418,23 +438,24 @@ func (r *Repository) FindDataset(ctx context.Context, id string) (*Dataset, erro
 		return nil, err
 	}
 	defer tx.Commit()
-	datasets, err := r.findDatasets(ctx, tx, []string{id})
+	datasets, err := r.findDatasets(ctx, tx, projectID, []string{datasetID})
 	if err != nil {
 		return nil, err
 	}
 	if len(datasets) != 1 {
 		return nil, nil
 	}
-	if datasets[0].ID != id {
+	if datasets[0].ID != datasetID {
 		return nil, nil
 	}
 	return datasets[0], nil
 }
 
-func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, ids []string) ([]*Dataset, error) {
+func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) ([]*Dataset, error) {
 	rows, err := tx.QueryContext(ctx,
-		"SELECT id, tableIDs, modelIDs, routineIDs, metadata FROM datasets WHERE id IN UNNEST(@ids)",
-		ids,
+		"SELECT id, projectID, tableIDs, modelIDs, routineIDs, metadata FROM datasets WHERE projectID = @projectID AND id IN UNNEST(@datasetIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetIDs", datasetIDs),
 	)
 	if err != nil {
 		return nil, err
@@ -444,24 +465,25 @@ func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, ids []string)
 	datasets := []*Dataset{}
 	for rows.Next() {
 		var (
-			id         string
+			datasetID  string
+			projectID  string
 			tableIDs   []string
 			modelIDs   []string
 			routineIDs []string
 			metadata   string
 		)
-		if err := rows.Scan(&id, &tableIDs, &modelIDs, &routineIDs, &metadata); err != nil {
+		if err := rows.Scan(&datasetID, &projectID, &tableIDs, &modelIDs, &routineIDs, &metadata); err != nil {
 			return nil, err
 		}
-		tables, err := r.findTables(ctx, tx, tableIDs)
+		tables, err := r.findTables(ctx, tx, projectID, datasetID, tableIDs)
 		if err != nil {
 			return nil, err
 		}
-		models, err := r.findModels(ctx, tx, modelIDs)
+		models, err := r.findModels(ctx, tx, projectID, datasetID, modelIDs)
 		if err != nil {
 			return nil, err
 		}
-		routines, err := r.findRoutines(ctx, tx, routineIDs)
+		routines, err := r.findRoutines(ctx, tx, projectID, datasetID, routineIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -471,7 +493,7 @@ func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, ids []string)
 		}
 		datasets = append(
 			datasets,
-			NewDataset(r, id, &content, tables, models, routines),
+			NewDataset(r, projectID, datasetID, &content, tables, models, routines),
 		)
 	}
 	return datasets, nil
@@ -483,8 +505,9 @@ func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Datase
 		return err
 	}
 	if _, err := tx.Exec(
-		"INSERT datasets (id, tableIDs, modelIDs, routineIDs, metadata) VALUES (@id, @tableIDs, @modelIDs, @routineIDs, @metadata)",
+		"INSERT datasets (id, projectID, tableIDs, modelIDs, routineIDs, metadata) VALUES (@id, @projectID, @tableIDs, @modelIDs, @routineIDs, @metadata)",
 		sql.Named("id", dataset.ID),
+		sql.Named("projectID", dataset.ProjectID),
 		sql.Named("tableIDs", dataset.TableIDs()),
 		sql.Named("modelIDs", dataset.ModelIDs()),
 		sql.Named("routineIDs", dataset.RoutineIDs()),
@@ -501,8 +524,9 @@ func (r *Repository) UpdateDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 		return err
 	}
 	if _, err := tx.Exec(
-		"UPDATE datasets SET tableIDs = @tableIDs, modelIDs = @modelIDs, routineIDs = @routineIDs, metadata = @metadata WHERE id = @id",
+		"UPDATE datasets SET tableIDs = @tableIDs, modelIDs = @modelIDs, routineIDs = @routineIDs, metadata = @metadata WHERE projectID = @projectID AND id = @id",
 		sql.Named("id", dataset.ID),
+		sql.Named("projectID", dataset.ProjectID),
 		sql.Named("tableIDs", dataset.TableIDs()),
 		sql.Named("modelIDs", dataset.ModelIDs()),
 		sql.Named("routineIDs", dataset.RoutineIDs()),
@@ -514,13 +538,17 @@ func (r *Repository) UpdateDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 }
 
 func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) error {
-	if _, err := tx.Exec("DELETE FROM datasets WHERE id = @id", dataset.ID); err != nil {
+	if _, err := tx.Exec(
+		"DELETE FROM datasets WHERE projectID = @projectID AND id = @id",
+		dataset.ProjectID,
+		dataset.ID,
+	); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *Repository) FindTable(ctx context.Context, id string) (*Table, error) {
+func (r *Repository) FindTable(ctx context.Context, projectID, datasetID, tableID string) (*Table, error) {
 	conn, err := r.getConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -531,21 +559,27 @@ func (r *Repository) FindTable(ctx context.Context, id string) (*Table, error) {
 		return nil, err
 	}
 	defer tx.Commit()
-	tables, err := r.findTables(ctx, tx, []string{id})
+	tables, err := r.findTables(ctx, tx, projectID, datasetID, []string{tableID})
 	if err != nil {
 		return nil, err
 	}
 	if len(tables) != 1 {
 		return nil, nil
 	}
-	if tables[0].ID != id {
+	if tables[0].ID != tableID {
 		return nil, nil
 	}
 	return tables[0], nil
 }
 
-func (r *Repository) findTables(ctx context.Context, tx *sql.Tx, ids []string) ([]*Table, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT id, metadata FROM tables WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findTables(ctx context.Context, tx *sql.Tx, projectID, datasetID string, tableIDs []string) ([]*Table, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		"SELECT id, metadata FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id IN UNNEST(@tableIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetID", datasetID),
+		sql.Named("tableIDs", tableIDs),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -554,10 +588,10 @@ func (r *Repository) findTables(ctx context.Context, tx *sql.Tx, ids []string) (
 	tables := []*Table{}
 	for rows.Next() {
 		var (
-			id       string
+			tableID  string
 			metadata string
 		)
-		if err := rows.Scan(&id, &metadata); err != nil {
+		if err := rows.Scan(&tableID, &metadata); err != nil {
 			return nil, err
 		}
 		var content map[string]interface{}
@@ -566,7 +600,7 @@ func (r *Repository) findTables(ctx context.Context, tx *sql.Tx, ids []string) (
 		}
 		tables = append(
 			tables,
-			NewTable(r, id, content),
+			NewTable(r, projectID, datasetID, tableID, content),
 		)
 	}
 	return tables, nil
@@ -578,8 +612,10 @@ func (r *Repository) AddTable(ctx context.Context, tx *sql.Tx, table *Table) err
 		return err
 	}
 	if _, err := tx.Exec(
-		"INSERT tables (id, metadata) VALUES (@id, @metadata)",
+		"INSERT tables (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)",
 		sql.Named("id", table.ID),
+		sql.Named("projectID", table.ProjectID),
+		sql.Named("datasetID", table.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -593,8 +629,10 @@ func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table) 
 		return err
 	}
 	if _, err := tx.Exec(
-		"UPDATE tables SET metadata = @metadata WHERE id = @id",
+		"UPDATE tables SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
 		sql.Named("id", table.ID),
+		sql.Named("projectID", table.ProjectID),
+		sql.Named("datasetID", table.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -603,13 +641,18 @@ func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table) 
 }
 
 func (r *Repository) DeleteTable(ctx context.Context, tx *sql.Tx, table *Table) error {
-	if _, err := tx.Exec("DELETE FROM tables WHERE id = @id", table.ID); err != nil {
+	if _, err := tx.Exec(
+		"DELETE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
+		table.ProjectID,
+		table.DatasetID,
+		table.ID,
+	); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *Repository) FindModel(ctx context.Context, id string) (*Model, error) {
+func (r *Repository) FindModel(ctx context.Context, projectID, datasetID, modelID string) (*Model, error) {
 	conn, err := r.getConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -620,21 +663,27 @@ func (r *Repository) FindModel(ctx context.Context, id string) (*Model, error) {
 		return nil, err
 	}
 	defer tx.Commit()
-	models, err := r.findModels(ctx, tx, []string{id})
+	models, err := r.findModels(ctx, tx, projectID, datasetID, []string{modelID})
 	if err != nil {
 		return nil, err
 	}
 	if len(models) != 1 {
 		return nil, nil
 	}
-	if models[0].ID != id {
+	if models[0].ID != modelID {
 		return nil, nil
 	}
 	return models[0], nil
 }
 
-func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, ids []string) ([]*Model, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT id, metadata FROM models WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, projectID, datasetID string, modelIDs []string) ([]*Model, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		"SELECT id, metadata FROM models WHERE projectID = @projectID AND datasetID = @datasetID AND id IN UNNEST(@modelIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetID", datasetID),
+		sql.Named("modelIDs", modelIDs),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -643,10 +692,10 @@ func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, ids []string) (
 	models := []*Model{}
 	for rows.Next() {
 		var (
-			id       string
+			modelID  string
 			metadata string
 		)
-		if err := rows.Scan(&id, &metadata); err != nil {
+		if err := rows.Scan(&modelID, &metadata); err != nil {
 			return nil, err
 		}
 		var content map[string]interface{}
@@ -655,7 +704,7 @@ func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, ids []string) (
 		}
 		models = append(
 			models,
-			NewModel(r, id, content),
+			NewModel(r, projectID, datasetID, modelID, content),
 		)
 	}
 	return models, nil
@@ -667,8 +716,10 @@ func (r *Repository) AddModel(ctx context.Context, tx *sql.Tx, model *Model) err
 		return err
 	}
 	if _, err := tx.Exec(
-		"INSERT models (id, metadata) VALUES (@id, @metadata)",
+		"INSERT models (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)",
 		sql.Named("id", model.ID),
+		sql.Named("projectID", model.ProjectID),
+		sql.Named("datasetID", model.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -682,8 +733,10 @@ func (r *Repository) UpdateModel(ctx context.Context, tx *sql.Tx, model *Model) 
 		return err
 	}
 	if _, err := tx.Exec(
-		"UPDATE models SET metadata = @metadata WHERE id = @id",
+		"UPDATE models SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
 		sql.Named("id", model.ID),
+		sql.Named("projectID", model.ProjectID),
+		sql.Named("datasetID", model.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -692,13 +745,18 @@ func (r *Repository) UpdateModel(ctx context.Context, tx *sql.Tx, model *Model) 
 }
 
 func (r *Repository) DeleteModel(ctx context.Context, tx *sql.Tx, model *Model) error {
-	if _, err := tx.Exec("DELETE FROM models WHERE id = @id", model.ID); err != nil {
+	if _, err := tx.Exec(
+		"DELETE FROM models WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
+		model.ProjectID,
+		model.DatasetID,
+		model.ID,
+	); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *Repository) FindRoutine(ctx context.Context, id string) (*Routine, error) {
+func (r *Repository) FindRoutine(ctx context.Context, projectID, datasetID, routineID string) (*Routine, error) {
 	conn, err := r.getConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -710,21 +768,27 @@ func (r *Repository) FindRoutine(ctx context.Context, id string) (*Routine, erro
 	}
 	defer tx.Commit()
 
-	routines, err := r.findRoutines(ctx, tx, []string{id})
+	routines, err := r.findRoutines(ctx, tx, projectID, datasetID, []string{routineID})
 	if err != nil {
 		return nil, err
 	}
 	if len(routines) != 1 {
 		return nil, nil
 	}
-	if routines[0].ID != id {
+	if routines[0].ID != routineID {
 		return nil, nil
 	}
 	return routines[0], nil
 }
 
-func (r *Repository) findRoutines(ctx context.Context, tx *sql.Tx, ids []string) ([]*Routine, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT id, metadata FROM routines WHERE id IN UNNEST(@ids)", ids)
+func (r *Repository) findRoutines(ctx context.Context, tx *sql.Tx, projectID, datasetID string, routineIDs []string) ([]*Routine, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		"SELECT id, metadata FROM routines WHERE projectID = @projectID AND datasetID = @datasetID AND id IN UNNEST(@routineIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetID", datasetID),
+		sql.Named("routineIDs", routineIDs),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -733,10 +797,10 @@ func (r *Repository) findRoutines(ctx context.Context, tx *sql.Tx, ids []string)
 	routines := []*Routine{}
 	for rows.Next() {
 		var (
-			id       string
-			metadata string
+			routineID string
+			metadata  string
 		)
-		if err := rows.Scan(&id, &metadata); err != nil {
+		if err := rows.Scan(&routineID, &metadata); err != nil {
 			return nil, err
 		}
 		var content map[string]interface{}
@@ -745,7 +809,7 @@ func (r *Repository) findRoutines(ctx context.Context, tx *sql.Tx, ids []string)
 		}
 		routines = append(
 			routines,
-			NewRoutine(r, id, content),
+			NewRoutine(r, projectID, datasetID, routineID, content),
 		)
 	}
 	return routines, nil
@@ -757,8 +821,10 @@ func (r *Repository) AddRoutine(ctx context.Context, tx *sql.Tx, routine *Routin
 		return err
 	}
 	if _, err := tx.Exec(
-		"INSERT routines (id, metadata) VALUES (@id, @metadata)",
+		"INSERT routines (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)",
 		sql.Named("id", routine.ID),
+		sql.Named("projectID", routine.ProjectID),
+		sql.Named("datasetID", routine.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -772,8 +838,10 @@ func (r *Repository) UpdateRoutine(ctx context.Context, tx *sql.Tx, routine *Rou
 		return err
 	}
 	if _, err := tx.Exec(
-		"UPDATE routines SET metadata = @metadata WHERE id = @id",
+		"UPDATE routines SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
 		sql.Named("id", routine.ID),
+		sql.Named("projectID", routine.ProjectID),
+		sql.Named("datasetID", routine.DatasetID),
 		sql.Named("metadata", metadata),
 	); err != nil {
 		return err
@@ -782,7 +850,12 @@ func (r *Repository) UpdateRoutine(ctx context.Context, tx *sql.Tx, routine *Rou
 }
 
 func (r *Repository) DeleteRoutine(ctx context.Context, tx *sql.Tx, routine *Routine) error {
-	if _, err := tx.Exec("DELETE FROM routines WHERE id = @id", routine.ID); err != nil {
+	if _, err := tx.Exec(
+		"DELETE FROM routines WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id",
+		routine.ProjectID,
+		routine.DatasetID,
+		routine.ID,
+	); err != nil {
 		return err
 	}
 	return nil

@@ -51,6 +51,11 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 		if err := dataset.Insert(ctx, tx.Tx()); err != nil {
 			return err
 		}
+		for _, table := range dataset.Tables() {
+			if err := table.Insert(ctx, tx.Tx()); err != nil {
+				return err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
