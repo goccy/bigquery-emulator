@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 
@@ -408,8 +407,13 @@ func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
-	params := mux.Vars(r)
-	deleteContents, _ := strconv.ParseBool(params["deleteContents"])
+	queryValues := r.URL.Query()
+	values, exists := queryValues["deleteContents"]
+	var deleteContents bool
+	if exists && len(values) == 1 {
+		b, _ := strconv.ParseBool(values[0])
+		deleteContents = b
+	}
 	if err := h.Handle(ctx, &datasetsDeleteRequest{
 		server:         server,
 		project:        project,
@@ -442,6 +446,11 @@ func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteReq
 		return fmt.Errorf("failed to delete dataset: %w", err)
 	}
 	if r.deleteContents {
+		for _, table := range r.dataset.Tables() {
+			if err := table.Delete(ctx, tx.Tx()); err != nil {
+				return err
+			}
+		}
 		if err := r.server.contentRepo.DeleteTables(ctx, tx, r.project.ID, r.dataset.ID, r.dataset.TableIDs()); err != nil {
 			return fmt.Errorf("failed to delete tables: %w", err)
 		}
