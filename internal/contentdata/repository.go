@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/goccy/go-zetasql"
 	zetasqltypes "github.com/goccy/go-zetasql/types"
 	"github.com/goccy/go-zetasqlite"
 	"go.uber.org/zap"
@@ -290,12 +289,8 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	if err := tx.ContentRepoMode(); err != nil {
 		return err
 	}
-	if err := tx.SetParameterMode(zetasql.ParameterPositional); err != nil {
-		return err
-	}
 	defer func() {
 		_ = tx.MetadataRepoMode()
-		_ = tx.SetParameterMode(zetasql.ParameterNamed)
 	}()
 
 	var columns []string

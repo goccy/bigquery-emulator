@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/goccy/go-zetasql"
 	"github.com/goccy/go-zetasqlite"
 )
 
@@ -64,20 +63,6 @@ func (t *Tx) SetProjectAndDataset(projectID, datasetID string) {
 	t.conn.DatasetID = datasetID
 }
 
-func (t *Tx) SetParameterMode(mode zetasql.ParameterMode) error {
-	if err := t.conn.Conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
-		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
-		}
-		zetasqliteConn.SetParameterMode(mode)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to set parameter mode: %w", err)
-	}
-	return nil
-}
-
 func (t *Tx) MetadataRepoMode() error {
 	if err := t.conn.Conn.Raw(func(c interface{}) error {
 		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
@@ -121,9 +106,5 @@ func (c *Conn) Begin(ctx context.Context) (*Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Tx{tx: tx, conn: c}
-	if err := t.SetParameterMode(zetasql.ParameterNamed); err != nil {
-		return nil, err
-	}
-	return t, nil
+	return &Tx{tx: tx, conn: c}, nil
 }
