@@ -218,7 +218,7 @@ func (t Type) FieldType() FieldType {
 	case GEOGRAPHY:
 		return FieldRecord
 	case JSON:
-		return FieldRecord
+		return FieldJSON
 	case RECORD:
 		return FieldRecord
 	}
@@ -273,6 +273,7 @@ const (
 	FieldNumeric    FieldType = "NUMERIC"
 	FieldBignumeric FieldType = "BIGNUMERIC"
 	FieldInterval   FieldType = "INTERVAL"
+	FieldJSON       FieldType = "JSON"
 )
 
 func init() {
