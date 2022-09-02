@@ -204,6 +204,9 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 			F: cells,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	logger.Logger(ctx).Debug("query result", zap.Any("rows", result))
 	return &internaltypes.QueryResponse{
 		Schema: &bigqueryv2.TableSchema{
