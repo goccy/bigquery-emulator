@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
@@ -430,7 +431,7 @@ func TestTable(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("failed to get table data. got rows are %d", len(rows))
 	}
-	if diff := cmp.Diff(insertRow, rows[0]); diff != "" {
+	if diff := cmp.Diff(insertRow, rows[0], cmpopts.EquateApproxTime(1*time.Microsecond)); diff != "" {
 		t.Errorf("(-want +got):\n%s", diff)
 	}
 
