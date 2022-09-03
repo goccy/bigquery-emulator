@@ -190,17 +190,17 @@ func (r *Repository) findProjects(ctx context.Context, tx *sql.Tx, ids []string)
 	for rows.Next() {
 		var (
 			projectID  string
-			datasetIDs []string
-			jobIDs     []string
+			datasetIDs []interface{}
+			jobIDs     []interface{}
 		)
 		if err := rows.Scan(&projectID, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.findDatasets(ctx, tx, projectID, datasetIDs)
+		datasets, err := r.findDatasets(ctx, tx, projectID, r.convertToStrings(datasetIDs))
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.findJobs(ctx, tx, projectID, jobIDs)
+		jobs, err := r.findJobs(ctx, tx, projectID, r.convertToStrings(jobIDs))
 		if err != nil {
 			return nil, err
 		}
@@ -232,17 +232,17 @@ func (r *Repository) FindAllProjects(ctx context.Context) ([]*Project, error) {
 	for rows.Next() {
 		var (
 			projectID  string
-			datasetIDs []string
-			jobIDs     []string
+			datasetIDs []interface{}
+			jobIDs     []interface{}
 		)
 		if err := rows.Scan(&projectID, &datasetIDs, &jobIDs); err != nil {
 			return nil, err
 		}
-		datasets, err := r.findDatasets(ctx, tx, projectID, datasetIDs)
+		datasets, err := r.findDatasets(ctx, tx, projectID, r.convertToStrings(datasetIDs))
 		if err != nil {
 			return nil, err
 		}
-		jobs, err := r.findJobs(ctx, tx, projectID, jobIDs)
+		jobs, err := r.findJobs(ctx, tx, projectID, r.convertToStrings(jobIDs))
 		if err != nil {
 			return nil, err
 		}
@@ -467,23 +467,23 @@ func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, projectID str
 		var (
 			datasetID  string
 			projectID  string
-			tableIDs   []string
-			modelIDs   []string
-			routineIDs []string
+			tableIDs   []interface{}
+			modelIDs   []interface{}
+			routineIDs []interface{}
 			metadata   string
 		)
 		if err := rows.Scan(&datasetID, &projectID, &tableIDs, &modelIDs, &routineIDs, &metadata); err != nil {
 			return nil, err
 		}
-		tables, err := r.findTables(ctx, tx, projectID, datasetID, tableIDs)
+		tables, err := r.findTables(ctx, tx, projectID, datasetID, r.convertToStrings(tableIDs))
 		if err != nil {
 			return nil, err
 		}
-		models, err := r.findModels(ctx, tx, projectID, datasetID, modelIDs)
+		models, err := r.findModels(ctx, tx, projectID, datasetID, r.convertToStrings(modelIDs))
 		if err != nil {
 			return nil, err
 		}
-		routines, err := r.findRoutines(ctx, tx, projectID, datasetID, routineIDs)
+		routines, err := r.findRoutines(ctx, tx, projectID, datasetID, r.convertToStrings(routineIDs))
 		if err != nil {
 			return nil, err
 		}
@@ -859,4 +859,12 @@ func (r *Repository) DeleteRoutine(ctx context.Context, tx *sql.Tx, routine *Rou
 		return err
 	}
 	return nil
+}
+
+func (r *Repository) convertToStrings(v []interface{}) []string {
+	ret := make([]string, 0, len(v))
+	for _, vv := range v {
+		ret = append(ret, vv.(string))
+	}
+	return ret
 }
