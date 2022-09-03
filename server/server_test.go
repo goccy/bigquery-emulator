@@ -305,6 +305,7 @@ type TableSchema struct {
 	Struct   *StructType
 	Array    []*StructType
 	IntArray []int
+	Time     time.Time
 }
 
 type StructType struct {
@@ -321,6 +322,7 @@ func (s *TableSchema) Save() (map[string]bigquery.Value, string, error) {
 		"Struct":   s.Struct,
 		"Array":    s.Array,
 		"IntArray": s.IntArray,
+		"Time":     s.Time,
 	}, "", nil
 }
 
@@ -408,6 +410,7 @@ func TestTable(t *testing.T) {
 			},
 		},
 		IntArray: []int{10},
+		Time:     time.Now(),
 	}
 	if err := table2.Inserter().Put(ctx, []*TableSchema{insertRow}); err != nil {
 		t.Fatal(err)
