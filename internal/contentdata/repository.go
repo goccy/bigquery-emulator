@@ -297,8 +297,8 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	}()
 
 	var columns []string
-	for col := range table.Data[0] {
-		columns = append(columns, col)
+	for _, col := range table.Columns {
+		columns = append(columns, col.Name)
 	}
 	sort.Strings(columns)
 	rows := make([]string, 0, len(table.Data))

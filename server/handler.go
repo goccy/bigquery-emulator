@@ -1611,8 +1611,13 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		return nil, err
 	}
 	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+	var columns []*types.Column
 	for _, field := range content.Schema.Fields {
 		nameToFieldMap[field.Name] = field
+		columns = append(columns, &types.Column{
+			Name: field.Name,
+			Type: types.Type(field.Type),
+		})
 	}
 	data := types.Data{}
 	for _, row := range r.req.Rows {
@@ -1635,8 +1640,9 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		data = append(data, rowData)
 	}
 	tableDef := &types.Table{
-		ID:   r.table.ID,
-		Data: data,
+		ID:      r.table.ID,
+		Columns: columns,
+		Data:    data,
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
