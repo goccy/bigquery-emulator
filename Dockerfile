@@ -19,4 +19,4 @@ COPY --from=0 /work/bigquery-emulator /bin/bigquery-emulator
 
 WORKDIR /work
 
-CMD ["/bin/bigquery-emulator"]
+ENTRYPOINT ["/bin/bigquery-emulator"]
