@@ -58,6 +58,12 @@ $ ./bigquery-emulator --project=test
 [bigquery-emulator] listening at 0.0.0.0:9050
 ```
 
+If you want to use docker image to start emulator, specify like the following.
+
+```console
+$ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
+```
+
 ## How to use from bq client
 
 ### 1. Start the standalone server
