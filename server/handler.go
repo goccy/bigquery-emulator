@@ -852,15 +852,40 @@ type jobsInsertRequest struct {
 	job     *bigqueryv2.Job
 }
 
+func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) *types.Table {
+	columns := []*types.Column{}
+	for _, field := range response.Schema.Fields {
+		columns = append(columns, &types.Column{
+			Name: field.Name,
+			Type: types.Type(field.Type),
+		})
+	}
+	data := types.Data{}
+	for _, row := range response.Rows {
+		rowData := map[string]interface{}{}
+		for idx, cell := range row.F {
+			if cell.V == nil {
+				rowData[columns[idx].Name] = nil
+			} else {
+				rowData[columns[idx].Name] = cell.V
+			}
+		}
+		data = append(data, rowData)
+	}
+	return &types.Table{
+		ID:      tableID,
+		Columns: columns,
+		Data:    data,
+	}
+}
+
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
-	if r.job.Configuration == nil {
+	job := r.job
+	if job.Configuration == nil {
 		return nil, fmt.Errorf("unspecified job configuration")
 	}
-	if r.job.Configuration.Query == nil {
+	if job.Configuration.Query == nil {
 		return nil, fmt.Errorf("unspecified job configuration query")
-	}
-	if r.job.JobReference.JobId == "" {
-		r.job.JobReference.JobId = randomID() // generate job id
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
@@ -871,75 +896,76 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
-	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, r.job, nil, nil)
-	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
-		return nil, fmt.Errorf("failed to add job: %w", err)
-	}
-
-	hasDestinationTable := r.job.Configuration.Query.DestinationTable != nil
+	hasDestinationTable := job.Configuration.Query.DestinationTable != nil
+	startTime := time.Now()
 	response, jobErr := r.server.contentRepo.Query(
 		ctx,
 		tx,
 		r.project.ID,
 		"",
-		job.Query(),
-		job.QueryParameters(),
+		job.Configuration.Query.Query,
+		job.Configuration.Query.QueryParameters,
 	)
-	if err := job.SetResult(ctx, tx.Tx(), response, jobErr); err != nil {
-		return nil, fmt.Errorf("failed to set job result: %w", err)
-	}
-
+	endTime := time.Now()
 	if hasDestinationTable && jobErr == nil {
 		// insert results to destination table
-		tableRef := r.job.Configuration.Query.DestinationTable
-		columns := []*types.Column{}
-		for _, field := range response.Schema.Fields {
-			columns = append(columns, &types.Column{
-				Name: field.Name,
-				Type: types.Type(field.Type),
-			})
-		}
-		data := types.Data{}
-		for _, row := range response.Rows {
-			rowData := map[string]interface{}{}
-			for idx, cell := range row.F {
-				if cell.V == nil {
-					rowData[columns[idx].Name] = nil
-				} else {
-					rowData[columns[idx].Name] = cell.V
-				}
-			}
-			data = append(data, rowData)
-		}
-		tableDef := &types.Table{
-			ID:      tableRef.TableId,
-			Columns: columns,
-			Data:    data,
-		}
+		tableRef := job.Configuration.Query.DestinationTable
+		tableDef := h.tableDefFromQueryResponse(tableRef.TableId, response)
 		if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
 			return nil, fmt.Errorf("failed to add table data: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit job: %w", err)
-	}
-	content := *job.Content()
-	if !hasDestinationTable {
-		content.Configuration.Query.DestinationTable = &bigqueryv2.TableReference{
+	} else {
+		job.Configuration.Query.DestinationTable = &bigqueryv2.TableReference{
 			ProjectId: r.project.ID,
 			DatasetId: "anonymous",
 			TableId:   "anonymous",
 		}
 	}
-	content.Status = &bigqueryv2.JobStatus{
+	if job.JobReference.JobId == "" {
+		job.JobReference.JobId = randomID() // generate job id
+	}
+	job.Kind = "bigquery#job"
+	job.Configuration.JobType = "QUERY"
+	job.Configuration.Query.Priority = "INTERACTIVE"
+	job.SelfLink = fmt.Sprintf(
+		"http://%s/bigquery/v2/projects/%s/jobs/%s",
+		r.server.httpServer.Addr,
+		r.project.ID,
+		job.JobReference.JobId,
+	)
+	job.Status = &bigqueryv2.JobStatus{
 		State: "DONE",
 	}
-	content.Statistics = &bigqueryv2.JobStatistics{
+	job.Statistics = &bigqueryv2.JobStatistics{
 		Query: &bigqueryv2.JobStatistics2{
-			StatementType: "SELECT",
+			CacheHit:            false,
+			StatementType:       "SELECT",
+			TotalBytesBilled:    response.TotalBytes,
+			TotalBytesProcessed: response.TotalBytes,
 		},
+		CreationTime:        startTime.Unix(),
+		StartTime:           startTime.Unix(),
+		EndTime:             endTime.Unix(),
+		TotalBytesProcessed: response.TotalBytes,
 	}
-	return &content, nil
+	if err := r.project.AddJob(
+		ctx,
+		tx.Tx(),
+		metadata.NewJob(
+			r.server.metaRepo,
+			r.project.ID,
+			job.JobReference.JobId,
+			job,
+			response,
+			jobErr,
+		),
+	); err != nil {
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit job: %w", err)
+	}
+	return job, nil
 }
 
 func (h *jobsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -229,5 +229,7 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 func (s *Server) TestServer() *httptest.Server {
-	return httptest.NewServer(s.Handler)
+	server := httptest.NewServer(s.Handler)
+	s.httpServer = server.Config
+	return server
 }

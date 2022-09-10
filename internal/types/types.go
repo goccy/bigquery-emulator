@@ -9,6 +9,7 @@ type (
 		Rows         []*TableRow              `json:"rows"`
 		TotalRows    uint64                   `json:"totalRows,string"`
 		JobComplete  bool                     `json:"jobComplete"`
+		TotalBytes   uint64                   `json:"-"`
 	}
 
 	QueryResponse struct {
@@ -17,6 +18,7 @@ type (
 		Rows         []*TableRow              `json:"rows"`
 		TotalRows    uint64                   `json:"totalRows,string"`
 		JobComplete  bool                     `json:"jobComplete"`
+		TotalBytes   int64                    `json:"-"`
 	}
 
 	TableDataList struct {
@@ -31,6 +33,7 @@ type (
 	// Redefines the TableCell type to return null explicitly
 	// because TableCell for bigqueryv2 is omitted if V is nil,
 	TableCell struct {
-		V interface{} `json:"v"`
+		V     interface{} `json:"v"`
+		Bytes int64       `json:"-"`
 	}
 )
