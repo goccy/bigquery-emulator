@@ -963,8 +963,10 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	); err != nil {
 		return nil, fmt.Errorf("failed to add job: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit job: %w", err)
+	if !job.Configuration.DryRun {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit job: %w", err)
+		}
 	}
 	return job, nil
 }
@@ -1057,8 +1059,10 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if !r.queryRequest.DryRun {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
 	jobID := r.queryRequest.RequestId
 	if jobID == "" {
