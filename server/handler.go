@@ -1887,7 +1887,19 @@ type tablesInsertRequest struct {
 }
 
 func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, error) {
-	encodedTableData, err := json.Marshal(r.table)
+	table := r.table
+	now := time.Now().Unix()
+	table.Id = fmt.Sprintf("%s:%s.%s", r.project.ID, r.dataset.ID, r.table.TableReference.TableId)
+	table.CreationTime = now
+	table.LastModifiedTime = uint64(now)
+	table.SelfLink = fmt.Sprintf(
+		"http://%s/bigquery/v2/projects/%s/datasets/%s/tables/%s",
+		r.server.httpServer.Addr,
+		r.project.ID,
+		r.dataset.ID,
+		r.table.TableReference.TableId,
+	)
+	encodedTableData, err := json.Marshal(table)
 	if err != nil {
 		return nil, err
 	}
@@ -1926,10 +1938,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit table: %w", err)
 	}
-	table := *r.table
-	table.Id = r.table.TableReference.TableId
-	table.CreationTime = time.Now().Unix()
-	return &table, nil
+	return table, nil
 }
 
 func (h *tablesListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

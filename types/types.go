@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"cloud.google.com/go/bigquery"
 	"github.com/goccy/go-zetasql/types"
@@ -27,6 +28,36 @@ type Table struct {
 	Columns  []*Column              `yaml:"columns" validate:"required"`
 	Data     Data                   `yaml:"data"`
 	Metadata map[string]interface{} `yaml:"metadata"`
+}
+
+func (t *Table) SetupMetadata(projectID, datasetID string) {
+	fields := make([]*bigqueryv2.TableFieldSchema, len(t.Columns))
+	for i, col := range t.Columns {
+		fields[i] = &bigqueryv2.TableFieldSchema{
+			Name: col.Name,
+			Type: string(col.Type.FieldType()),
+		}
+	}
+	now := time.Now().Unix()
+	encodedTableData, _ := json.Marshal(&bigqueryv2.Table{
+		Type: "TABLE",
+		Kind: "bigquery#table",
+		Id:   fmt.Sprintf("%s:%s.%s", projectID, datasetID, t.ID),
+		TableReference: &bigqueryv2.TableReference{
+			ProjectId: projectID,
+			DatasetId: datasetID,
+			TableId:   t.ID,
+		},
+		Schema: &bigqueryv2.TableSchema{
+			Fields: fields,
+		},
+		NumRows:          uint64(len(t.Data)),
+		CreationTime:     now,
+		LastModifiedTime: uint64(now),
+	})
+	var tableMetadata map[string]interface{}
+	_ = json.Unmarshal(encodedTableData, &tableMetadata)
+	t.Metadata = tableMetadata
 }
 
 type Data []map[string]interface{}
@@ -321,25 +352,10 @@ func NewDataset(id string, tables ...*Table) *Dataset {
 }
 
 func NewTable(id string, columns []*Column, data Data) *Table {
-	fields := make([]*bigqueryv2.TableFieldSchema, len(columns))
-	for i, col := range columns {
-		fields[i] = &bigqueryv2.TableFieldSchema{
-			Name: col.Name,
-			Type: string(col.Type.FieldType()),
-		}
-	}
-	encodedTableData, _ := json.Marshal(&bigqueryv2.Table{
-		Schema: &bigqueryv2.TableSchema{
-			Fields: fields,
-		},
-	})
-	var tableMetadata map[string]interface{}
-	_ = json.Unmarshal(encodedTableData, &tableMetadata)
 	return &Table{
-		ID:       id,
-		Columns:  columns,
-		Data:     data,
-		Metadata: tableMetadata,
+		ID:      id,
+		Columns: columns,
+		Data:    data,
 	}
 }
 

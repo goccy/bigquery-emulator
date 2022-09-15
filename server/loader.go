@@ -28,6 +28,7 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 	defer tx.RollbackIfNotCommitted()
 	for _, dataset := range project.Datasets {
 		for _, table := range dataset.Tables {
+			table.SetupMetadata(project.ID, dataset.ID)
 			if err := s.addTableData(ctx, tx, project, dataset, table); err != nil {
 				return err
 			}
