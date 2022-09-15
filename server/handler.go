@@ -29,8 +29,7 @@ func writeBadRequest(ctx context.Context, w http.ResponseWriter, err error) {
 		return
 	}
 	logger.Logger(ctx).Error("bad request", zap.Error(err))
-	w.WriteHeader(http.StatusBadRequest)
-	fmt.Fprintln(w, err.Error())
+	http.Error(w, err.Error(), http.StatusBadRequest)
 }
 
 func writeInternalError(ctx context.Context, w http.ResponseWriter, err error) {
@@ -38,16 +37,18 @@ func writeInternalError(ctx context.Context, w http.ResponseWriter, err error) {
 		return
 	}
 	logger.Logger(ctx).Error("internal error", zap.Error(err))
-	w.WriteHeader(http.StatusBadRequest)
-	fmt.Fprintln(w, err.Error())
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 func encodeResponse(ctx context.Context, w http.ResponseWriter, response interface{}) {
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	b, err := json.Marshal(response)
+	if err != nil {
 		logger.Logger(ctx).Error("failed to encode json", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintln(w, err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
 }
 
 const (
