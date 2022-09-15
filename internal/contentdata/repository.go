@@ -175,7 +175,10 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		fields = append(fields, r.zetasqlTypeToTableFieldSchema(colNames[i], zetasqlType))
 	}
 
-	result := [][]interface{}{}
+	var (
+		totalBytes int64
+		result     = [][]interface{}{}
+	)
 	for rows.Next() {
 		values := make([]interface{}, 0, len(columnTypes))
 		for i := 0; i < len(columnTypes); i++ {
@@ -197,6 +200,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 				return nil, err
 			}
 			cells = append(cells, cell)
+			totalBytes += cell.Bytes
 			resultValues = append(resultValues, v)
 		}
 		result = append(result, resultValues)
@@ -215,6 +219,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		TotalRows:   uint64(len(tableRows)),
 		JobComplete: true,
 		Rows:        tableRows,
+		TotalBytes:  totalBytes,
 	}, nil
 }
 
@@ -227,12 +232,16 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 	rv := reflect.ValueOf(value)
 	kind := rv.Type().Kind()
 	if kind != reflect.Slice && kind != reflect.Array {
-		return &internaltypes.TableCell{V: fmt.Sprint(value)}, nil
+		v := fmt.Sprint(value)
+		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
 	}
 	elemType := rv.Type().Elem()
 	if elemType.Kind() == reflect.Map {
 		// value is struct type
-		var cells []*internaltypes.TableCell
+		var (
+			cells      []*internaltypes.TableCell
+			totalBytes int64
+		)
 		for i := 0; i < rv.Len(); i++ {
 			fieldV := rv.Index(i)
 			keys := fieldV.MapKeys()
@@ -243,20 +252,25 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 			if err != nil {
 				return nil, err
 			}
+			totalBytes += cell.Bytes
 			cells = append(cells, cell)
 		}
-		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}}, nil
+		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}, Bytes: totalBytes}, nil
 	}
 	// array type
-	var cells []*internaltypes.TableCell
+	var (
+		cells      []*internaltypes.TableCell
+		totalBytes int64
+	)
 	for i := 0; i < rv.Len(); i++ {
 		cell, err := r.convertValueToCell(rv.Index(i).Interface())
 		if err != nil {
 			return nil, err
 		}
+		totalBytes += cell.Bytes
 		cells = append(cells, cell)
 	}
-	return &internaltypes.TableCell{V: cells}, nil
+	return &internaltypes.TableCell{V: cells, Bytes: totalBytes}, nil
 }
 
 func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
