@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"path/filepath"
 	"testing"
 	"time"
@@ -226,6 +227,64 @@ func TestJob(t *testing.T) {
 	}
 	if jobs := findJobs(t, ctx, client); len(jobs) != 1 {
 		t.Fatalf("failed to find jobs. expected 1 jobs but found %d jobs", len(jobs))
+	}
+}
+
+func TestFetchData(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := client.Query("SELECT * FROM dataset1.table_b")
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type TableB struct {
+		Num    *big.Rat `bigquery:"num"`
+		BigNum *big.Rat `bigquery:"bignum"`
+		// INTERVAL type cannot assign to struct directly
+		// Interval *bigquery.IntervalValue `bigquery:"interval"`
+	}
+
+	var row TableB
+	_ = it.Next(&row)
+	if row.Num.FloatString(4) != "1.2345" {
+		t.Fatalf("failed to get NUMERIC value")
+	}
+	if row.BigNum.FloatString(12) != "1.234567891234" {
+		t.Fatalf("failed to get BIGNUMERIC value")
 	}
 }
 
