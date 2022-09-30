@@ -381,8 +381,8 @@ func (r *Repository) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
 		"INSERT jobs (id, projectID, metadata, result, error) VALUES (@id, @projectID, @metadata, @result, @error)",
 		sql.Named("id", job.ID),
 		sql.Named("projectID", job.ProjectID),
-		sql.Named("metadata", metadata),
-		sql.Named("result", result),
+		sql.Named("metadata", string(metadata)),
+		sql.Named("result", string(result)),
 		sql.Named("error", jobErr),
 	); err != nil {
 		return err
@@ -407,8 +407,8 @@ func (r *Repository) UpdateJob(ctx context.Context, tx *sql.Tx, job *Job) error 
 		"UPDATE jobs SET metadata = @metadata, result = @result, error = @error WHERE projectID = @projectID AND id = @id",
 		sql.Named("id", job.ID),
 		sql.Named("projectID", job.ProjectID),
-		sql.Named("metadata", metadata),
-		sql.Named("result", result),
+		sql.Named("metadata", string(metadata)),
+		sql.Named("result", string(result)),
 		sql.Named("error", jobErr),
 	); err != nil {
 		return err
@@ -616,7 +616,7 @@ func (r *Repository) AddTable(ctx context.Context, tx *sql.Tx, table *Table) err
 		sql.Named("id", table.ID),
 		sql.Named("projectID", table.ProjectID),
 		sql.Named("datasetID", table.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}
@@ -633,7 +633,7 @@ func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table) 
 		sql.Named("id", table.ID),
 		sql.Named("projectID", table.ProjectID),
 		sql.Named("datasetID", table.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}
@@ -720,7 +720,7 @@ func (r *Repository) AddModel(ctx context.Context, tx *sql.Tx, model *Model) err
 		sql.Named("id", model.ID),
 		sql.Named("projectID", model.ProjectID),
 		sql.Named("datasetID", model.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}
@@ -737,7 +737,7 @@ func (r *Repository) UpdateModel(ctx context.Context, tx *sql.Tx, model *Model) 
 		sql.Named("id", model.ID),
 		sql.Named("projectID", model.ProjectID),
 		sql.Named("datasetID", model.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}
@@ -825,7 +825,7 @@ func (r *Repository) AddRoutine(ctx context.Context, tx *sql.Tx, routine *Routin
 		sql.Named("id", routine.ID),
 		sql.Named("projectID", routine.ProjectID),
 		sql.Named("datasetID", routine.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}
@@ -842,7 +842,7 @@ func (r *Repository) UpdateRoutine(ctx context.Context, tx *sql.Tx, routine *Rou
 		sql.Named("id", routine.ID),
 		sql.Named("projectID", routine.ProjectID),
 		sql.Named("datasetID", routine.DatasetID),
-		sql.Named("metadata", metadata),
+		sql.Named("metadata", string(metadata)),
 	); err != nil {
 		return err
 	}

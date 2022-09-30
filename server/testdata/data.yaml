@@ -14,3 +14,15 @@ projects:
               name: alice
             - id: 2
               name: bob
+        - id: table_b
+          columns:
+            - name: num
+              type: NUMERIC
+            - name: bignum
+              type: BIGNUMERIC
+            - name: interval
+              type: INTERVAL
+          data:
+            - num: 1.2345
+              bignum: 1.234567891234
+              interval: 1-6 15 0:0:0
