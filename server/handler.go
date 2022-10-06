@@ -24,27 +24,17 @@ import (
 	"github.com/goccy/bigquery-emulator/types"
 )
 
-func writeBadRequest(ctx context.Context, w http.ResponseWriter, err error) {
-	if err == nil {
-		return
-	}
-	logger.Logger(ctx).Error("bad request", zap.Error(err))
-	http.Error(w, err.Error(), http.StatusBadRequest)
-}
-
-func writeInternalError(ctx context.Context, w http.ResponseWriter, err error) {
-	if err == nil {
-		return
-	}
-	logger.Logger(ctx).Error("internal error", zap.Error(err))
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+func errorResponse(ctx context.Context, w http.ResponseWriter, e *ServerError) {
+	logger.Logger(ctx).Error(string(e.Reason), zap.Error(e))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(e.Status)
+	w.Write(e.Response())
 }
 
 func encodeResponse(ctx context.Context, w http.ResponseWriter, response interface{}) {
 	b, err := json.Marshal(response)
 	if err != nil {
-		logger.Logger(ctx).Error("failed to encode json", zap.Error(err))
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		errorResponse(ctx, w, errInternalError(fmt.Sprintf("failed to encode json: %s", err.Error())))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -89,7 +79,7 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		discoveryAPIResponse["baseUrl"] = addr
 	})
 	if decodeJSONErr != nil {
-		writeInternalError(ctx, w, decodeJSONErr)
+		errorResponse(ctx, w, errInternalError(decodeJSONErr.Error()))
 		return
 	}
 	encodeResponse(ctx, w, discoveryAPIResponse)
@@ -190,7 +180,7 @@ func (h *uploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	project := projectFromContext(ctx)
 	var job UploadJob
 	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to decode job: %s", err.Error())))
 		return
 	}
 	res, err := h.Handle(ctx, &uploadRequest{
@@ -199,7 +189,7 @@ func (h *uploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	addr := server.httpServer.Addr
@@ -254,16 +244,16 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	query := r.URL.Query()
 	uploadType := query["uploadType"]
 	if len(uploadType) == 0 {
-		writeBadRequest(ctx, w, fmt.Errorf("uploadType parameter is not found"))
+		errorResponse(ctx, w, errInvalid("uploadType parameter is not found"))
 		return
 	}
 	if uploadType[0] != "resumable" {
-		writeBadRequest(ctx, w, fmt.Errorf("uploadType parameter is not resumable %s", uploadType[0]))
+		errorResponse(ctx, w, errInvalid(fmt.Sprintf("uploadType parameter is not resumable %s", uploadType[0])))
 		return
 	}
 	uploadID := query["upload_id"]
 	if len(uploadID) == 0 {
-		writeBadRequest(ctx, w, fmt.Errorf("upload_id parameter is not found"))
+		errorResponse(ctx, w, errInvalid("upload_id parameter is not found"))
 		return
 	}
 	jobID := uploadID[0]
@@ -274,7 +264,7 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		job:     job,
 		reader:  r.Body,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	content := job.Content()
@@ -421,7 +411,7 @@ func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset:        dataset,
 		deleteContents: deleteContents,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 }
@@ -473,7 +463,7 @@ func (h *datasetsGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dataset: dataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -500,7 +490,7 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	project := projectFromContext(ctx)
 	var dataset bigqueryv2.Dataset
 	if err := json.NewDecoder(r.Body).Decode(&dataset); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &datasetsInsertRequest{
@@ -509,7 +499,7 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -581,7 +571,7 @@ func (h *datasetsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		project: project,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -622,7 +612,7 @@ func (h *datasetsPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	dataset := datasetFromContext(ctx)
 	var newDataset bigqueryv2.Dataset
 	if err := json.NewDecoder(r.Body).Decode(&newDataset); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &datasetsPatchRequest{
@@ -632,7 +622,7 @@ func (h *datasetsPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		newDataset: &newDataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -658,7 +648,7 @@ func (h *datasetsUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	dataset := datasetFromContext(ctx)
 	var newDataset bigqueryv2.Dataset
 	if err := json.NewDecoder(r.Body).Decode(&newDataset); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &datasetsUpdateRequest{
@@ -668,7 +658,7 @@ func (h *datasetsUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		newDataset: &newDataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -698,7 +688,7 @@ func (h *jobsCancelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     job,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -727,7 +717,7 @@ func (h *jobsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		project: project,
 		job:     job,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 }
@@ -768,7 +758,7 @@ func (h *jobsGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     job,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -797,7 +787,7 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		job:     job,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -832,7 +822,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	project := projectFromContext(ctx)
 	var job bigqueryv2.Job
 	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &jobsInsertRequest{
@@ -841,7 +831,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -934,20 +924,28 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		r.project.ID,
 		job.JobReference.JobId,
 	)
-	job.Status = &bigqueryv2.JobStatus{
-		State: "DONE",
+	status := &bigqueryv2.JobStatus{State: "DONE"}
+	if jobErr != nil {
+		internalErr := errJobInternalError(jobErr.Error())
+		status.ErrorResult = internalErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
+	}
+	job.Status = status
+	var totalBytes int64
+	if response != nil {
+		totalBytes = response.TotalBytes
 	}
 	job.Statistics = &bigqueryv2.JobStatistics{
 		Query: &bigqueryv2.JobStatistics2{
 			CacheHit:            false,
 			StatementType:       "SELECT",
-			TotalBytesBilled:    response.TotalBytes,
-			TotalBytesProcessed: response.TotalBytes,
+			TotalBytesBilled:    totalBytes,
+			TotalBytesProcessed: totalBytes,
 		},
 		CreationTime:        startTime.Unix(),
 		StartTime:           startTime.Unix(),
 		EndTime:             endTime.Unix(),
-		TotalBytesProcessed: response.TotalBytes,
+		TotalBytesProcessed: totalBytes,
 	}
 	if err := r.project.AddJob(
 		ctx,
@@ -980,7 +978,7 @@ func (h *jobsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		project: project,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1013,7 +1011,7 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	project := projectFromContext(ctx)
 	var req bigqueryv2.QueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &jobsQueryRequest{
@@ -1022,7 +1020,7 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		queryRequest: &req,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1087,7 +1085,7 @@ func (h *modelsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		dataset: dataset,
 		model:   model,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 	}
 }
 
@@ -1130,7 +1128,7 @@ func (h *modelsGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		model:   model,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1178,7 +1176,7 @@ func (h *modelsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dataset: dataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1215,7 +1213,7 @@ func (h *modelsPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		model:   model,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1241,7 +1239,7 @@ func (h *projectsGetServiceAccountHandler) ServeHTTP(w http.ResponseWriter, r *h
 		project: project,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1263,7 +1261,7 @@ func (h *projectsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1302,7 +1300,7 @@ func (h *routinesDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: dataset,
 		routine: routine,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 }
@@ -1331,7 +1329,7 @@ func (h *routinesGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		routine: routine,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1355,7 +1353,7 @@ func (h *routinesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	dataset := datasetFromContext(ctx)
 	var routine bigqueryv2.Routine
 	if err := json.NewDecoder(r.Body).Decode(&routine); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &routinesInsertRequest{
@@ -1365,7 +1363,7 @@ func (h *routinesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		routine: &routine,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1408,7 +1406,7 @@ func (h *routinesListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		dataset: dataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1444,7 +1442,7 @@ func (h *routinesUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		routine: routine,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1468,7 +1466,7 @@ func (h *rowAccessPoliciesGetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, 
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1495,7 +1493,7 @@ func (h *rowAccessPoliciesListHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		table:   table,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1519,7 +1517,7 @@ func (h *rowAccessPoliciesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, 
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1540,7 +1538,7 @@ func (h *rowAccessPoliciesTestIamPermissionsHandler) ServeHTTP(w http.ResponseWr
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1562,7 +1560,7 @@ func (h *tabledataInsertAllHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	table := tableFromContext(ctx)
 	var req bigqueryv2.TableDataInsertAllRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &tabledataInsertAllRequest{
@@ -1573,7 +1571,7 @@ func (h *tabledataInsertAllHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		req:     &req,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1706,7 +1704,7 @@ func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		table:   table,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1758,7 +1756,7 @@ func (h *tablesDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		dataset: dataset,
 		table:   table,
 	}); err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 	}
 }
 
@@ -1812,7 +1810,7 @@ func (h *tablesGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		table:   table,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1838,7 +1836,7 @@ func (h *tablesGetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	server := serverFromContext(ctx)
 	var req bigqueryv2.GetIamPolicyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &tablesGetIamPolicyRequest{
@@ -1846,7 +1844,7 @@ func (h *tablesGetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		req:    &req,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1868,7 +1866,7 @@ func (h *tablesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	dataset := datasetFromContext(ctx)
 	var table bigqueryv2.Table
 	if err := json.NewDecoder(r.Body).Decode(&table); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &tablesInsertRequest{
@@ -1878,7 +1876,7 @@ func (h *tablesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		table:   &table,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1957,7 +1955,7 @@ func (h *tablesListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dataset: dataset,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1995,7 +1993,7 @@ func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	table := tableFromContext(ctx)
 	var newTable bigqueryv2.Table
 	if err := json.NewDecoder(r.Body).Decode(&newTable); err != nil {
-		writeBadRequest(ctx, w, err)
+		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	res, err := h.Handle(ctx, &tablesPatchRequest{
@@ -2006,7 +2004,7 @@ func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		newTable: &newTable,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -2055,7 +2053,7 @@ func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -2076,7 +2074,7 @@ func (h *tablesTestIamPermissionsHandler) ServeHTTP(w http.ResponseWriter, r *ht
 		server: server,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -2103,7 +2101,7 @@ func (h *tablesUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		table:   table,
 	})
 	if err != nil {
-		writeInternalError(ctx, w, err)
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -2124,9 +2122,5 @@ type defaultHandler struct{}
 
 func (h *defaultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	logger.Logger(ctx).Error(
-		"unexpected request path",
-		zap.String("path", html.EscapeString(r.URL.Path)),
-	)
-	w.WriteHeader(http.StatusOK)
+	errorResponse(ctx, w, errInternalError(fmt.Sprintf("unexpected request path: %s", html.EscapeString(r.URL.Path))))
 }
