@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/goccy/go-json"
+	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
 // ServerError represents BigQuery errors.
@@ -26,6 +27,15 @@ type ErrorFormat struct {
 	Errors  []*ServerError `json:"errors"`
 	Code    int            `json:"code"`
 	Message string         `json:"message"`
+}
+
+func (e *ServerError) ErrorProto() *bigqueryv2.ErrorProto {
+	return &bigqueryv2.ErrorProto{
+		Reason:    string(e.Reason),
+		Location:  e.Location,
+		DebugInfo: e.DebugInfo,
+		Message:   e.Message,
+	}
 }
 
 func (e *ServerError) Response() []byte {

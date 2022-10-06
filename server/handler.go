@@ -264,7 +264,7 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		job:     job,
 		reader:  r.Body,
 	}); err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	content := job.Content()
@@ -688,7 +688,7 @@ func (h *jobsCancelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -717,7 +717,7 @@ func (h *jobsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		project: project,
 		job:     job,
 	}); err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 }
@@ -758,7 +758,7 @@ func (h *jobsGetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -787,7 +787,7 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		job:     job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -831,7 +831,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -924,13 +924,13 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		r.project.ID,
 		job.JobReference.JobId,
 	)
-	state := "DONE"
+	status := &bigqueryv2.JobStatus{State: "DONE"}
 	if jobErr != nil {
-		state = "FAILURE"
+		internalErr := errJobInternalError(jobErr.Error())
+		status.ErrorResult = internalErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
 	}
-	job.Status = &bigqueryv2.JobStatus{
-		State: state,
-	}
+	job.Status = status
 	var totalBytes int64
 	if response != nil {
 		totalBytes = response.TotalBytes
@@ -978,7 +978,7 @@ func (h *jobsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		project: project,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1020,7 +1020,7 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		queryRequest: &req,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
