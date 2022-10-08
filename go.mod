@@ -5,9 +5,10 @@ go 1.17
 require (
 	cloud.google.com/go/bigquery v1.42.0
 	github.com/go-playground/validator/v10 v10.11.0
+	github.com/goccy/go-json v0.9.10
 	github.com/goccy/go-yaml v1.9.5
 	github.com/goccy/go-zetasql v0.3.5
-	github.com/goccy/go-zetasqlite v0.8.0
+	github.com/goccy/go-zetasqlite v0.8.1
 	github.com/google/go-cmp v0.5.8
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
@@ -24,7 +25,6 @@ require (
 	github.com/fatih/color v1.10.0 // indirect
 	github.com/go-playground/locales v0.14.0 // indirect
 	github.com/go-playground/universal-translator v0.18.0 // indirect
-	github.com/goccy/go-json v0.9.10 // indirect
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/uuid v1.3.0 // indirect
