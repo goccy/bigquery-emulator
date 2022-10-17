@@ -234,6 +234,30 @@ SELECT %s([
 }
 ```
 
+# How it works
+
+## BigQuery Emulator Architecture Overview
+
+After receiving ZetaSQL Query via REST API from bq or Client SDK for each language, go-zetasqlite parses and analyzes the ZetaSQL Query to output AST. After generating a SQLite query from the AST, go-sqite3 is used to access the SQLite Database.
+
+<img width="600px" src="https://user-images.githubusercontent.com/209884/196145011-e35c2df4-5f5d-43ce-b7df-08cd130b5d31.png"></img>
+
+
+
+## Type Conversion Flow
+
+BigQuery has a number of types that do not exist in SQLite (e.g. ARRAY and STRUCT).
+In order to handle them in SQLite, go-zetasqlite encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination and stores them in SQLite.
+When using the encoded data, decode the data via a custom function registered with go-sqlite3 before use.
+
+<img width="600px" src="https://user-images.githubusercontent.com/209884/196145033-aa032878-7e01-4ec7-9a23-b174b87e1a24.png"></img>
+
+
+# Reference
+
+Regarding the story of bigquery-emulator, there are the following articles.
+- [How to create a BigQuery Emulator](https://docs.google.com/presentation/d/1j5TPCpXiE9CvBjq78W8BWz-cGxU8djW1qy9Y6eBHso8/edit#slide=id.g161fdf9feaf_0_388) ( Japanese )
+
 
 # License
 
