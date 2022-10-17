@@ -256,7 +256,7 @@ When using the encoded data, decode the data via a custom function registered wi
 # Reference
 
 Regarding the story of bigquery-emulator, there are the following articles.
-- [How to create a BigQuery Emulator](https://docs.google.com/presentation/d/1j5TPCpXiE9CvBjq78W8BWz-cGxU8djW1qy9Y6eBHso8/edit#slide=id.g161fdf9feaf_0_388) ( Japanese )
+- [How to create a BigQuery Emulator](https://docs.google.com/presentation/d/1j5TPCpXiE9CvBjq78W8BWz-cGxU8djW1qy9Y6eBHso8/edit?usp=sharing) ( Japanese )
 
 
 # License
