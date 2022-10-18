@@ -7,8 +7,8 @@ require (
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-json v0.9.10
 	github.com/goccy/go-yaml v1.9.5
-	github.com/goccy/go-zetasql v0.3.5
-	github.com/goccy/go-zetasqlite v0.8.1
+	github.com/goccy/go-zetasql v0.3.6
+	github.com/goccy/go-zetasqlite v0.8.2
 	github.com/google/go-cmp v0.5.8
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
