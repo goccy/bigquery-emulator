@@ -2,8 +2,9 @@ package types
 
 import (
 	"fmt"
-	"strconv"
+	"time"
 
+	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -52,9 +53,10 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 		cells := make([]*TableCell, 0, len(row.F))
 		for colIdx, cell := range row.F {
 			if schema.Fields[colIdx].Type == "TIMESTAMP" {
-				f64, _ := strconv.ParseFloat(cell.V.(string), 64)
+				t, _ := zetasqlite.TimeFromTimestampValue(cell.V.(string))
+				microsec := t.UnixNano() / int64(time.Microsecond)
 				cells = append(cells, &TableCell{
-					V: fmt.Sprint(int64(f64)),
+					V: fmt.Sprint(microsec),
 				})
 			} else {
 				cells = append(cells, cell)
