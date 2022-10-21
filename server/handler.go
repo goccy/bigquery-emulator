@@ -393,23 +393,45 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	return nil
 }
 
+const (
+	formatOptionsUseInt64TimestampParam = "formatOptions.useInt64Timestamp"
+	deleteContentsParam                 = "deleteContents"
+)
+
+func isDeleteContents(r *http.Request) bool {
+	return parseQueryValueAsBool(r, deleteContentsParam)
+}
+
+func isFormatOptionsUseInt64Timestamp(r *http.Request) bool {
+	return parseQueryValueAsBool(r, formatOptionsUseInt64TimestampParam)
+}
+
+func parseQueryValueAsBool(r *http.Request, key string) bool {
+	queryValues := r.URL.Query()
+	values, exists := queryValues[key]
+	if !exists {
+		return false
+	}
+	if len(values) != 1 {
+		return false
+	}
+	b, err := strconv.ParseBool(values[0])
+	if err != nil {
+		return false
+	}
+	return b
+}
+
 func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
-	queryValues := r.URL.Query()
-	values, exists := queryValues["deleteContents"]
-	var deleteContents bool
-	if exists && len(values) == 1 {
-		b, _ := strconv.ParseBool(values[0])
-		deleteContents = b
-	}
 	if err := h.Handle(ctx, &datasetsDeleteRequest{
 		server:         server,
 		project:        project,
 		dataset:        dataset,
-		deleteContents: deleteContents,
+		deleteContents: isDeleteContents(r),
 	}); err != nil {
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
@@ -782,9 +804,10 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	project := projectFromContext(ctx)
 	job := jobFromContext(ctx)
 	res, err := h.Handle(ctx, &jobsGetQueryResultsRequest{
-		server:  server,
-		project: project,
-		job:     job,
+		server:            server,
+		project:           project,
+		job:               job,
+		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
 	})
 	if err != nil {
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
@@ -794,9 +817,10 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 }
 
 type jobsGetQueryResultsRequest struct {
-	server  *Server
-	project *metadata.Project
-	job     *metadata.Job
+	server            *Server
+	project           *metadata.Project
+	job               *metadata.Job
+	useInt64Timestamp bool
 }
 
 func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*internaltypes.GetQueryResultsResponse, error) {
@@ -804,6 +828,7 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 	if err != nil {
 		return nil, err
 	}
+	rows := internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
 	return &internaltypes.GetQueryResultsResponse{
 		JobReference: &bigqueryv2.JobReference{
 			ProjectId: r.project.ID,
@@ -812,7 +837,7 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 		Schema:      response.Schema,
 		TotalRows:   response.TotalRows,
 		JobComplete: true,
-		Rows:        response.Rows,
+		Rows:        rows,
 	}, nil
 }
 
@@ -1015,9 +1040,10 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.Handle(ctx, &jobsQueryRequest{
-		server:       server,
-		project:      project,
-		queryRequest: &req,
+		server:            server,
+		project:           project,
+		queryRequest:      &req,
+		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
 	})
 	if err != nil {
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
@@ -1027,9 +1053,10 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type jobsQueryRequest struct {
-	server       *Server
-	project      *metadata.Project
-	queryRequest *bigqueryv2.QueryRequest
+	server            *Server
+	project           *metadata.Project
+	queryRequest      *bigqueryv2.QueryRequest
+	useInt64Timestamp bool
 }
 
 func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*internaltypes.QueryResponse, error) {
@@ -1066,6 +1093,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if jobID == "" {
 		jobID = randomID() // generate job id
 	}
+	response.Rows = internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
 	response.JobReference = &bigqueryv2.JobReference{
 		ProjectId: r.project.ID,
 		JobId:     jobID,

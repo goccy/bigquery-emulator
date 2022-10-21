@@ -1,6 +1,11 @@
 package types
 
-import bigqueryv2 "google.golang.org/api/bigquery/v2"
+import (
+	"fmt"
+	"strconv"
+
+	bigqueryv2 "google.golang.org/api/bigquery/v2"
+)
 
 type (
 	GetQueryResultsResponse struct {
@@ -37,3 +42,27 @@ type (
 		Bytes int64       `json:"-"`
 	}
 )
+
+func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp bool) []*TableRow {
+	if !useInt64Timestamp {
+		return rows
+	}
+	formattedRows := make([]*TableRow, 0, len(rows))
+	for _, row := range rows {
+		cells := make([]*TableCell, 0, len(row.F))
+		for colIdx, cell := range row.F {
+			if schema.Fields[colIdx].Type == "TIMESTAMP" {
+				f64, _ := strconv.ParseFloat(cell.V.(string), 64)
+				cells = append(cells, &TableCell{
+					V: fmt.Sprint(int64(f64)),
+				})
+			} else {
+				cells = append(cells, cell)
+			}
+		}
+		formattedRows = append(formattedRows, &TableRow{
+			F: cells,
+		})
+	}
+	return formattedRows
+}
