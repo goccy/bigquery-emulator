@@ -22,6 +22,16 @@ If Go is installed, you can install the latest version with the following comman
 $ go install github.com/goccy/bigquery-emulator/cmd/bigquery-emulator@latest
 ```
 
+The BigQuery emulator depends on [go-zetasql](https://github.com/goccy/go-zetasql).
+This library takes a very long time to install because it automatically builds the ZetaSQL library during install.
+It may look like it hangs because it does not log anything during the build process, but if the `clang` process is running in the background, it is working fine, so just wait it out.
+Also, for this reason, the following environment variables must be enabled for installation.
+
+```console
+CGO_ENABLED=1
+CXX=clang++
+```
+
 You can also download the docker image with the following command
 
 ```console
