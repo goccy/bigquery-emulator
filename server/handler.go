@@ -25,7 +25,7 @@ import (
 )
 
 func errorResponse(ctx context.Context, w http.ResponseWriter, e *ServerError) {
-	logger.Logger(ctx).Error(string(e.Reason), zap.Error(e))
+	logger.Logger(ctx).WithOptions(zap.AddCallerSkip(1)).Error(string(e.Reason), zap.Error(e))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	w.Write(e.Response())
@@ -85,8 +85,7 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	encodeResponse(ctx, w, discoveryAPIResponse)
 }
 
-type uploadHandler struct {
-}
+type uploadHandler struct{}
 
 type UploadJobConfigurationLoad struct {
 	AllowJaggedRows                    bool                                   `json:"allowJaggedRows,omitempty"`
@@ -1208,7 +1207,6 @@ func (h *modelsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encodeResponse(ctx, w, res)
-
 }
 
 type modelsListRequest struct {
