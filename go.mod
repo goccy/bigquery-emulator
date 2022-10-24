@@ -12,6 +12,7 @@ require (
 	github.com/google/go-cmp v0.5.8
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
+	github.com/segmentio/parquet-go v0.0.0-20221020201645-63215c8128ff
 	go.uber.org/zap v1.21.0
 	golang.org/x/net v0.0.0-20220624214902-1bab6f366d9e
 	google.golang.org/api v0.95.0
@@ -21,6 +22,7 @@ require (
 	cloud.google.com/go v0.102.1 // indirect
 	cloud.google.com/go/compute v1.7.0 // indirect
 	cloud.google.com/go/iam v0.3.0 // indirect
+	github.com/andybalholm/brotli v1.0.3 // indirect
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13 // indirect
 	github.com/fatih/color v1.10.0 // indirect
 	github.com/go-playground/locales v0.14.0 // indirect
@@ -30,10 +32,16 @@ require (
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.1.0 // indirect
 	github.com/googleapis/gax-go/v2 v2.5.1 // indirect
+	github.com/klauspost/compress v1.15.9 // indirect
 	github.com/leodido/go-urn v1.2.1 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/mattn/go-sqlite3 v1.14.14 // indirect
+	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/pierrec/lz4/v4 v4.1.9 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/segmentio/encoding v0.3.5 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect

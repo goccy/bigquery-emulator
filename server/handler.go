@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/csv"
@@ -8,6 +9,8 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -22,6 +25,7 @@ import (
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
+	"github.com/segmentio/parquet-go"
 )
 
 func errorResponse(ctx context.Context, w http.ResponseWriter, e *ServerError) {
@@ -174,6 +178,66 @@ func (j *UploadJob) ToJob() *bigqueryv2.Job {
 }
 
 func (h *uploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Query().Get("uploadType") {
+	case "multipart":
+		h.serveMultipart(w, r)
+	case "resumable":
+		h.serveResumable(w, r)
+	default:
+		errorResponse(r.Context(), w, errInvalid(`uploadType should be "multipart" or "resumable"`))
+	}
+}
+
+func (h *uploadHandler) serveMultipart(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	server := serverFromContext(ctx)
+	project := projectFromContext(ctx)
+	contentType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(contentType, "multipart/") {
+		errorResponse(ctx, w, errInvalid("expecting a multipart message"))
+		return
+	}
+	mul := multipart.NewReader(r.Body, params["boundary"])
+	p, err := mul.NextPart()
+	if err != nil {
+		errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to load metadata: %s", err.Error())))
+		return
+	}
+	var job UploadJob
+	if err := json.NewDecoder(p).Decode(&job); err != nil {
+		errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to decode job: %s", err.Error())))
+		return
+	}
+	uploadJob, err := h.Handle(ctx, &uploadRequest{
+		server:  server,
+		project: project,
+		job:     &job,
+	})
+	if err != nil {
+		errorResponse(ctx, w, errInternalError(err.Error()))
+		return
+	}
+
+	p, err = mul.NextPart()
+	if err != nil {
+		errorResponse(ctx, w, errInvalid(fmt.Sprintf("multipart request is invalid: %s", err.Error())))
+		return
+	}
+	u := &uploadContentHandler{}
+	err = u.Handle(ctx, &uploadContentRequest{
+		server:  server,
+		project: project,
+		job:     uploadJob,
+		reader:  p,
+	})
+	if err != nil {
+		errorResponse(ctx, w, errInternalError(err.Error()))
+		return
+	}
+	encodeResponse(ctx, w, uploadJob.Content())
+}
+
+func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
@@ -205,7 +269,7 @@ func (h *uploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			job.JobReference.JobId,
 		),
 	)
-	encodeResponse(ctx, w, res)
+	encodeResponse(ctx, w, res.Content())
 }
 
 type uploadRequest struct {
@@ -214,7 +278,7 @@ type uploadRequest struct {
 	job     *UploadJob
 }
 
-func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*bigqueryv2.Job, error) {
+func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*metadata.Job, error) {
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -231,7 +295,7 @@ func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*bigquery
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit job: %w", err)
 	}
-	return job.Content(), nil
+	return job, nil
 }
 
 type uploadContentHandler struct{}
@@ -306,7 +370,24 @@ func (h *uploadContentHandler) existsColumnNameInCSVHeader(col string, header []
 
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
+	tableRef := load.DestinationTable
+	dataset := r.project.Dataset(tableRef.DatasetId)
+	table := dataset.Table(tableRef.TableId)
+	if table == nil {
+		return fmt.Errorf("`%s` is not found.", tableRef.TableId)
+	}
+	tableContent, err := table.Content()
+	if err != nil {
+		return err
+	}
+	columnToType := map[string]types.Type{}
+	for _, field := range tableContent.Schema.Fields {
+		columnToType[field.Name] = types.Type(field.Type)
+	}
+
 	sourceFormat := load.SourceFormat
+	columns := []*types.Column{}
+	data := types.Data{}
 	switch sourceFormat {
 	case "CSV":
 		records, err := csv.NewReader(r.reader).ReadAll()
@@ -319,19 +400,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		if len(records) == 1 {
 			return nil
 		}
-		tableRef := load.DestinationTable
-		dataset := r.project.Dataset(tableRef.DatasetId)
-		table := dataset.Table(tableRef.TableId)
-		tableContent, err := table.Content()
-		if err != nil {
-			return err
-		}
-		columnToType := map[string]types.Type{}
-		for _, field := range tableContent.Schema.Fields {
-			columnToType[field.Name] = types.Type(field.Type)
-		}
 		header := records[0]
-		columns := []*types.Column{}
 		var ignoreHeader bool
 		for _, col := range header {
 			if _, exists := columnToType[col]; !exists {
@@ -352,7 +421,6 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 				})
 			}
 		}
-		data := types.Data{}
 		for _, record := range records[1:] {
 			rowData := map[string]interface{}{}
 			if len(record) != len(columns) {
@@ -368,26 +436,52 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 			}
 			data = append(data, rowData)
 		}
-		tableDef := &types.Table{
-			ID:      tableRef.TableId,
-			Columns: columns,
-			Data:    data,
-		}
-		conn, err := r.server.connMgr.Connection(ctx, tableRef.ProjectId, tableRef.DatasetId)
-		if err != nil {
-			return fmt.Errorf("failed to get connection: %w", err)
-		}
-		tx, err := conn.Begin(ctx)
+	case "PARQUET":
+		b, err := io.ReadAll(r.reader)
 		if err != nil {
 			return err
 		}
-		defer tx.RollbackIfNotCommitted()
-		if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-			return err
+		reader := parquet.NewReader(bytes.NewReader(b))
+		defer reader.Close()
+
+		for _, f := range load.Schema.Fields {
+			columns = append(columns, &types.Column{
+				Name: f.Name,
+				Type: types.Type(f.Type),
+			})
 		}
-		if err := tx.Commit(); err != nil {
-			return err
+
+		for i := 0; i < int(reader.NumRows()); i++ {
+			var rowData interface{}
+			err := reader.Read(&rowData)
+			if err != nil {
+				return err
+			}
+
+			data = append(data, rowData.(map[string]interface{}))
 		}
+	default:
+		return fmt.Errorf("not support sourceFormat: %s", sourceFormat)
+	}
+	tableDef := &types.Table{
+		ID:      tableRef.TableId,
+		Columns: columns,
+		Data:    data,
+	}
+	conn, err := r.server.connMgr.Connection(ctx, tableRef.ProjectId, tableRef.DatasetId)
+	if err != nil {
+		return fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
