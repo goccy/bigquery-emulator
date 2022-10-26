@@ -132,10 +132,6 @@ func (d *Dataset) DeleteModel(ctx context.Context, tx *sql.Tx, id string) error 
 
 func (d *Dataset) AddTable(ctx context.Context, tx *sql.Tx, table *Table) error {
 	d.mu.Lock()
-	if _, exists := d.tableMap[table.ID]; exists {
-		d.mu.Unlock()
-		return fmt.Errorf("table %s is already created", table.ID)
-	}
 	if err := table.Insert(ctx, tx); err != nil {
 		d.mu.Unlock()
 		return err
@@ -148,6 +144,13 @@ func (d *Dataset) AddTable(ctx context.Context, tx *sql.Tx, table *Table) error 
 		return err
 	}
 	return nil
+}
+
+func (d *Dataset) HaveTable(tableID string) bool {
+	d.mu.Lock()
+	_, exists := d.tableMap[tableID]
+	d.mu.Unlock()
+	return exists
 }
 
 func (d *Dataset) Table(id string) *Table {
