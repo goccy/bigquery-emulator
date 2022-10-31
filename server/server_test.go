@@ -517,7 +517,7 @@ func TestDuplicateTable(t *testing.T) {
 	const (
 		projectName = "test"
 		datasetName = "dataset1"
-		table1Name  = "table1"
+		tableName   = "table_a"
 	)
 
 	ctx := context.Background()
@@ -547,12 +547,12 @@ func TestDuplicateTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	table1 := client.Dataset(datasetName).Table(table1Name)
-	if err := table1.Create(ctx, nil); err != nil {
+	table := client.Dataset(datasetName).Table(tableName)
+	if err := table.Create(ctx, nil); err != nil {
 		t.Fatalf("%+v", err)
 	}
 
-	if err := table1.Create(ctx, nil); err != nil {
+	if err := table.Create(ctx, nil); err != nil {
 		ge := err.(*googleapi.Error)
 		if ge.Code != 409 {
 			t.Fatalf("%+v", ge)
@@ -566,7 +566,7 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 	const (
 		projectName = "test"
 		datasetName = "dataset1"
-		table1Name  = "table1"
+		tableName   = "table_a"
 	)
 
 	ctx := context.Background()
@@ -597,7 +597,7 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 	}
 	defer client.Close()
 
-	table1 := client.Dataset(datasetName).Table(table1Name)
+	table := client.Dataset(datasetName).Table(tableName)
 
 	schema := bigquery.Schema{
 		{Name: "id", Required: true, Type: bigquery.StringFieldType},
@@ -605,11 +605,11 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 		{Name: "timestamp", Required: false, Type: bigquery.TimestampFieldType},
 	}
 	metaData := &bigquery.TableMetadata{Schema: schema}
-	if err := table1.Create(ctx, metaData); err != nil {
+	if err := table.Create(ctx, metaData); err != nil {
 		t.Fatalf("%+v", err)
 	}
 
-	if err := table1.Create(ctx, metaData); err != nil {
+	if err := table.Create(ctx, metaData); err != nil {
 		ge := err.(*googleapi.Error)
 		if ge.Code != 409 {
 			t.Fatalf("%+v", ge)
