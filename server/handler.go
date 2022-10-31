@@ -2043,6 +2043,9 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	defer tx.RollbackIfNotCommitted()
 	if r.table.Schema != nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			if errors.Is(err, metadata.ErrDuplicatedTable) {
+				return nil, errDuplicate(err.Error())
+			}
 			return nil, errInternalError(err.Error())
 		}
 	}

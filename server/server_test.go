@@ -562,6 +562,63 @@ func TestDuplicateTable(t *testing.T) {
 	}
 }
 
+func TestDuplicateTableWithSchema(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		table1Name  = "table1"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table1 := client.Dataset(datasetName).Table(table1Name)
+
+	schema := bigquery.Schema{
+		{Name: "id", Required: true, Type: bigquery.StringFieldType},
+		{Name: "data", Required: false, Type: bigquery.StringFieldType},
+		{Name: "timestamp", Required: false, Type: bigquery.TimestampFieldType},
+	}
+	metaData := &bigquery.TableMetadata{Schema: schema}
+	if err := table1.Create(ctx, metaData); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if err := table1.Create(ctx, metaData); err != nil {
+		ge := err.(*googleapi.Error)
+		if ge.Code != 409 {
+			t.Fatalf("%+v", ge)
+		}
+	} else {
+		t.Fatalf(("Threre should be error, when table name duplicates."))
+	}
+}
+
 func TestDataFromStruct(t *testing.T) {
 	ctx := context.Background()
 

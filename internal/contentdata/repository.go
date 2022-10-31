@@ -15,6 +15,7 @@ import (
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/logger"
+	"github.com/goccy/bigquery-emulator/internal/metadata"
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
 )
@@ -71,6 +72,9 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	}
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", ref.TableId, strings.Join(fields, ","))
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
+		if strings.HasSuffix(err.Error(), "already exists") {
+			return fmt.Errorf("table %s: %w", ref.TableId, metadata.ErrDuplicatedTable)
+		}
 		return fmt.Errorf("failed to create table %s: %w", query, err)
 	}
 	return nil
