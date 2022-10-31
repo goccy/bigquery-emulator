@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"fmt"
 	"net/http"
 
@@ -30,6 +31,30 @@ func loggerMiddleware(s *Server) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			next.ServeHTTP(w, r.WithContext(logger.WithLogger(ctx, s.logger)))
+		})
+	}
+}
+
+func decompressMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			const (
+				contentEncoding = "Content-Encoding"
+				// issue#71 The java client compresses the body request with Gzip
+				compressGzip = "gzip"
+			)
+
+			if r.Header.Get(contentEncoding) == compressGzip {
+				b, err := gzip.NewReader(r.Body)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					fmt.Fprintln(w, err)
+					return
+				}
+				defer b.Close()
+				r.Body = b
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }
