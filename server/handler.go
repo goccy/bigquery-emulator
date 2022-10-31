@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -2045,10 +2046,6 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 			return nil, errInternalError(err.Error())
 		}
 	}
-	tableID := r.table.TableReference.TableId
-	if exists := r.dataset.HaveTable(tableID); exists {
-		return nil, errDuplicate(fmt.Errorf("table %s is already created", tableID).Error())
-	}
 	if err := r.dataset.AddTable(
 		ctx,
 		tx.Tx(),
@@ -2056,10 +2053,13 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 			r.server.metaRepo,
 			r.project.ID,
 			r.dataset.ID,
-			tableID,
+			r.table.TableReference.TableId,
 			tableMetadata,
 		),
 	); err != nil {
+		if errors.Is(err, metadata.ErrDuplicatedTable) {
+			return nil, errDuplicate(err.Error())
+		}
 		return nil, errInternalError(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
