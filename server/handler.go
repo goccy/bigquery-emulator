@@ -2041,14 +2041,6 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, errInternalError(err.Error())
 	}
 	defer tx.RollbackIfNotCommitted()
-	if r.table.Schema != nil {
-		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
-			if errors.Is(err, metadata.ErrDuplicatedTable) {
-				return nil, errDuplicate(err.Error())
-			}
-			return nil, errInternalError(err.Error())
-		}
-	}
 	if err := r.dataset.AddTable(
 		ctx,
 		tx.Tx(),
@@ -2064,6 +2056,11 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 			return nil, errDuplicate(err.Error())
 		}
 		return nil, errInternalError(err.Error())
+	}
+	if r.table.Schema != nil {
+		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			return nil, errInternalError(err.Error())
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
