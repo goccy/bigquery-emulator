@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/bigquery"
@@ -62,9 +63,38 @@ func (t *Table) SetupMetadata(projectID, datasetID string) {
 
 type Data []map[string]interface{}
 
+type Mode string
+
+const (
+	NullableMode Mode = "NULLABLE"
+	RequiredMode Mode = "REQUIRED"
+	RepeatedMode Mode = "REPEATED"
+)
+
 type Column struct {
-	Name string `yaml:"name" validate:"required"`
-	Type Type   `yaml:"type" validate:"type"`
+	Name   string    `yaml:"name" validate:"required"`
+	Type   Type      `yaml:"type" validate:"type"`
+	Mode   Mode      `yaml:"mode" validate:"mode"`
+	Fields []*Column `yaml:"fields"`
+}
+
+func (c *Column) FormatType() string {
+	var typ string
+	if c.Type.ZetaSQLTypeKind() == types.STRUCT {
+		formatTypes := make([]string, 0, len(c.Fields))
+		for _, field := range c.Fields {
+			formatTypes = append(formatTypes, field.FormatType())
+		}
+		typ = fmt.Sprintf("STRUCT<%s>", strings.Join(formatTypes, ","))
+	} else {
+		typ = c.Type.ZetaSQLTypeKind().String()
+	}
+	if c.Mode == RepeatedMode {
+		return fmt.Sprintf("ARRAY<%s>", typ)
+	} else if c.Mode == RequiredMode {
+		return fmt.Sprintf("%s NOT NULL", typ)
+	}
+	return typ
 }
 
 type Job struct {
@@ -326,6 +356,7 @@ func init() {
 		{FieldNumeric, bigquery.NumericFieldType},
 		{FieldBignumeric, bigquery.BigNumericFieldType},
 		{FieldInterval, bigquery.IntervalFieldType},
+		{FieldJSON, bigquery.JSONFieldType},
 	} {
 		validateFieldType(v.fieldType, v.bqFieldType)
 	}
@@ -359,9 +390,28 @@ func NewTable(id string, columns []*Column, data Data) *Table {
 	}
 }
 
-func NewColumn(name string, typ Type) *Column {
-	return &Column{
+type ColumnOption func(c *Column)
+
+func ColumnMode(mode Mode) ColumnOption {
+	return func(c *Column) {
+		c.Mode = mode
+	}
+}
+
+func ColumnFields(fields []*Column) ColumnOption {
+	return func(c *Column) {
+		c.Fields = fields
+	}
+}
+
+func NewColumn(name string, typ Type, opts ...ColumnOption) *Column {
+	c := &Column{
 		Name: name,
 		Type: typ,
+		Mode: NullableMode,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
