@@ -81,7 +81,7 @@ func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) strin
 	if field.Type == "RECORD" {
 		types := make([]string, 0, len(field.Fields))
 		for _, f := range field.Fields {
-			types = append(types, r.encodeSchemaField(f))
+			types = append(types, fmt.Sprintf("%s %s", f.Name, r.encodeSchemaField(f)))
 		}
 		elem = fmt.Sprintf("STRUCT<%s>", strings.Join(types, ","))
 	} else {
@@ -285,7 +285,7 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
 		columns = append(columns,
-			fmt.Sprintf("`%s` %s", column.Name, column.Type.ZetaSQLTypeKind()),
+			fmt.Sprintf("`%s` %s", column.Name, column.FormatType()),
 		)
 	}
 	ddl := fmt.Sprintf(
