@@ -84,6 +84,7 @@ func New(storage Storage) (*Server, error) {
 	r.Use(recoveryMiddleware(server))
 	r.Use(loggerMiddleware(server))
 	r.Use(accessLogMiddleware())
+	r.Use(decompressMiddleware())
 	r.Use(withServerMiddleware(server))
 	r.Use(withProjectMiddleware())
 	r.Use(withDatasetMiddleware())

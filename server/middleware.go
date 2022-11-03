@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"fmt"
 	"net/http"
 
@@ -41,6 +42,31 @@ func accessLogMiddleware() func(http.Handler) http.Handler {
 				fmt.Sprintf("%s %s", r.Method, r.URL.Path),
 				zap.String("query", r.URL.RawQuery),
 			)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+const (
+	contentEncoding  = "Content-Encoding"
+	encodingTypeGzip = "gzip"
+)
+
+func decompressMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get(contentEncoding) != encodingTypeGzip {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx := r.Context()
+			reader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to decode gzip content: %s", err)))
+				return
+			}
+			defer reader.Close()
+			r.Body = reader
 			next.ServeHTTP(w, r)
 		})
 	}
