@@ -2010,12 +2010,23 @@ type tablesInsertRequest struct {
 	table   *bigqueryv2.Table
 }
 
+type TableType string
+
+const (
+	DefaultTableType          TableType = "TABLE"
+	ViewTableType             TableType = "VIEW"
+	ExternalTableType         TableType = "EXTERNAL"
+	MaterializedViewTableType TableType = "MATERIALIZED_VIEW"
+	SnapshotTableType         TableType = "SNAPSHOT"
+)
+
 func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, *ServerError) {
 	table := r.table
 	now := time.Now().Unix()
 	table.Id = fmt.Sprintf("%s:%s.%s", r.project.ID, r.dataset.ID, r.table.TableReference.TableId)
 	table.CreationTime = now
 	table.LastModifiedTime = uint64(now)
+	table.Type = string(DefaultTableType) // TODO: need to handle other table types
 	table.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/datasets/%s/tables/%s",
 		r.server.httpServer.Addr,
