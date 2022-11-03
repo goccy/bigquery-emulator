@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -1996,7 +1997,7 @@ func (h *tablesInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		table:   &table,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -2009,7 +2010,7 @@ type tablesInsertRequest struct {
 	table   *bigqueryv2.Table
 }
 
-func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, error) {
+func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, *ServerError) {
 	table := r.table
 	now := time.Now().Unix()
 	table.Id = fmt.Sprintf("%s:%s.%s", r.project.ID, r.dataset.ID, r.table.TableReference.TableId)
@@ -2024,27 +2025,22 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	)
 	encodedTableData, err := json.Marshal(table)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	var tableMetadata map[string]interface{}
 	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	defer tx.RollbackIfNotCommitted()
-	if r.table.Schema != nil {
-		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
-			return nil, err
-		}
-	}
 	if err := r.dataset.AddTable(
 		ctx,
 		tx.Tx(),
@@ -2056,10 +2052,18 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 			tableMetadata,
 		),
 	); err != nil {
-		return nil, err
+		if errors.Is(err, metadata.ErrDuplicatedTable) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(err.Error())
+	}
+	if r.table.Schema != nil {
+		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			return nil, errInternalError(err.Error())
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit table: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
 	}
 	return table, nil
 }
