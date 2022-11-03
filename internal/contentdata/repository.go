@@ -54,6 +54,30 @@ func (r *Repository) getConnection(ctx context.Context, projectID, datasetID str
 	return conn, nil
 }
 
+func (r *Repository) tablePath(projectID, datasetID, tableID string) string {
+	var tablePath []string
+	if projectID != "" {
+		tablePath = append(tablePath, projectID)
+	}
+	if datasetID != "" {
+		tablePath = append(tablePath, datasetID)
+	}
+	tablePath = append(tablePath, tableID)
+	return strings.Join(tablePath, ".")
+}
+
+func (r *Repository) routinePath(projectID, datasetID, routineID string) string {
+	var routinePath []string
+	if projectID != "" {
+		routinePath = append(routinePath, projectID)
+	}
+	if datasetID != "" {
+		routinePath = append(routinePath, datasetID)
+	}
+	routinePath = append(routinePath, routineID)
+	return strings.Join(routinePath, ".")
+}
+
 func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
 	if err := tx.ContentRepoMode(); err != nil {
 		return err
@@ -69,7 +93,8 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	for _, field := range table.Schema.Fields {
 		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, r.encodeSchemaField(field)))
 	}
-	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", ref.TableId, strings.Join(fields, ","))
+	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", tablePath, strings.Join(fields, ","))
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", query, err)
 	}
@@ -290,7 +315,7 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 	}
 	ddl := fmt.Sprintf(
 		"CREATE OR REPLACE TABLE `%s` (%s)",
-		table.ID, strings.Join(columns, ","),
+		r.tablePath(projectID, datasetID, table.ID), strings.Join(columns, ","),
 	)
 	if _, err := tx.Tx().ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("failed to execute DDL %s: %w", ddl, err)
@@ -331,7 +356,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	}
 	query := fmt.Sprintf(
 		"INSERT `%s` (%s) VALUES %s",
-		table.ID,
+		r.tablePath(projectID, datasetID, table.ID),
 		strings.Join(columnsWithEscape, ","),
 		strings.Join(rows, ","),
 	)
@@ -351,8 +376,9 @@ func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projec
 	}()
 
 	for _, tableID := range tableIDs {
-		logger.Logger(ctx).Debug("delete table", zap.String("tableID", tableID))
-		query := fmt.Sprintf("DROP TABLE `%s`", tableID)
+		tablePath := r.tablePath(projectID, datasetID, tableID)
+		logger.Logger(ctx).Debug("delete table", zap.String("table", tablePath))
+		query := fmt.Sprintf("DROP TABLE `%s`", tablePath)
 		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to delete table %s: %w", query, err)
 		}
@@ -423,7 +449,7 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, tx *connection.Tx
 	query := fmt.Sprintf(
 		"%s `%s`(%s)%s AS (%s)",
 		routineType,
-		ref.RoutineId,
+		r.routinePath(ref.ProjectId, ref.DatasetId, ref.RoutineId),
 		strings.Join(args, ", "),
 		retType,
 		routine.DefinitionBody,
