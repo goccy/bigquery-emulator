@@ -7,12 +7,14 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"time"
 
+	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
 	"golang.org/x/net/netutil"
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/contentdata"
@@ -31,6 +33,7 @@ type Server struct {
 	contentRepo  *contentdata.Repository
 	fileCleanup  func() error
 	httpServer   *http.Server
+	grpcServer   *grpc.Server
 }
 
 func New(storage Storage) (*Server, error) {
@@ -207,18 +210,33 @@ func (s *Server) Load(sources ...Source) error {
 }
 
 func (s *Server) Serve(ctx context.Context, addr string) error {
-	srv := &http.Server{
+	httpServer := &http.Server{
 		Handler:      s.Handler,
 		Addr:         addr,
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
-	s.httpServer = srv
-	ln, err := net.Listen("tcp", addr)
+	s.httpServer = httpServer
+
+	grpcServer := grpc.NewServer()
+	registerStorageServer(grpcServer, s)
+	s.grpcServer = grpcServer
+
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	return srv.Serve(netutil.LimitListener(ln, 1))
+
+	protocolmux := cmux.New(listener)
+
+	grpcListener := protocolmux.Match(cmux.HTTP2HeaderField("Content-Type", "application/grpc"))
+	httpListener := protocolmux.Match(cmux.HTTP1Fast())
+
+	var eg errgroup.Group
+	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
+	eg.Go(func() error { return httpServer.Serve(netutil.LimitListener(httpListener, 1)) })
+	eg.Go(func() error { return protocolmux.Serve() })
+	return eg.Wait()
 }
 
 func (s *Server) Stop(ctx context.Context) error {
@@ -227,10 +245,4 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 	return s.httpServer.Shutdown(ctx)
-}
-
-func (s *Server) TestServer() *httptest.Server {
-	server := httptest.NewServer(s.Handler)
-	s.httpServer = server.Config
-	return server
 }
