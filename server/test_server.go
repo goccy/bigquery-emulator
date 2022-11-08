@@ -46,9 +46,7 @@ func (s *Server) TestServer() *TestServer {
 	registerStorageServer(grpcServer, s)
 	s.grpcServer = grpcServer
 	go func() {
-		if err := grpcServer.Serve(grpcListener); err != nil {
-			panic(err)
-		}
+		_ = grpcServer.Serve(grpcListener)
 	}()
 	testServer := &TestServer{Server: server}
 	testServer.DialerOption = grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {

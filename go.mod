@@ -16,7 +16,6 @@ require (
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/linkedin/goavro/v2 v2.12.0
 	github.com/segmentio/parquet-go v0.0.0-20221020201645-63215c8128ff
-	github.com/soheilhy/cmux v0.1.5
 	go.uber.org/zap v1.21.0
 	golang.org/x/net v0.0.0-20220722155237-a158d28d115b
 	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde

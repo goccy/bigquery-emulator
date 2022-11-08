@@ -10,7 +10,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
 	"golang.org/x/net/netutil"
 	"golang.org/x/sync/errgroup"
@@ -209,10 +208,10 @@ func (s *Server) Load(sources ...Source) error {
 	return nil
 }
 
-func (s *Server) Serve(ctx context.Context, addr string) error {
+func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 	httpServer := &http.Server{
 		Handler:      s.Handler,
-		Addr:         addr,
+		Addr:         httpAddr,
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
@@ -222,27 +221,29 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 	registerStorageServer(grpcServer, s)
 	s.grpcServer = grpcServer
 
-	listener, err := net.Listen("tcp", addr)
+	httpListener, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		return err
+	}
+	grpcListener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		return err
 	}
 
-	protocolmux := cmux.New(listener)
-
-	grpcListener := protocolmux.Match(cmux.HTTP2HeaderField("Content-Type", "application/grpc"))
-	httpListener := protocolmux.Match(cmux.HTTP1Fast())
-
 	var eg errgroup.Group
 	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
 	eg.Go(func() error { return httpServer.Serve(netutil.LimitListener(httpListener, 1)) })
-	eg.Go(func() error { return protocolmux.Serve() })
 	return eg.Wait()
 }
 
 func (s *Server) Stop(ctx context.Context) error {
 	defer s.Close()
-	if s.httpServer == nil {
-		return nil
+
+	if s.grpcServer != nil {
+		s.grpcServer.GracefulStop()
 	}
-	return s.httpServer.Shutdown(ctx)
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }
