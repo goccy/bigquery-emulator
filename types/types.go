@@ -481,3 +481,11 @@ func NewColumn(name string, typ Type, opts ...ColumnOption) *Column {
 	}
 	return c
 }
+
+func parseDate(v string) (time.Time, error) {
+	return time.Parse("2006-01-02", v)
+}
+
+func parseTime(v string) (time.Time, error) {
+	return time.Parse("15:04:05", v)
+}

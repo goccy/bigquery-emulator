@@ -54,15 +54,31 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 	case FieldBytes:
 		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.Binary}, nil
 	case FieldDate:
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Date64}, nil
+		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Date32}, nil
 	case FieldDatetime:
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Date64}, nil
+		return &arrow.Field{
+			Name: f.Name,
+			Type: arrow.FixedWidthTypes.Timestamp_us,
+			Metadata: arrow.MetadataFrom(
+				map[string]string{
+					"ARROW:extension:name": "google:sqlType:datetime",
+				},
+			),
+		}, nil
 	case FieldTime:
-		return &arrow.Field{Name: f.Name, Type: arrow.FixedWidthTypes.Time32ms}, nil
+		return &arrow.Field{Name: f.Name, Type: arrow.FixedWidthTypes.Time64us}, nil
 	case FieldTimestamp:
-		return &arrow.Field{Name: f.Name, Type: arrow.FixedWidthTypes.Timestamp_ms}, nil
+		return &arrow.Field{Name: f.Name, Type: arrow.FixedWidthTypes.Timestamp_us}, nil
 	case FieldJSON:
-		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
+		return &arrow.Field{
+			Name: f.Name,
+			Type: arrow.BinaryTypes.String,
+			Metadata: arrow.MetadataFrom(
+				map[string]string{
+					"ARROW:extension:name": "google:sqlType:json",
+				},
+			),
+		}, nil
 	case FieldRecord:
 		fields := make([]arrow.Field, 0, len(f.Fields))
 		for _, field := range f.Fields {
@@ -74,22 +90,17 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 		}
 		return &arrow.Field{Name: f.Name, Type: arrow.StructOf(fields...)}, nil
 	case FieldNumeric:
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Int64}, nil
+		// TODO: current arrow library doesn't support decimal type.
+		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
 	case FieldBignumeric:
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Int64}, nil
+		// TODO: current arrow library doesn't support decimal type.
+		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
+	case FieldGeography:
+		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
+	case FieldInterval:
+		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
 	}
-	// Currently, Geography and Interval types are unsupported.
 	return nil, fmt.Errorf("unsupported arrow type %s", f.Type)
-}
-
-func parseDatetimeOrDate(v string) (time.Time, error) {
-	if t, err := time.Parse("2006-01-02T15:04:05.999999", v); err == nil {
-		return t, nil
-	}
-	if t, err := time.Parse("2006-01-02 15:04:05.999999", v); err == nil {
-		return t, nil
-	}
-	return time.Parse("2006-01-02", v)
 }
 
 func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
@@ -126,19 +137,25 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 	case *array.BinaryBuilder:
 		b.Append([]byte(v))
 		return nil
-	case *array.Date64Builder:
-		t, err := parseDatetimeOrDate(v)
+	case *array.Date32Builder:
+		t, err := parseDate(v)
 		if err != nil {
 			return err
 		}
-		b.Append(arrow.Date64(t.UnixMilli()))
+		b.Append(arrow.Date32(int32(t.Sub(time.Unix(0, 0)) / (24 * time.Hour))))
 		return nil
+	case *array.Time64Builder:
+		t, err := parseTime(v)
+		if err != nil {
+			return err
+		}
+		b.Append(arrow.Time64(t.UnixMicro()))
 	case *array.TimestampBuilder:
 		t, err := zetasqlite.TimeFromTimestampValue(v)
 		if err != nil {
 			return err
 		}
-		b.Append(arrow.Timestamp(t.UnixMilli()))
+		b.Append(arrow.Timestamp(t.UnixMicro()))
 		return nil
 	}
 	return fmt.Errorf("unexpected builder type %T", builder)
