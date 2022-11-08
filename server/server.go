@@ -7,12 +7,13 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/net/netutil"
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/contentdata"
@@ -31,6 +32,7 @@ type Server struct {
 	contentRepo  *contentdata.Repository
 	fileCleanup  func() error
 	httpServer   *http.Server
+	grpcServer   *grpc.Server
 }
 
 func New(storage Storage) (*Server, error) {
@@ -206,31 +208,42 @@ func (s *Server) Load(sources ...Source) error {
 	return nil
 }
 
-func (s *Server) Serve(ctx context.Context, addr string) error {
-	srv := &http.Server{
+func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
+	httpServer := &http.Server{
 		Handler:      s.Handler,
-		Addr:         addr,
+		Addr:         httpAddr,
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
-	s.httpServer = srv
-	ln, err := net.Listen("tcp", addr)
+	s.httpServer = httpServer
+
+	grpcServer := grpc.NewServer()
+	registerStorageServer(grpcServer, s)
+	s.grpcServer = grpcServer
+
+	httpListener, err := net.Listen("tcp", httpAddr)
 	if err != nil {
 		return err
 	}
-	return srv.Serve(netutil.LimitListener(ln, 1))
+	grpcListener, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		return err
+	}
+
+	var eg errgroup.Group
+	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
+	eg.Go(func() error { return httpServer.Serve(netutil.LimitListener(httpListener, 1)) })
+	return eg.Wait()
 }
 
 func (s *Server) Stop(ctx context.Context) error {
 	defer s.Close()
-	if s.httpServer == nil {
-		return nil
-	}
-	return s.httpServer.Shutdown(ctx)
-}
 
-func (s *Server) TestServer() *httptest.Server {
-	server := httptest.NewServer(s.Handler)
-	s.httpServer = server.Config
-	return server
+	if s.grpcServer != nil {
+		s.grpcServer.GracefulStop()
+	}
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }

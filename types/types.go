@@ -1,12 +1,12 @@
 package types
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"github.com/goccy/go-json"
 	"github.com/goccy/go-zetasql/types"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
@@ -34,10 +34,7 @@ type Table struct {
 func (t *Table) SetupMetadata(projectID, datasetID string) {
 	fields := make([]*bigqueryv2.TableFieldSchema, len(t.Columns))
 	for i, col := range t.Columns {
-		fields[i] = &bigqueryv2.TableFieldSchema{
-			Name: col.Name,
-			Type: string(col.Type.FieldType()),
-		}
+		fields[i] = col.TableFieldSchema()
 	}
 	now := time.Now().Unix()
 	encodedTableData, _ := json.Marshal(&bigqueryv2.Table{
@@ -65,6 +62,18 @@ type Data []map[string]interface{}
 
 type Mode string
 
+func (m *Mode) UnmarshalYAML(b []byte) error {
+	switch strings.ToLower(string(b)) {
+	case strings.ToLower(string(NullableMode)):
+		*m = NullableMode
+	case strings.ToLower(string(RequiredMode)):
+		*m = RequiredMode
+	case strings.ToLower(string(RepeatedMode)):
+		*m = RepeatedMode
+	}
+	return nil
+}
+
 const (
 	NullableMode Mode = "NULLABLE"
 	RequiredMode Mode = "REQUIRED"
@@ -83,7 +92,7 @@ func (c *Column) FormatType() string {
 	if c.Type.ZetaSQLTypeKind() == types.STRUCT {
 		formatTypes := make([]string, 0, len(c.Fields))
 		for _, field := range c.Fields {
-			formatTypes = append(formatTypes, field.FormatType())
+			formatTypes = append(formatTypes, fmt.Sprintf("`%s` %s", field.Name, field.FormatType()))
 		}
 		typ = fmt.Sprintf("STRUCT<%s>", strings.Join(formatTypes, ","))
 	} else {
@@ -95,6 +104,30 @@ func (c *Column) FormatType() string {
 		return fmt.Sprintf("%s NOT NULL", typ)
 	}
 	return typ
+}
+
+func (c *Column) TableFieldSchema() *bigqueryv2.TableFieldSchema {
+	return tableFieldSchemaFromColumn(c)
+}
+
+func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
+	if len(c.Fields) == 0 {
+		return &bigqueryv2.TableFieldSchema{
+			Name: c.Name,
+			Type: string(c.Type.FieldType()),
+			Mode: string(c.Mode),
+		}
+	}
+	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(c.Fields))
+	for _, field := range c.Fields {
+		fields = append(fields, tableFieldSchemaFromColumn(field))
+	}
+	return &bigqueryv2.TableFieldSchema{
+		Name:   c.Name,
+		Type:   string(c.Type.FieldType()),
+		Fields: fields,
+		Mode:   string(c.Mode),
+	}
 }
 
 type Job struct {
@@ -284,6 +317,39 @@ func (t Type) FieldType() FieldType {
 		return FieldRecord
 	}
 	return ""
+}
+
+func TableFieldSchemaFromZetaSQLType(name string, t types.Type) *bigqueryv2.TableFieldSchema {
+	kind := t.Kind()
+	typ := string(TypeFromKind(int(kind)).FieldType())
+	switch kind {
+	case types.ARRAY:
+		at := t.AsArray()
+		elem := TableFieldSchemaFromZetaSQLType("", at.ElementType())
+		return &bigqueryv2.TableFieldSchema{
+			Name:   name,
+			Type:   elem.Type,
+			Fields: elem.Fields,
+			Mode:   "REPEATED",
+		}
+	case types.STRUCT:
+		st := t.AsStruct()
+		fieldNum := st.NumFields()
+		fields := make([]*bigqueryv2.TableFieldSchema, 0, fieldNum)
+		for i := 0; i < st.NumFields(); i++ {
+			field := st.Field(i)
+			fields = append(fields, TableFieldSchemaFromZetaSQLType(field.Name(), field.Type()))
+		}
+		return &bigqueryv2.TableFieldSchema{
+			Name:   name,
+			Type:   typ,
+			Fields: fields,
+		}
+	}
+	return &bigqueryv2.TableFieldSchema{
+		Name: name,
+		Type: typ,
+	}
 }
 
 const (

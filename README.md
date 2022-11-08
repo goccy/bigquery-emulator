@@ -52,7 +52,8 @@ Usage:
 Application Options:
       --project=        specify the project name
       --dataset=        specify the dataset name
-      --port=           specify the port number (default: 9050)
+      --port=           specify the http port number. this port used by bigquery api (default: 9050)
+      --grpc-port=      specify the grpc port number. this port used by bigquery storage api (default: 9060)
       --log-level=      specify the log level (debug/info/warn/error) (default: error)
       --log-format=     sepcify the log format (console/json) (default: console)
       --database=       specify the database file if required. if not specified, it will be on memory
@@ -67,7 +68,8 @@ Start the server by specifying the project name
 
 ```console
 $ ./bigquery-emulator --project=test
-[bigquery-emulator] listening at 0.0.0.0:9050
+[bigquery-emulator] REST server listening at 0.0.0.0:9050
+[bigquery-emulator] gRPC server listening at 0.0.0.0:9060
 ```
 
 If you want to use docker image to start emulator, specify like the following.
@@ -82,7 +84,8 @@ $ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
 
 ```console
 $ ./bigquery-emulator --project=test --data-from-yaml=./server/testdata/data.yaml
-[bigquery-emulator] listening at 0.0.0.0:9050
+[bigquery-emulator] REST server listening at 0.0.0.0:9050
+[bigquery-emulator] gRPC server listening at 0.0.0.0:9060
 ```
 
 * `server/testdata/data.yaml` is [here](https://github.com/goccy/bigquery-emulator/blob/main/server/testdata/data.yaml)
@@ -92,11 +95,11 @@ $ ./bigquery-emulator --project=test --data-from-yaml=./server/testdata/data.yam
 ```console
 $ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT * FROM dataset1.table_a WHERE id = 1"
 
-+----+-------+
-| id | name  |
-+----+-------+
-|  1 | alice |
-+----+-------+
++----+-------+---------------------------------------------+------------+----------+---------------------+
+| id | name  |                  structarr                  |  birthday  | skillNum |     created_at      |
++----+-------+---------------------------------------------+------------+----------+---------------------+
+|  1 | alice | [{"key":"profile","value":"{\"age\": 10}"}] | 2012-01-01 |        3 | 2022-01-01 12:00:00 |
++----+-------+---------------------------------------------+------------+----------+---------------------+
 ```
 
 ## How to use from python client
@@ -105,7 +108,8 @@ $ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT * FROM dataset1.t
 
 ```console
 $ ./bigquery-emulator --project=test --dataset=dataset1
-[bigquery-emulator] listening at 0.0.0.0:9050
+[bigquery-emulator] REST server listening at 0.0.0.0:9050
+[bigquery-emulator] gRPC server listening at 0.0.0.0:9060
 ```
 
 ### 2. Call endpoint from python client
@@ -128,12 +132,23 @@ client.query(query="...", job_config=QueryJobConfig())
 ```
 
 If you use a DataFrame as the download destination for the query results,
-you have to disable BigQueryStorage client by `create_bqstorage_client=False`.
+You must either disable the BigQueryStorage client with `create_bqstorage_client=False` or
+create a BigQueryStorage client that references the local grpc port (default 9060).
 
 https://cloud.google.com/bigquery/docs/samples/bigquery-query-results-dataframe?hl=en
 
 ```python
 result = client.query(sql).to_dataframe(create_bqstorage_client=False)
+```
+
+or
+
+```python
+from google.cloud import bigquery_storage
+
+client_options = ClientOptions(api_endpoint="0.0.0.0:9060")
+read_client = bigquery_storage.BigQueryReadClient(client_options=client_options)
+result = client.query(sql).to_dataframe(bqstorage_client=read_client)
 ```
 
 # Status

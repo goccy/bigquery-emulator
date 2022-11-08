@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	zetasqltypes "github.com/goccy/go-zetasql/types"
 	"github.com/goccy/go-zetasqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -118,39 +117,6 @@ func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) strin
 	return elem
 }
 
-func (r *Repository) zetasqlTypeToTableFieldSchema(name string, t zetasqltypes.Type) *bigqueryv2.TableFieldSchema {
-	kind := t.Kind()
-	typ := string(types.TypeFromKind(int(kind)).FieldType())
-	switch kind {
-	case zetasqltypes.ARRAY:
-		at := t.AsArray()
-		elem := r.zetasqlTypeToTableFieldSchema("", at.ElementType())
-		return &bigqueryv2.TableFieldSchema{
-			Name:   name,
-			Type:   elem.Type,
-			Fields: elem.Fields,
-			Mode:   "REPEATED",
-		}
-	case zetasqltypes.STRUCT:
-		st := t.AsStruct()
-		fieldNum := st.NumFields()
-		fields := make([]*bigqueryv2.TableFieldSchema, 0, fieldNum)
-		for i := 0; i < st.NumFields(); i++ {
-			field := st.Field(i)
-			fields = append(fields, r.zetasqlTypeToTableFieldSchema(field.Name(), field.Type()))
-		}
-		return &bigqueryv2.TableFieldSchema{
-			Name:   name,
-			Type:   typ,
-			Fields: fields,
-		}
-	}
-	return &bigqueryv2.TableFieldSchema{
-		Name: name,
-		Type: typ,
-	}
-}
-
 func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, datasetID, query string, params []*bigqueryv2.QueryParameter) (*internaltypes.QueryResponse, error) {
 	tx.SetProjectAndDataset(projectID, datasetID)
 	if err := tx.ContentRepoMode(); err != nil {
@@ -197,7 +163,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		if err != nil {
 			return nil, err
 		}
-		fields = append(fields, r.zetasqlTypeToTableFieldSchema(colNames[i], zetasqlType))
+		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(colNames[i], zetasqlType))
 	}
 
 	var (
@@ -218,12 +184,13 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		}
 		cells := make([]*internaltypes.TableCell, 0, len(values))
 		resultValues := make([]interface{}, 0, len(values))
-		for _, value := range values {
+		for idx, value := range values {
 			v := reflect.ValueOf(value).Elem().Interface()
 			cell, err := r.convertValueToCell(v)
 			if err != nil {
 				return nil, err
 			}
+			cell.Name = colNames[idx]
 			cells = append(cells, cell)
 			totalBytes += cell.Bytes
 			resultValues = append(resultValues, v)
@@ -277,6 +244,7 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 			if err != nil {
 				return nil, err
 			}
+			cell.Name = keys[0].Interface().(string)
 			totalBytes += cell.Bytes
 			cells = append(cells, cell)
 		}
@@ -317,6 +285,7 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 		"CREATE OR REPLACE TABLE `%s` (%s)",
 		r.tablePath(projectID, datasetID, table.ID), strings.Join(columns, ","),
 	)
+
 	if _, err := tx.Tx().ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("failed to execute DDL %s: %w", ddl, err)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -19,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goccy/go-json"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 

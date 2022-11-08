@@ -3,9 +3,9 @@ package metadata
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
+	"github.com/goccy/go-json"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 

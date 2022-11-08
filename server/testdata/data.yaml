@@ -19,6 +19,10 @@ projects:
                   type: STRING
                 - name: value
                   type: JSON
+            - name: birthday
+              type: DATE
+            - name: skillNum
+              type: NUMERIC
             - name: created_at
               type: TIMESTAMP
           data:
@@ -27,12 +31,16 @@ projects:
               structarr:
                 - key: profile
                   value: '{"age": 10}'
+              birthday: "2012-01-01"
+              skillNum: 3
               created_at: '2022-01-01T12:00:00'
             - id: 2
               name: bob
               structarr:
                 - key: profile
                   value: '{"age": 15}'
+              birthday: "2007-02-01"
+              skillNum: 5
               created_at: '2022-01-02T18:00:00'
         - id: table_b
           columns:
