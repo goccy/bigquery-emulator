@@ -1,21 +1,27 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/goccy/bigquery-emulator/internal/logger"
-	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
-	"github.com/goccy/bigquery-emulator/types"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/ipc"
+	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/goccy/go-json"
 	goavro "github.com/linkedin/goavro/v2"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/goccy/bigquery-emulator/internal/logger"
+	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
+	"github.com/goccy/bigquery-emulator/types"
 )
 
 var _ storagepb.BigQueryReadServer = &storageReadServer{}
@@ -34,12 +40,19 @@ type streamStatus struct {
 	condition     string
 	dataFormat    storagepb.DataFormat
 	avroSchema    *types.AVROSchema
+	arrowSchema   *arrow.Schema
 	schemaText    string
 }
 
 type AVROSchema struct {
 	ReadSessionSchema *storagepb.ReadSession_AvroSchema
 	Schema            *types.AVROSchema
+	Text              string
+}
+
+type ARROWSchema struct {
+	ReadSessionSchema *storagepb.ReadSession_ArrowSchema
+	Schema            *arrow.Schema
 	Text              string
 }
 
@@ -57,6 +70,9 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 	streams := make([]*storagepb.ReadStream, 0, req.MaxStreamCount)
 	streamID := randomID()
 	streamName := fmt.Sprintf("%s/streams/%s", sessionName, streamID)
+	if req.MaxStreamCount > 1 {
+		return nil, fmt.Errorf("currently supported only one stream")
+	}
 	for i := int32(0); i < req.MaxStreamCount; i++ {
 		streams = append(streams, &storagepb.ReadStream{
 			Name: streamName,
@@ -97,9 +113,13 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 		status.avroSchema = schema.Schema
 		status.schemaText = schema.Text
 	case storagepb.DataFormat_ARROW:
-		readSession.Schema = &storagepb.ReadSession_ArrowSchema{
-			ArrowSchema: &storagepb.ArrowSchema{SerializedSchema: nil},
+		schema, err := s.getARROWSchema(tableMetadata, outputColumnMap)
+		if err != nil {
+			return nil, err
 		}
+		readSession.Schema = schema.ReadSessionSchema
+		status.arrowSchema = schema.Schema
+		status.schemaText = schema.Text
 	default:
 		return nil, fmt.Errorf("unexpected data format %s", readSession.DataFormat)
 	}
@@ -130,13 +150,15 @@ func (s *storageReadServer) ReadRows(req *storagepb.ReadRowsRequest, stream stor
 			return err
 		}
 	case storagepb.DataFormat_ARROW:
-
+		if err := s.sendARROWRows(status, response, stream); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (s *storageReadServer) SplitReadStream(ctx context.Context, req *storagepb.SplitReadStreamRequest) (*storagepb.SplitReadStreamResponse, error) {
-	return nil, fmt.Errorf("failed to split read stream !!!!")
+	return nil, fmt.Errorf("unimplemented split read stream")
 }
 
 func (s *storageReadServer) getIDsFromPath(path string) (string, string, string, error) {
@@ -192,31 +214,6 @@ func (s *storageReadServer) getTableMetadata(ctx context.Context, projectID, dat
 	})
 }
 
-func (s *storageReadServer) getAVROSchema(tableMetadata *bigqueryv2.Table, outputColumnMap map[string]struct{}) (*AVROSchema, error) {
-	avroSchema := types.TableToAVRO(tableMetadata)
-	if len(outputColumnMap) != 0 {
-		filteredFields := make([]*types.AVROFieldSchema, 0, len(avroSchema.Fields))
-		for _, field := range avroSchema.Fields {
-			if _, exists := outputColumnMap[field.Name]; exists {
-				filteredFields = append(filteredFields, field)
-			}
-		}
-		avroSchema.Fields = filteredFields
-	}
-	schema, err := json.Marshal(avroSchema)
-	if err != nil {
-		return nil, err
-	}
-	schemaText := string(schema)
-	return &AVROSchema{
-		ReadSessionSchema: &storagepb.ReadSession_AvroSchema{
-			AvroSchema: &storagepb.AvroSchema{Schema: schemaText},
-		},
-		Schema: avroSchema,
-		Text:   schemaText,
-	}, nil
-}
-
 func (s *storageReadServer) buildQuery(status *streamStatus) string {
 	var columns string
 	if len(status.outputColumns) != 0 {
@@ -257,6 +254,31 @@ func (s *storageReadServer) query(ctx context.Context, status *streamStatus) (*i
 	)
 }
 
+func (s *storageReadServer) getAVROSchema(tableMetadata *bigqueryv2.Table, outputColumnMap map[string]struct{}) (*AVROSchema, error) {
+	avroSchema := types.TableToAVRO(tableMetadata)
+	if len(outputColumnMap) != 0 {
+		filteredFields := make([]*types.AVROFieldSchema, 0, len(avroSchema.Fields))
+		for _, field := range avroSchema.Fields {
+			if _, exists := outputColumnMap[field.Name]; exists {
+				filteredFields = append(filteredFields, field)
+			}
+		}
+		avroSchema.Fields = filteredFields
+	}
+	schema, err := json.Marshal(avroSchema)
+	if err != nil {
+		return nil, err
+	}
+	schemaText := string(schema)
+	return &AVROSchema{
+		ReadSessionSchema: &storagepb.ReadSession_AvroSchema{
+			AvroSchema: &storagepb.AvroSchema{Schema: schemaText},
+		},
+		Schema: avroSchema,
+		Text:   schemaText,
+	}, nil
+}
+
 func (s *storageReadServer) sendAVRORows(status *streamStatus, response *internaltypes.QueryResponse, stream storagepb.BigQueryRead_ReadRowsServer) error {
 	codec, err := goavro.NewCodec(status.schemaText)
 	if err != nil {
@@ -290,6 +312,96 @@ func (s *storageReadServer) sendAVRORows(status *streamStatus, response *interna
 		},
 	}); err != nil {
 		return fmt.Errorf("failed to send read rows response for avro format: %w", err)
+	}
+	return nil
+}
+
+func (s *storageReadServer) getARROWSchema(tableMetadata *bigqueryv2.Table, outputColumnMap map[string]struct{}) (*ARROWSchema, error) {
+	arrowSchema, err := types.TableToARROW(tableMetadata)
+	if err != nil {
+		return nil, err
+	}
+	if len(outputColumnMap) != 0 {
+		filteredFields := make([]arrow.Field, 0, len(arrowSchema.Fields()))
+		for _, field := range arrowSchema.Fields() {
+			if _, exists := outputColumnMap[field.Name]; exists {
+				filteredFields = append(filteredFields, field)
+			}
+		}
+		arrowSchema = arrow.NewSchema(filteredFields, nil)
+	}
+	schemaText := arrowSchema.String()
+	schema, err := s.getSerializedARROWSchema(arrowSchema)
+	if err != nil {
+		return nil, err
+	}
+	return &ARROWSchema{
+		ReadSessionSchema: &storagepb.ReadSession_ArrowSchema{
+			ArrowSchema: &storagepb.ArrowSchema{
+				SerializedSchema: schema,
+			},
+		},
+		Schema: arrowSchema,
+		Text:   schemaText,
+	}, nil
+}
+
+func (s *storageReadServer) getSerializedARROWSchema(schema *arrow.Schema) ([]byte, error) {
+	mem := memory.NewGoAllocator()
+	buf := new(bytes.Buffer)
+	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(schema))
+	builder := array.NewRecordBuilder(mem, schema)
+	defer builder.Release()
+	record := builder.NewRecord()
+	if err := writer.Write(record); err != nil {
+		return nil, err
+	}
+	record.Release()
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (s *storageReadServer) sendARROWRows(status *streamStatus, response *internaltypes.QueryResponse, stream storagepb.BigQueryRead_ReadRowsServer) error {
+	schema, err := s.getSerializedARROWSchema(status.arrowSchema)
+	if err != nil {
+		return err
+	}
+	mem := memory.NewGoAllocator()
+	builder := array.NewRecordBuilder(mem, status.arrowSchema)
+	defer builder.Release()
+	for _, row := range response.Rows {
+		if err := row.AppendValueToARROWBuilder(builder); err != nil {
+			return err
+		}
+	}
+	record := builder.NewRecord()
+	buf := new(bytes.Buffer)
+	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(status.arrowSchema))
+	if err := writer.Write(record); err != nil {
+		return err
+	}
+	record.Release()
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	rows := &storagepb.ReadRowsResponse_ArrowRecordBatch{
+		ArrowRecordBatch: &storagepb.ArrowRecordBatch{
+			SerializedRecordBatch: buf.Bytes(),
+			RowCount:              int64(response.TotalRows),
+		},
+	}
+	if err := stream.Send(&storagepb.ReadRowsResponse{
+		Rows:     rows,
+		RowCount: int64(response.TotalRows),
+		Schema: &storagepb.ReadRowsResponse_ArrowSchema{
+			ArrowSchema: &storagepb.ArrowSchema{
+				SerializedSchema: schema,
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("failed to send read rows response for arrow format: %w", err)
 	}
 	return nil
 }

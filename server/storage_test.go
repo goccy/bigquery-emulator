@@ -2,6 +2,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,7 +12,11 @@ import (
 	"time"
 
 	bqStorage "cloud.google.com/go/bigquery/storage/apiv1"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/ipc"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"github.com/goccy/bigquery-emulator/server"
+	"github.com/goccy/go-json"
 	gax "github.com/googleapis/gax-go/v2"
 	goavro "github.com/linkedin/goavro/v2"
 	bqStoragepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
@@ -25,7 +30,7 @@ var (
 	rpcOpts = gax.WithGRPCOptions(
 		grpc.MaxCallRecvMsgSize(1024 * 1024 * 129),
 	)
-	avroOutputColumns = []string{"id", "name", "structarr", "birthday", "skillNum", "created_at"}
+	outputColumns = []string{"id", "name", "structarr", "birthday", "skillNum", "created_at"}
 )
 
 func TestStorageReadAVRO(t *testing.T) {
@@ -60,16 +65,15 @@ func TestStorageReadAVRO(t *testing.T) {
 	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
 
 	tableReadOptions := &bqStoragepb.ReadSession_TableReadOptions{
-		SelectedFields: avroOutputColumns,
+		SelectedFields: outputColumns,
 		RowRestriction: `id = 1`,
 	}
 
-	dataFormat := bqStoragepb.DataFormat_AVRO
 	createReadSessionRequest := &bqStoragepb.CreateReadSessionRequest{
 		Parent: fmt.Sprintf("projects/%s", project),
 		ReadSession: &bqStoragepb.ReadSession{
 			Table:       readTable,
-			DataFormat:  dataFormat,
+			DataFormat:  bqStoragepb.DataFormat_AVRO,
 			ReadOptions: tableReadOptions,
 		},
 		MaxStreamCount: 1,
@@ -110,13 +114,101 @@ func TestStorageReadAVRO(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		if err := processAvro(t, ctx, session.GetAvroSchema().GetSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", dataFormat, err)
+			t.Fatalf("error processing %s: %v", bqStoragepb.DataFormat_AVRO, err)
 		}
 	}()
 
 	// Wait until both the reading and decoding goroutines complete.
 	wg.Wait()
+}
 
+func TestStorageReadARROW(t *testing.T) {
+	const (
+		project = "test"
+		dataset = "dataset1"
+		table   = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
+
+	tableReadOptions := &bqStoragepb.ReadSession_TableReadOptions{
+		SelectedFields: outputColumns,
+		RowRestriction: `id = 1`,
+	}
+
+	createReadSessionRequest := &bqStoragepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", project),
+		ReadSession: &bqStoragepb.ReadSession{
+			Table:       readTable,
+			DataFormat:  bqStoragepb.DataFormat_ARROW,
+			ReadOptions: tableReadOptions,
+		},
+		MaxStreamCount: 1,
+	}
+
+	// Create the session from the request.
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession: %v", err)
+	}
+	if len(session.GetStreams()) == 0 {
+		t.Fatalf("no streams in session.  if this was a small query result, consider writing to output to a named table.")
+	}
+
+	// We'll use only a single stream for reading data from the table.  Because
+	// of dynamic sharding, this will yield all the rows in the table. However,
+	// if you wanted to fan out multiple readers you could do so by having a
+	// increasing the MaxStreamCount.
+	readStream := session.GetStreams()[0].Name
+
+	ch := make(chan *bqStoragepb.ReadRowsResponse)
+
+	// Use a waitgroup to coordinate the reading and decoding goroutines.
+	var wg sync.WaitGroup
+
+	// Start the reading in one goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := processStream(t, ctx, bqReadClient, readStream, ch); err != nil {
+			t.Fatalf("processStream failure: %v", err)
+		}
+		close(ch)
+	}()
+
+	// Start Avro processing and decoding in another goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := processArrow(t, ctx, session.GetArrowSchema().GetSerializedSchema(), ch); err != nil {
+			t.Fatalf("error processing %s: %v", bqStoragepb.DataFormat_ARROW, err)
+		}
+	}()
+
+	// Wait until both the reading and decoding goroutines complete.
+	wg.Wait()
 }
 
 func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQueryReadClient, st string, ch chan<- *bqStoragepb.ReadRowsResponse) error {
@@ -227,12 +319,64 @@ func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *bq
 	}
 }
 
+func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *bqStoragepb.ReadRowsResponse) error {
+	mem := memory.NewGoAllocator()
+	buf := bytes.NewBuffer(schema)
+	r, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
+	if err != nil {
+		return err
+	}
+	aschema := r.Schema()
+	for {
+		select {
+		case <-ctx.Done():
+			// Context was cancelled.  Stop.
+			return ctx.Err()
+		case rows, ok := <-ch:
+			if !ok {
+				// Channel closed, no further arrow messages.  Stop.
+				return nil
+			}
+			undecoded := rows.GetArrowRecordBatch().GetSerializedRecordBatch()
+			if len(undecoded) > 0 {
+				buf = bytes.NewBuffer(undecoded)
+				r, err = ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
+				if err != nil {
+					return err
+				}
+				for r.Next() {
+					rec := r.Record()
+					validateArrowRecord(t, rec)
+				}
+			}
+		}
+	}
+}
+
+func validateArrowRecord(t *testing.T, record arrow.Record) {
+	out, err := record.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := []map[string]interface{}{}
+	if err := json.Unmarshal(out, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) == 0 {
+		t.Fatal("failed to get arrow record")
+	}
+	first := list[0]
+	if len(first) != len(outputColumns) {
+		t.Fatalf("failed to get arrow record %+v", first)
+	}
+}
+
 func validateDatum(t *testing.T, d interface{}) {
 	m, ok := d.(map[string]interface{})
 	if !ok {
 		t.Logf("failed type assertion: %v", d)
 	}
-	if len(m) != len(avroOutputColumns) {
-		t.Fatalf("failed to receive table data. expected columns %v but got %v", avroOutputColumns, m)
+	if len(m) != len(outputColumns) {
+		t.Fatalf("failed to receive table data. expected columns %v but got %v", outputColumns, m)
 	}
 }
