@@ -78,14 +78,14 @@ func (t *AVROType) CastValue(v string) (interface{}, error) {
 		r.SetString(v)
 		return r, nil
 	case FieldDate:
-		return time.Parse("2006-01-02", v)
+		return parseDate(v)
 	case FieldDatetime:
 		if t, err := time.Parse("2006-01-02T15:04:05.999999", v); err == nil {
 			return t, nil
 		}
 		return time.Parse("2006-01-02 15:04:05.999999", v)
 	case FieldTime:
-		return time.Parse("15:04:05", v)
+		return parseTime(v)
 	case FieldTimestamp:
 		return zetasqlite.TimeFromTimestampValue(v)
 	}
@@ -182,8 +182,17 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 			"precision":   77,
 			"scale":       38,
 		})
+	case FieldGeography:
+		return json.Marshal(map[string]string{
+			"type":    "string",
+			"sqlType": "GEOGRAPHY",
+		})
+	case FieldInterval:
+		return json.Marshal(map[string]string{
+			"type":    "string",
+			"sqlType": "INTERVAL",
+		})
 	}
-	// Currently, Geography and Interval types are unsupported.
 	return nil, fmt.Errorf("unsupported avro type %s", t.Type)
 }
 
