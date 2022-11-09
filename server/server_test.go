@@ -1099,3 +1099,75 @@ func TestContentEncoding(t *testing.T) {
 		t.Fatalf("failed to request with gzip: %s", string(body))
 	}
 }
+
+func TestCreateTempTable(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				"test",
+				types.NewDataset("dataset1"),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		"test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	{
+		job, err := client.Query("CREATE TEMP TABLE dataset1.tmp ( id INT64 )").Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := job.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	{
+		job, err := client.Query("CREATE TEMP TABLE dataset1.tmp ( id INT64 )").Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := job.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	{
+		job, err := client.Query("CREATE TABLE dataset1.tmp ( id INT64 )").Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := job.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	{
+		job, err := client.Query("CREATE TABLE dataset1.tmp ( id INT64 )").Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := job.Wait(ctx); err == nil {
+			t.Fatal("expected error")
+		}
+	}
+}
