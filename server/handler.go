@@ -461,6 +461,22 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 
 			data = append(data, rowData.(map[string]interface{}))
 		}
+	case "NEWLINE_DELIMITED_JSON":
+		for _, f := range tableContent.Schema.Fields {
+			columns = append(columns, &types.Column{
+				Name: f.Name,
+				Type: types.Type(f.Type),
+			})
+		}
+
+		decoder := json.NewDecoder(r.reader)
+		for decoder.More() {
+			d := make(map[string]interface{})
+			if err := decoder.Decode(&d); err != nil {
+				return err
+			}
+			data = append(data, d)
+		}
 	default:
 		return fmt.Errorf("not support sourceFormat: %s", sourceFormat)
 	}
