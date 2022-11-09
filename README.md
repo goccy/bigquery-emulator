@@ -14,6 +14,12 @@ BigQuery emulator provides a way to launch a BigQuery server on your local machi
 - BigQuery emulator utilizes SQLite for storage. You can select either memory or file as the data storage destination at startup, and if you set it to file, data can be persisted.
 - You can load seeds from a YAML file on startup
 
+# Goals and Sponsors
+
+The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( BigQuery Storage API / Model API / Connection API / UDF / INFORMATION SCHEMA etc.. ) in addition to evaluating Google Standard SQL.
+
+However, this project is a personal project and I develop it on my days off and after work. I work full time and maintain a lot of OSS. Therefore, the time available for this project is also limited. Of course, I will be adding features and fixing bugs on a regular basis to get us closer to our goals, but if you want me to implement the features you want, please consider sponsoring me. Of course, you can use this project for free, but if you sponsor me, that will be my motivation. Especially if you are part of a commercial company and could use this project, I'd be glad if you could consider sponsoring me at the same time.
+
 # Install
 
 If Go is installed, you can install the latest version with the following command
