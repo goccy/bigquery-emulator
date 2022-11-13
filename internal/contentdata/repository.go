@@ -144,11 +144,11 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	defer rows.Close()
 	colNames, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get column types: %w", err)
 	}
 	tableRows := []*internaltypes.TableRow{}
 	if err != nil {
@@ -157,7 +157,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	for i := 0; i < len(columnTypes); i++ {
 		typ, err := zetasqlite.UnmarshalDatabaseTypeName(columnTypes[i].DatabaseTypeName())
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get type from database type name: %w", err)
 		}
 		zetasqlType, err := typ.ToZetaSQLType()
 		if err != nil {
@@ -188,7 +188,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 			v := reflect.ValueOf(value).Elem().Interface()
 			cell, err := r.convertValueToCell(v)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to convert value to cell: %w", err)
 			}
 			cell.Name = colNames[idx]
 			cells = append(cells, cell)
@@ -201,7 +201,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to scan rows: %w", err)
 	}
 	logger.Logger(ctx).Debug("query result", zap.Any("rows", result))
 	return &internaltypes.QueryResponse{
