@@ -369,6 +369,29 @@ func (h *uploadContentHandler) existsColumnNameInCSVHeader(col string, header []
 	return false
 }
 
+func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[string]*types.Column, data map[string]interface{}) {
+	for k, v := range data {
+		if _, exists := columnMap[k]; exists {
+			continue
+		}
+		lowerKey := strings.ToLower(k)
+		var (
+			foundCount int
+			columnName string
+		)
+		for colName := range columnMap {
+			if lowerKey == strings.ToLower(colName) {
+				foundCount++
+				columnName = colName
+			}
+		}
+		if foundCount == 1 {
+			delete(data, k)
+			data[columnName] = v
+		}
+	}
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	tableRef := load.DestinationTable
@@ -468,13 +491,18 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 				Type: types.Type(f.Type),
 			})
 		}
-
+		columnMap := map[string]*types.Column{}
+		for _, col := range columns {
+			columnMap[col.Name] = col
+		}
 		decoder := json.NewDecoder(r.reader)
+		decoder.UseNumber()
 		for decoder.More() {
 			d := make(map[string]interface{})
 			if err := decoder.Decode(&d); err != nil {
 				return err
 			}
+			h.normalizeColumnNameForJSONData(columnMap, d)
 			data = append(data, d)
 		}
 	default:
