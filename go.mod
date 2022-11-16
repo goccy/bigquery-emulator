@@ -3,44 +3,46 @@ module github.com/goccy/bigquery-emulator
 go 1.17
 
 require (
-	cloud.google.com/go/bigquery v1.42.0
+	cloud.google.com/go/bigquery v1.43.0
+	github.com/GoogleCloudPlatform/golang-samples/bigquery v0.0.0-20221115172052-07ffb99455e8
 	github.com/apache/arrow/go/v10 v10.0.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-json v0.9.11
 	github.com/goccy/go-yaml v1.9.5
 	github.com/goccy/go-zetasql v0.3.7
-	github.com/goccy/go-zetasqlite v0.8.8
-	github.com/google/go-cmp v0.5.8
-	github.com/googleapis/gax-go/v2 v2.5.1
+	github.com/goccy/go-zetasqlite v0.8.9
+	github.com/google/go-cmp v0.5.9
+	github.com/googleapis/gax-go/v2 v2.7.0
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/linkedin/goavro/v2 v2.12.0
 	github.com/segmentio/parquet-go v0.0.0-20221020201645-63215c8128ff
 	go.uber.org/zap v1.21.0
-	golang.org/x/net v0.0.0-20220722155237-a158d28d115b
-	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde
-	google.golang.org/api v0.95.0
-	google.golang.org/genproto v0.0.0-20220914142337-ca0e39ece12f
-	google.golang.org/grpc v1.49.0
+	golang.org/x/net v0.1.0
+	golang.org/x/sync v0.1.0
+	google.golang.org/api v0.103.0
+	google.golang.org/genproto v0.0.0-20221109142239-94d6d90a7d66
+	google.golang.org/grpc v1.50.1
 	google.golang.org/protobuf v1.28.1
 )
 
 require (
-	cloud.google.com/go v0.102.1 // indirect
-	cloud.google.com/go/compute v1.7.0 // indirect
-	cloud.google.com/go/iam v0.3.0 // indirect
+	cloud.google.com/go v0.106.0 // indirect
+	cloud.google.com/go/compute v1.12.1 // indirect
+	cloud.google.com/go/compute/metadata v0.2.1 // indirect
+	cloud.google.com/go/iam v0.7.0 // indirect
 	github.com/andybalholm/brotli v1.0.4 // indirect
 	github.com/apache/thrift v0.16.0 // indirect
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13 // indirect
 	github.com/fatih/color v1.10.0 // indirect
 	github.com/go-playground/locales v0.14.0 // indirect
 	github.com/go-playground/universal-translator v0.18.0 // indirect
-	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
+	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/flatbuffers v2.0.8+incompatible // indirect
 	github.com/google/uuid v1.3.0 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.1.0 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.2.0 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
 	github.com/klauspost/compress v1.15.9 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
@@ -56,16 +58,16 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/segmentio/encoding v0.3.5 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
-	go.opencensus.io v0.23.0 // indirect
+	go.opencensus.io v0.24.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
-	golang.org/x/oauth2 v0.0.0-20220909003341-f21342109be1 // indirect
-	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261 // indirect
-	golang.org/x/text v0.3.7 // indirect
+	golang.org/x/oauth2 v0.0.0-20221014153046-6fdb5e3db783 // indirect
+	golang.org/x/sys v0.1.0 // indirect
+	golang.org/x/text v0.4.0 // indirect
 	golang.org/x/tools v0.1.12 // indirect
-	golang.org/x/xerrors v0.0.0-20220609144429-65e65417b02f // indirect
+	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
 	gonum.org/v1/gonum v0.11.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 )

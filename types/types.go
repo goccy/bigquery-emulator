@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -456,6 +457,32 @@ func NewTable(id string, columns []*Column, data Data) *Table {
 	}
 }
 
+func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
+	columns := make([]*Column, 0, len(t.Schema.Fields))
+	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+	for _, field := range t.Schema.Fields {
+		nameToFieldMap[field.Name] = field
+		columns = append(columns, NewColumnWithSchema(field))
+	}
+	newData := Data{}
+	for _, row := range data {
+		rowData := map[string]interface{}{}
+		for k, v := range row {
+			field, exists := nameToFieldMap[k]
+			if !exists {
+				continue
+			}
+			v, err := normalizeData(v, field)
+			if err != nil {
+				return nil, err
+			}
+			rowData[k] = v
+		}
+		newData = append(newData, rowData)
+	}
+	return &Table{ID: t.TableReference.TableId, Columns: columns, Data: newData}, nil
+}
+
 type ColumnOption func(c *Column)
 
 func ColumnMode(mode Mode) ColumnOption {
@@ -464,7 +491,7 @@ func ColumnMode(mode Mode) ColumnOption {
 	}
 }
 
-func ColumnFields(fields []*Column) ColumnOption {
+func ColumnFields(fields ...*Column) ColumnOption {
 	return func(c *Column) {
 		c.Fields = fields
 	}
@@ -482,10 +509,106 @@ func NewColumn(name string, typ Type, opts ...ColumnOption) *Column {
 	return c
 }
 
+func NewColumnWithSchema(s *bigqueryv2.TableFieldSchema) *Column {
+	fields := make([]*Column, 0, len(s.Fields))
+	for _, field := range s.Fields {
+		fields = append(fields, NewColumnWithSchema(field))
+	}
+	return &Column{
+		Name:   s.Name,
+		Type:   Type(s.Type),
+		Mode:   Mode(s.Mode),
+		Fields: fields,
+	}
+}
+
 func parseDate(v string) (time.Time, error) {
 	return time.Parse("2006-01-02", v)
 }
 
 func parseTime(v string) (time.Time, error) {
-	return time.Parse("15:04:05", v)
+	return time.Parse("15:04:05.999999", v)
+}
+
+func parseDatetime(v string) (time.Time, error) {
+	if t, err := time.Parse("2006-01-02T15:04:05.999999", v); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02 15:04:05.999999", v)
+}
+
+func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	rv := reflect.ValueOf(v)
+	kind := rv.Kind()
+	if Mode(field.Mode) == RepeatedMode {
+		if kind != reflect.Slice && kind != reflect.Array {
+			return nil, fmt.Errorf("invalid value type %T for ARRAY column", v)
+		}
+		values := make([]interface{}, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			value, err := normalizeData(rv.Index(i).Interface(), &bigqueryv2.TableFieldSchema{
+				Fields: field.Fields,
+			})
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		}
+		return values, nil
+	}
+	if kind == reflect.Map {
+		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+		columnNameToValueMap := map[string]interface{}{}
+		for _, f := range field.Fields {
+			fieldMap[f.Name] = f
+			columnNameToValueMap[f.Name] = nil
+		}
+		for _, key := range rv.MapKeys() {
+			if key.Kind() != reflect.String {
+				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
+			}
+			columnName := key.Interface().(string)
+			value, err := normalizeData(rv.MapIndex(key).Interface(), fieldMap[columnName])
+			if err != nil {
+				return nil, err
+			}
+			columnNameToValueMap[columnName] = value
+		}
+		fields := make([]map[string]interface{}, 0, len(fieldMap))
+		for _, f := range field.Fields {
+			value, exists := columnNameToValueMap[f.Name]
+			if !exists {
+				return nil, fmt.Errorf("failed to find value from %v by %s", columnNameToValueMap, f.Name)
+			}
+			fields = append(fields, map[string]interface{}{f.Name: value})
+		}
+		return fields, nil
+	}
+	switch FieldType(field.Type) {
+	case FieldDate:
+		switch vv := v.(type) {
+		case int64:
+			return time.Unix(0, 0).Add(time.Duration(vv) * 24 * time.Hour), nil
+		case string:
+			return parseDate(vv)
+		}
+	case FieldDatetime:
+		switch vv := v.(type) {
+		case string:
+			return parseDatetime(vv)
+		}
+	case FieldTime:
+		switch vv := v.(type) {
+		case string:
+			return parseTime(vv)
+		}
+	case FieldTimestamp:
+		switch vv := v.(type) {
+		case int64:
+			sec := vv / int64(time.Millisecond)
+			msec := vv - sec*int64(time.Millisecond)
+			return time.Unix(sec, msec*int64(time.Millisecond)).UTC(), nil
+		}
+	}
+	return v, nil
 }
