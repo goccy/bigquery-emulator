@@ -1804,39 +1804,17 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 	if err != nil {
 		return nil, err
 	}
-	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
-	var columns []*types.Column
-	for _, field := range content.Schema.Fields {
-		nameToFieldMap[field.Name] = field
-		columns = append(columns, &types.Column{
-			Name: field.Name,
-			Type: types.Type(field.Type),
-		})
-	}
 	data := types.Data{}
 	for _, row := range r.req.Rows {
 		rowData := map[string]interface{}{}
 		for k, v := range row.Json {
-			field, exists := nameToFieldMap[k]
-			if !exists {
-				return nil, fmt.Errorf("unknown column name %s", k)
-			}
-			if field.Type == "RECORD" {
-				value, err := normalizeInsertValue(v, field)
-				if err != nil {
-					return nil, err
-				}
-				rowData[k] = value
-			} else {
-				rowData[k] = v
-			}
+			rowData[k] = v
 		}
 		data = append(data, rowData)
 	}
-	tableDef := &types.Table{
-		ID:      r.table.ID,
-		Columns: columns,
-		Data:    data,
+	tableDef, err := types.NewTableWithSchema(content, data)
+	if err != nil {
+		return nil, err
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {

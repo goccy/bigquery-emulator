@@ -6,12 +6,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/bigquery"
 	bqStorage "cloud.google.com/go/bigquery/storage/apiv1"
+	"cloud.google.com/go/bigquery/storage/managedwriter"
+	"cloud.google.com/go/bigquery/storage/managedwriter/adapt"
+	"github.com/GoogleCloudPlatform/golang-samples/bigquery/snippets/managedwriter/exampleproto"
 	"github.com/apache/arrow/go/v10/arrow"
 	"github.com/apache/arrow/go/v10/arrow/ipc"
 	"github.com/apache/arrow/go/v10/arrow/memory"
@@ -19,11 +24,16 @@ import (
 	"github.com/goccy/go-json"
 	gax "github.com/googleapis/gax-go/v2"
 	goavro "github.com/linkedin/goavro/v2"
-	bqStoragepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/goccy/bigquery-emulator/types"
 )
 
 var (
@@ -64,16 +74,16 @@ func TestStorageReadAVRO(t *testing.T) {
 
 	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
 
-	tableReadOptions := &bqStoragepb.ReadSession_TableReadOptions{
+	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
 		SelectedFields: outputColumns,
 		RowRestriction: `id = 1`,
 	}
 
-	createReadSessionRequest := &bqStoragepb.CreateReadSessionRequest{
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
 		Parent: fmt.Sprintf("projects/%s", project),
-		ReadSession: &bqStoragepb.ReadSession{
+		ReadSession: &storagepb.ReadSession{
 			Table:       readTable,
-			DataFormat:  bqStoragepb.DataFormat_AVRO,
+			DataFormat:  storagepb.DataFormat_AVRO,
 			ReadOptions: tableReadOptions,
 		},
 		MaxStreamCount: 1,
@@ -94,7 +104,7 @@ func TestStorageReadAVRO(t *testing.T) {
 	// increasing the MaxStreamCount.
 	readStream := session.GetStreams()[0].Name
 
-	ch := make(chan *bqStoragepb.ReadRowsResponse)
+	ch := make(chan *storagepb.ReadRowsResponse)
 
 	// Use a waitgroup to coordinate the reading and decoding goroutines.
 	var wg sync.WaitGroup
@@ -114,7 +124,7 @@ func TestStorageReadAVRO(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		if err := processAvro(t, ctx, session.GetAvroSchema().GetSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", bqStoragepb.DataFormat_AVRO, err)
+			t.Fatalf("error processing %s: %v", storagepb.DataFormat_AVRO, err)
 		}
 	}()
 
@@ -153,16 +163,16 @@ func TestStorageReadARROW(t *testing.T) {
 
 	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
 
-	tableReadOptions := &bqStoragepb.ReadSession_TableReadOptions{
+	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
 		SelectedFields: outputColumns,
 		RowRestriction: `id = 1`,
 	}
 
-	createReadSessionRequest := &bqStoragepb.CreateReadSessionRequest{
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
 		Parent: fmt.Sprintf("projects/%s", project),
-		ReadSession: &bqStoragepb.ReadSession{
+		ReadSession: &storagepb.ReadSession{
 			Table:       readTable,
-			DataFormat:  bqStoragepb.DataFormat_ARROW,
+			DataFormat:  storagepb.DataFormat_ARROW,
 			ReadOptions: tableReadOptions,
 		},
 		MaxStreamCount: 1,
@@ -183,7 +193,7 @@ func TestStorageReadARROW(t *testing.T) {
 	// increasing the MaxStreamCount.
 	readStream := session.GetStreams()[0].Name
 
-	ch := make(chan *bqStoragepb.ReadRowsResponse)
+	ch := make(chan *storagepb.ReadRowsResponse)
 
 	// Use a waitgroup to coordinate the reading and decoding goroutines.
 	var wg sync.WaitGroup
@@ -203,7 +213,7 @@ func TestStorageReadARROW(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		if err := processArrow(t, ctx, session.GetArrowSchema().GetSerializedSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", bqStoragepb.DataFormat_ARROW, err)
+			t.Fatalf("error processing %s: %v", storagepb.DataFormat_ARROW, err)
 		}
 	}()
 
@@ -211,7 +221,7 @@ func TestStorageReadARROW(t *testing.T) {
 	wg.Wait()
 }
 
-func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQueryReadClient, st string, ch chan<- *bqStoragepb.ReadRowsResponse) error {
+func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQueryReadClient, st string, ch chan<- *storagepb.ReadRowsResponse) error {
 	var offset int64
 
 	// Streams may be long-running.  Rather than using a global retry for the
@@ -220,7 +230,7 @@ func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQuery
 	retries := 0
 	for {
 		// Send the initiating request to start streaming row blocks.
-		rowStream, err := client.ReadRows(ctx, &bqStoragepb.ReadRowsRequest{
+		rowStream, err := client.ReadRows(ctx, &storagepb.ReadRowsRequest{
 			ReadStream: st,
 			Offset:     offset,
 		}, rpcOpts)
@@ -283,7 +293,7 @@ func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQuery
 // schema to decode the blocks into individual row messages for printing.  Will
 // continue to run until the channel is closed or the provided context is
 // cancelled.
-func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *bqStoragepb.ReadRowsResponse) error {
+func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *storagepb.ReadRowsResponse) error {
 	// Establish a decoder that can process blocks of messages using the
 	// reference schema. All blocks share the same schema, so the decoder
 	// can be long-lived.
@@ -319,7 +329,7 @@ func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *bq
 	}
 }
 
-func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *bqStoragepb.ReadRowsResponse) error {
+func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *storagepb.ReadRowsResponse) error {
 	mem := memory.NewGoAllocator()
 	buf := bytes.NewBuffer(schema)
 	r, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
@@ -379,4 +389,261 @@ func validateDatum(t *testing.T, d interface{}) {
 	if len(m) != len(outputColumns) {
 		t.Fatalf("failed to receive table data. expected columns %v but got %v", outputColumns, m)
 	}
+}
+
+func TestStorageWrite(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test"
+		tableID   = "sample"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						tableID,
+						[]*types.Column{
+							types.NewColumn("bool_col", types.BOOL),
+							types.NewColumn("bytes_col", types.BYTES),
+							types.NewColumn("float64_col", types.FLOAT64),
+							types.NewColumn("int64_col", types.INT64),
+							types.NewColumn("string_col", types.STRING),
+							types.NewColumn("date_col", types.DATE),
+							types.NewColumn("datetime_col", types.DATETIME),
+							types.NewColumn("geography_col", types.GEOGRAPHY),
+							types.NewColumn("numeric_col", types.NUMERIC),
+							types.NewColumn("bignumeric_col", types.BIGNUMERIC),
+							types.NewColumn("time_col", types.TIME),
+							types.NewColumn("timestamp_col", types.TIMESTAMP),
+							types.NewColumn("int64_list", types.INT64, types.ColumnMode(types.RepeatedMode)),
+							types.NewColumn(
+								"struct_col",
+								types.STRUCT,
+								types.ColumnFields(
+									types.NewColumn("sub_int_col", types.INT64),
+								),
+							),
+							types.NewColumn(
+								"struct_list",
+								types.STRUCT,
+								types.ColumnFields(
+									types.NewColumn("sub_int_col", types.INT64),
+								),
+								types.ColumnMode(types.RepeatedMode),
+							),
+						},
+						nil,
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := managedwriter.NewClient(ctx, projectID, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	pendingStream, err := client.CreateWriteStream(ctx, &storagepb.CreateWriteStreamRequest{
+		Parent: fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID),
+		WriteStream: &storagepb.WriteStream{
+			Type: storagepb.WriteStream_PENDING,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateWriteStream: %v", err)
+	}
+	m := &exampleproto.SampleData{}
+	descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("NormalizeDescriptor: %v", err)
+	}
+	managedStream, err := client.NewManagedStream(
+		ctx,
+		managedwriter.WithStreamName(pendingStream.GetName()),
+		managedwriter.WithSchemaDescriptor(descriptorProto),
+	)
+	if err != nil {
+		t.Fatalf("NewManagedStream: %v", err)
+	}
+	rows, err := generateExampleMessages(1)
+	if err != nil {
+		t.Fatalf("generateExampleMessages: %v", err)
+	}
+
+	var (
+		curOffset int64
+		results   []*managedwriter.AppendResult
+	)
+	result, err := managedStream.AppendRows(ctx, rows, managedwriter.WithOffset(0))
+	if err != nil {
+		t.Fatalf("AppendRows first call error: %v", err)
+	}
+
+	results = append(results, result)
+	curOffset = curOffset + 1
+	rows, err = generateExampleMessages(3)
+	if err != nil {
+		t.Fatalf("generateExampleMessages: %v", err)
+	}
+	result, err = managedStream.AppendRows(ctx, rows, managedwriter.WithOffset(curOffset))
+	if err != nil {
+		t.Fatalf("AppendRows second call error: %v", err)
+	}
+	results = append(results, result)
+	curOffset = curOffset + 3
+	rows, err = generateExampleMessages(2)
+	if err != nil {
+		t.Fatalf("generateExampleMessages: %v", err)
+	}
+	result, err = managedStream.AppendRows(ctx, rows, managedwriter.WithOffset(curOffset))
+	if err != nil {
+		t.Fatalf("AppendRows third call error: %v", err)
+	}
+	results = append(results, result)
+
+	for k, v := range results {
+		recvOffset, err := v.GetResult(ctx)
+		if err != nil {
+			t.Fatalf("append %d returned error: %v", k, err)
+		}
+		t.Logf("Successfully appended data at offset %d", recvOffset)
+	}
+
+	rowCount, err := managedStream.Finalize(ctx)
+	if err != nil {
+		t.Fatalf("error during Finalize: %v", err)
+	}
+
+	t.Logf("Stream %s finalized with %d rows", managedStream.StreamName(), rowCount)
+
+	req := &storagepb.BatchCommitWriteStreamsRequest{
+		Parent:       managedwriter.TableParentFromStreamName(managedStream.StreamName()),
+		WriteStreams: []string{managedStream.StreamName()},
+	}
+
+	resp, err := client.BatchCommitWriteStreams(ctx, req)
+	if err != nil {
+		t.Fatalf("client.BatchCommit: %v", err)
+	}
+	if len(resp.GetStreamErrors()) > 0 {
+		t.Fatalf("stream errors present: %v", resp.GetStreamErrors())
+	}
+
+	t.Logf("Table data committed at %s", resp.GetCommitTime().AsTime().Format(time.RFC3339Nano))
+
+	bqClient, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqClient.Close()
+
+	iter := bqClient.Dataset(datasetID).Table(tableID).Read(ctx)
+	var resultRowCount int
+	for {
+		v := map[string]bigquery.Value{}
+		if err := iter.Next(&v); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		resultRowCount++
+	}
+	if resultRowCount != 6 {
+		t.Fatalf("failed to get table rows. expected 6 but got %d", resultRowCount)
+	}
+}
+
+func generateExampleMessages(numMessages int) ([][]byte, error) {
+	msgs := make([][]byte, numMessages)
+	for i := 0; i < numMessages; i++ {
+
+		random := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+		// Our example data embeds an array of structs, so we'll construct that first.
+		sList := make([]*exampleproto.SampleStruct, 5)
+		for i := 0; i < int(random.Int63n(5)+1); i++ {
+			sList[i] = &exampleproto.SampleStruct{
+				SubIntCol: proto.Int64(random.Int63()),
+			}
+		}
+
+		m := &exampleproto.SampleData{
+			BoolCol:    proto.Bool(true),
+			BytesCol:   []byte("some bytes"),
+			Float64Col: proto.Float64(3.14),
+			Int64Col:   proto.Int64(123),
+			StringCol:  proto.String("example string value"),
+
+			// These types require special encoding/formatting to transmit.
+
+			// DATE values are number of days since the Unix epoch.
+
+			DateCol: proto.Int32(int32(time.Now().UnixNano() / 86400000000000)),
+
+			// DATETIME uses the literal format.
+			DatetimeCol: proto.String("2022-01-01 12:13:14.000000"),
+
+			// GEOGRAPHY uses Well-Known-Text (WKT) format.
+			GeographyCol: proto.String("POINT(-122.350220 47.649154)"),
+
+			// NUMERIC and BIGNUMERIC can be passed as string, or more efficiently
+			// using a packed byte representation.
+			NumericCol:    proto.String("99999999999999999999999999999.999999999"),
+			BignumericCol: proto.String("578960446186580977117854925043439539266.34992332820282019728792003956564819967"),
+
+			// TIME also uses literal format.
+			TimeCol: proto.String("12:13:14.000000"),
+
+			// TIMESTAMP uses microseconds since Unix epoch.
+			TimestampCol: proto.Int64(time.Now().UnixNano() / 1000),
+
+			// Int64List is an array of INT64 types.
+			Int64List: []int64{2, 4, 6, 8},
+
+			// This is a required field, and thus must be present.
+			RowNum: proto.Int64(23),
+
+			// StructCol is a single nested message.
+			StructCol: &exampleproto.SampleStruct{
+				SubIntCol: proto.Int64(random.Int63()),
+			},
+
+			// StructList is a repeated array of a nested message.
+			StructList: sList,
+		}
+		b, err := proto.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("error generating message %d: %w", i, err)
+		}
+		msgs[i] = b
+	}
+	return msgs, nil
 }
