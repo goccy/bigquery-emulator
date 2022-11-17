@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"net/http"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -1339,10 +1338,10 @@ func TestLoadJSON(t *testing.T) {
 		}
 		rows = append(rows, &r)
 	}
-	if !reflect.DeepEqual([]*row{
+	if diff := cmp.Diff([]*row{
 		{ID: 1, Name: "John"},
 		{ID: 2, Name: "Joan"},
-	}, rows) {
-		t.Error("unexpected rows")
+	}, rows); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
 	}
 }
