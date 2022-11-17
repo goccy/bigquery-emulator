@@ -398,8 +398,23 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	dataset := r.project.Dataset(tableRef.DatasetId)
 	table := dataset.Table(tableRef.TableId)
 	if table == nil {
-		return fmt.Errorf("`%s` is not found.", tableRef.TableId)
+		if load.CreateDisposition == "CREATE_NEVER" {
+			return fmt.Errorf("`%s` is not found", tableRef.TableId)
+		}
+		if _, err := (&tablesInsertHandler{}).Handle(ctx, &tablesInsertRequest{
+			server:  r.server,
+			project: r.project,
+			dataset: dataset,
+			table: &bigqueryv2.Table{
+				Schema:         load.Schema,
+				TableReference: tableRef,
+			},
+		}); err != nil {
+			return err
+		}
+		table = dataset.Table(tableRef.TableId)
 	}
+
 	tableContent, err := table.Content()
 	if err != nil {
 		return err

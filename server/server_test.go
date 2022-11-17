@@ -1209,30 +1209,50 @@ func TestLoadJSON(t *testing.T) {
 	defer client.Close()
 
 	table := client.Dataset(datasetName).Table(tableName)
-	if err := table.Create(ctx, &bigquery.TableMetadata{
-		Schema: bigquery.Schema{
-			{Name: "ID", Type: bigquery.IntegerFieldType},
-			{Name: "Name", Type: bigquery.StringFieldType},
-		},
-	}); err != nil {
-		t.Fatal(err)
+	schema := bigquery.Schema{
+		{Name: "ID", Type: bigquery.IntegerFieldType},
+		{Name: "Name", Type: bigquery.StringFieldType},
 	}
 
-	source := bigquery.NewReaderSource(bytes.NewBufferString(`
+	{
+		source := bigquery.NewReaderSource(bytes.NewBufferString(`
 {"ID": 1, "Name": "John"}
+`,
+		))
+		source.SourceFormat = bigquery.JSON
+		source.Schema = schema
+
+		job, err := table.LoaderFrom(source).Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Err() != nil {
+			t.Fatal(err)
+		}
+	}
+
+	{
+		source := bigquery.NewReaderSource(bytes.NewBufferString(`
 {"ID": 2, "Name": "Joan"}
-`))
-	source.SourceFormat = bigquery.JSON
-	job, err := table.LoaderFrom(source).Run(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	status, err := job.Wait(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Err() != nil {
-		t.Fatal(err)
+`,
+		))
+		source.SourceFormat = bigquery.JSON
+
+		job, err := table.LoaderFrom(source).Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Err() != nil {
+			t.Fatal(err)
+		}
 	}
 
 	query := client.Query(fmt.Sprintf("SELECT * FROM %s.%s ORDER BY ID", datasetName, tableName))
