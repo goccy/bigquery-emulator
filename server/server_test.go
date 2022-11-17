@@ -1234,3 +1234,114 @@ func TestQueryWithTimestampType(t *testing.T) {
 		t.Fatalf("%+v", err)
 	}
 }
+
+func TestLoadJSON(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	schema := bigquery.Schema{
+		{Name: "ID", Type: bigquery.IntegerFieldType},
+		{Name: "Name", Type: bigquery.StringFieldType},
+	}
+
+	{
+		source := bigquery.NewReaderSource(bytes.NewBufferString(`
+{"ID": 1, "Name": "John"}
+`,
+		))
+		source.SourceFormat = bigquery.JSON
+		source.Schema = schema
+
+		job, err := table.LoaderFrom(source).Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Err() != nil {
+			t.Fatal(err)
+		}
+	}
+
+	{
+		source := bigquery.NewReaderSource(bytes.NewBufferString(`
+{"ID": 2, "Name": "Joan"}
+`,
+		))
+		source.SourceFormat = bigquery.JSON
+
+		job, err := table.LoaderFrom(source).Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Err() != nil {
+			t.Fatal(err)
+		}
+	}
+
+	query := client.Query(fmt.Sprintf("SELECT * FROM %s.%s ORDER BY ID", datasetName, tableName))
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type row struct {
+		ID   int
+		Name string
+	}
+	var rows []*row
+	for {
+		var r row
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, &r)
+	}
+	if diff := cmp.Diff([]*row{
+		{ID: 1, Name: "John"},
+		{ID: 2, Name: "Joan"},
+	}, rows); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
