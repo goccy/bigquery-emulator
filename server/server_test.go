@@ -1173,6 +1173,69 @@ func TestCreateTempTable(t *testing.T) {
 	}
 }
 
+func TestQueryWithTimestampType(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Schema: []*bigquery.FieldSchema{
+			{Name: "ts", Type: bigquery.TimestampFieldType},
+		},
+	}); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	query := client.Query("SELECT CURRENT_TIMESTAMP() AS ts")
+	query.QueryConfig.Dst = &bigquery.Table{
+		ProjectID: projectName,
+		DatasetID: datasetName,
+		TableID:   table.TableID,
+	}
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatalf("%+v", err)
+	}
+	if err := status.Err(); err != nil {
+		t.Fatalf("%+v", err)
+	}
+}
+
 func TestLoadJSON(t *testing.T) {
 	const (
 		projectName = "test"
