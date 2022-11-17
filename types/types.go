@@ -584,31 +584,5 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 		}
 		return fields, nil
 	}
-	switch FieldType(field.Type) {
-	case FieldDate:
-		switch vv := v.(type) {
-		case int64:
-			return time.Unix(0, 0).Add(time.Duration(vv) * 24 * time.Hour), nil
-		case string:
-			return parseDate(vv)
-		}
-	case FieldDatetime:
-		switch vv := v.(type) {
-		case string:
-			return parseDatetime(vv)
-		}
-	case FieldTime:
-		switch vv := v.(type) {
-		case string:
-			return parseTime(vv)
-		}
-	case FieldTimestamp:
-		switch vv := v.(type) {
-		case int64:
-			sec := vv / int64(time.Millisecond)
-			msec := vv - sec*int64(time.Millisecond)
-			return time.Unix(sec, msec*int64(time.Millisecond)).UTC(), nil
-		}
-	}
 	return v, nil
 }
