@@ -10,7 +10,7 @@ require (
 	github.com/goccy/go-json v0.9.11
 	github.com/goccy/go-yaml v1.9.5
 	github.com/goccy/go-zetasql v0.3.7
-	github.com/goccy/go-zetasqlite v0.8.11
+	github.com/goccy/go-zetasqlite v0.8.12
 	github.com/google/go-cmp v0.5.9
 	github.com/googleapis/gax-go/v2 v2.7.0
 	github.com/gorilla/mux v1.8.0
@@ -18,7 +18,6 @@ require (
 	github.com/linkedin/goavro/v2 v2.12.0
 	github.com/segmentio/parquet-go v0.0.0-20221020201645-63215c8128ff
 	go.uber.org/zap v1.21.0
-	golang.org/x/net v0.1.0
 	golang.org/x/sync v0.1.0
 	google.golang.org/api v0.103.0
 	google.golang.org/genproto v0.0.0-20221109142239-94d6d90a7d66
@@ -63,6 +62,7 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
+	golang.org/x/net v0.1.0 // indirect
 	golang.org/x/oauth2 v0.0.0-20221014153046-6fdb5e3db783 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 	golang.org/x/text v0.4.0 // indirect
