@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/net/netutil"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
@@ -83,6 +82,7 @@ func New(storage Storage) (*Server, error) {
 	r.Handle(uploadAPIEndpoint, &uploadHandler{}).Methods("POST")
 	r.Handle(uploadAPIEndpoint, &uploadContentHandler{}).Methods("PUT")
 	r.PathPrefix("/").Handler(&defaultHandler{})
+	r.Use(sequentialAccessMiddleware())
 	r.Use(recoveryMiddleware(server))
 	r.Use(loggerMiddleware(server))
 	r.Use(accessLogMiddleware())
@@ -232,7 +232,7 @@ func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 
 	var eg errgroup.Group
 	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
-	eg.Go(func() error { return httpServer.Serve(netutil.LimitListener(httpListener, 1)) })
+	eg.Go(func() error { return httpServer.Serve(httpListener) })
 	return eg.Wait()
 }
 

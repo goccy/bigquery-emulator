@@ -4,12 +4,24 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 
 	"github.com/goccy/bigquery-emulator/internal/logger"
 )
+
+func sequentialAccessMiddleware() func(http.Handler) http.Handler {
+	var mu sync.Mutex
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
