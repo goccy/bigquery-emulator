@@ -95,7 +95,4 @@ FROM
 		}
 		fmt.Println("row = ", row)
 	}
-	if err := client.Dataset("dataset1").DeleteWithContents(ctx); err != nil {
-		t.Fatal(err)
-	}
 }
