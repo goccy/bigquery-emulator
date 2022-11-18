@@ -37,7 +37,7 @@ func TestSimpleQuery(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -87,7 +87,7 @@ func TestDataset(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -185,7 +185,7 @@ func TestJob(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -258,7 +258,7 @@ func TestFetchData(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -327,7 +327,7 @@ func TestQuery(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	const (
@@ -415,7 +415,7 @@ func TestTable(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -540,7 +540,7 @@ func TestDuplicateTable(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -589,7 +589,7 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -668,7 +668,7 @@ func TestDataFromStruct(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -774,7 +774,7 @@ func TestMultiDatasets(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -883,7 +883,7 @@ func TestRoutine(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -979,7 +979,7 @@ func TestRoutineWithQuery(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -1057,7 +1057,7 @@ func TestContentEncoding(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(context.Background())
 	}()
 
 	client := new(http.Client)
@@ -1120,7 +1120,7 @@ func TestCreateTempTable(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -1193,7 +1193,7 @@ func TestQueryWithTimestampType(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
@@ -1256,7 +1256,7 @@ func TestLoadJSON(t *testing.T) {
 	testServer := bqServer.TestServer()
 	defer func() {
 		testServer.Close()
-		bqServer.Close()
+		bqServer.Stop(ctx)
 	}()
 
 	client, err := bigquery.NewClient(
