@@ -265,6 +265,10 @@ SELECT %s([
 }
 ```
 
+# Debugging
+
+If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/goccy/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
+
 # How it works
 
 ## BigQuery Emulator Architecture Overview
