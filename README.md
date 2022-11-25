@@ -14,9 +14,34 @@ BigQuery emulator provides a way to launch a BigQuery server on your local machi
 - BigQuery emulator utilizes SQLite for storage. You can select either memory or file as the data storage destination at startup, and if you set it to file, data can be persisted.
 - You can load seeds from a YAML file on startup
 
+# Status
+
+Although this project is still in **beta** version, many features are already available.
+
+## BigQuery API
+
+We've been implemented the all [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
+
+## BigQuery Storage API
+
+Supports gRPC-based read/write using [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage).
+Supports both Apache `Avro` and `Arrow` formats.
+
+## Google Standard SQL
+
+BigQuery emulator supports many of the specifications present in [Google Standard SQL](https://cloud.google.com/bigquery/docs/reference/standard-sql/introduction).
+For example, it has the following features.
+
+- 200+ standard functions
+- Wildcard table
+- Templated Argument Function
+- JavaScript UDF
+
+If you want to know the specific features supported, please see [here](https://github.com/goccy/go-zetasqlite#status)
+
 # Goals and Sponsors
 
-The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( BigQuery Storage API / Model API / Connection API / UDF / INFORMATION SCHEMA etc.. ) in addition to evaluating Google Standard SQL.
+The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( Model API / Connection API / INFORMATION SCHEMA etc.. ) in addition to evaluating Google Standard SQL.
 
 However, this project is a personal project and I develop it on my days off and after work. I work full time and maintain a lot of OSS. Therefore, the time available for this project is also limited. Of course, I will be adding features and fixing bugs on a regular basis to get us closer to our goals, but if you want me to implement the features you want, please consider sponsoring me. Of course, you can use this project for free, but if you sponsor me, that will be my motivation. Especially if you are part of a commercial company and could use this project, I'd be glad if you could consider sponsoring me at the same time.
 
@@ -155,12 +180,7 @@ from google.cloud import bigquery_storage
 client_options = ClientOptions(api_endpoint="0.0.0.0:9060")
 read_client = bigquery_storage.BigQueryReadClient(client_options=client_options)
 result = client.query(sql).to_dataframe(bqstorage_client=read_client)
-```
-
-# Status
-
-BigQuery emulator supports many queries. See here for details.  
-https://github.com/goccy/go-zetasqlite#status
+``` 
 
 # Synopsis
 
