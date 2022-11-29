@@ -1345,3 +1345,106 @@ func TestLoadJSON(t *testing.T) {
 		t.Errorf("(-want +got):\n%s", diff)
 	}
 }
+
+func TestQueryWithNamedParams(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("created_at", types.TIMESTAMP),
+					types.NewColumn("item", types.STRING),
+					types.NewColumn("qty", types.NUMERIC),
+				},
+				types.Data{
+					{
+						"created_at": time.Now(),
+						"item":       "something",
+						"qty":        "123.45",
+					},
+				},
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	query := client.Query(`
+SELECT
+ item, qty
+FROM test_dataset.test_table
+WHERE
+ created_at > @someday AND
+ qty >= @min_qty AND
+ created_at > @someday - INTERVAL 1 DAY
+ORDER BY qty DESC;`)
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "someday",
+			Value: time.Date(2022, 9, 9, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			Name:  "min_qty",
+			Value: 100,
+		},
+	}
+
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := status.Err(); err != nil {
+		t.Fatal(err)
+	}
+	it, err := job.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		fmt.Println(row)
+	}
+}
