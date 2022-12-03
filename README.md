@@ -109,6 +109,8 @@ If you want to use docker image to start emulator, specify like the following.
 $ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
 ```
 
+* If you are using an M1 Mac ( and Docker Desktop ) you may get a warning. In that case please use `--platform linux/x86_64` option.
+
 ## How to use from bq client
 
 ### 1. Start the standalone server
