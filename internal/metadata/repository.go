@@ -19,7 +19,8 @@ var schemata = []string{
 CREATE TABLE IF NOT EXISTS projects (
   id         STRING NOT NULL,
   datasetIDs ARRAY<STRING>,
-  jobIDs     ARRAY<STRING>
+  jobIDs     ARRAY<STRING>,
+  PRIMARY KEY (id)
 )`,
 	`
 CREATE TABLE IF NOT EXISTS jobs (
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   projectID STRING NOT NULL,
   metadata  STRING,
   result    STRING,
-  error     STRING
+  error     STRING,
+  PRIMARY KEY (projectID, id)
 )`,
 	`
 CREATE TABLE IF NOT EXISTS datasets (
@@ -36,28 +38,32 @@ CREATE TABLE IF NOT EXISTS datasets (
   tableIDs   ARRAY<STRING>,
   modelIDs   ARRAY<STRING>,
   routineIDs ARRAY<STRING>,
-  metadata   STRING
+  metadata   STRING,
+  PRIMARY KEY (projectID, id)
 )`,
 	`
 CREATE TABLE IF NOT EXISTS tables (
   id        STRING NOT NULL,
   projectID STRING NOT NULL,
   datasetID STRING NOT NULL,
-  metadata  STRING
+  metadata  STRING,
+  PRIMARY KEY (projectID, datasetID, id)
 )`,
 	`
 CREATE TABLE IF NOT EXISTS models (
   id        STRING NOT NULL,
   projectID STRING NOT NULL,
   datasetID STRING NOT NULL,
-  metadata  STRING
+  metadata  STRING,
+  PRIMARY KEY (projectID, datasetID, id)
 )`,
 	`
 CREATE TABLE IF NOT EXISTS routines (
   id        STRING NOT NULL,
   projectID STRING NOT NULL,
   datasetID STRING NOT NULL,
-  metadata  STRING
+  metadata  STRING,
+  PRIMARY KEY (projectID, datasetID, id)
 )`,
 }
 
