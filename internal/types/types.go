@@ -47,6 +47,18 @@ type (
 	}
 )
 
+func (r *TableRow) Data() (map[string]interface{}, error) {
+	rowMap := map[string]interface{}{}
+	for _, cell := range r.F {
+		v, err := cell.Data()
+		if err != nil {
+			return nil, err
+		}
+		rowMap[cell.Name] = v
+	}
+	return rowMap, nil
+}
+
 func (r *TableRow) AVROValue(fields []*types.AVROFieldSchema) (map[string]interface{}, error) {
 	rowMap := map[string]interface{}{}
 	for idx, cell := range r.F {
@@ -57,6 +69,32 @@ func (r *TableRow) AVROValue(fields []*types.AVROFieldSchema) (map[string]interf
 		rowMap[cell.Name] = v
 	}
 	return rowMap, nil
+}
+
+func (c *TableCell) Data() (interface{}, error) {
+	switch v := c.V.(type) {
+	case TableRow:
+		return v.Data()
+	case []*TableCell:
+		ret := make([]interface{}, 0, len(v))
+		for _, vv := range v {
+			data, err := vv.Data()
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, data)
+		}
+		return ret, nil
+	default:
+		if v == nil {
+			return nil, nil
+		}
+		text, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("failed to cast to string from %s", v)
+		}
+		return text, nil
+	}
 }
 
 func (c *TableCell) AVROValue(schema *types.AVROFieldSchema) (interface{}, error) {

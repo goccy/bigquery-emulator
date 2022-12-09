@@ -22,6 +22,7 @@ import (
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 
+	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/logger"
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
@@ -1021,31 +1022,28 @@ type jobsInsertRequest struct {
 	job     *bigqueryv2.Job
 }
 
-func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) *types.Table {
+func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) (*types.Table, error) {
 	columns := []*types.Column{}
 	for _, field := range response.Schema.Fields {
-		columns = append(columns, &types.Column{
-			Name: field.Name,
-			Type: types.Type(field.Type),
-		})
+		columns = append(columns, types.NewColumnWithSchema(field))
 	}
 	data := types.Data{}
 	for _, row := range response.Rows {
-		rowData := map[string]interface{}{}
-		for idx, cell := range row.F {
-			if cell.V == nil {
-				rowData[columns[idx].Name] = nil
-			} else {
-				rowData[columns[idx].Name] = cell.V
-			}
+		rowData, err := row.Data()
+		if err != nil {
+			return nil, err
 		}
 		data = append(data, rowData)
 	}
-	return &types.Table{
-		ID:      tableID,
-		Columns: columns,
-		Data:    data,
-	}
+	return types.NewTableWithSchema(
+		&bigqueryv2.Table{
+			TableReference: &bigqueryv2.TableReference{
+				TableId: tableID,
+			},
+			Schema: response.Schema,
+		},
+		data,
+	)
 }
 
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
@@ -1076,22 +1074,25 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.Configuration.Query.QueryParameters,
 	)
 	endTime := time.Now()
-	if hasDestinationTable && jobErr == nil {
-		// insert results to destination table
-		tableRef := job.Configuration.Query.DestinationTable
-		tableDef := h.tableDefFromQueryResponse(tableRef.TableId, response)
-		if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-			return nil, fmt.Errorf("failed to add table data: %w", err)
-		}
-	} else {
-		job.Configuration.Query.DestinationTable = &bigqueryv2.TableReference{
-			ProjectId: r.project.ID,
-			DatasetId: "anonymous",
-			TableId:   "anonymous",
-		}
-	}
 	if job.JobReference.JobId == "" {
 		job.JobReference.JobId = randomID() // generate job id
+	}
+	if jobErr == nil {
+		if hasDestinationTable {
+			// insert results to destination table
+			tableRef := job.Configuration.Query.DestinationTable
+			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+				return nil, fmt.Errorf("failed to add table data: %w", err)
+			}
+		} else if response.TotalRows > 0 {
+			if err := h.addQueryResultToDynamicDestinationTable(ctx, tx, r, response); err != nil {
+				return nil, fmt.Errorf("failed to add query result to dynamic destination table: %w", err)
+			}
+		}
 	}
 	job.Kind = "bigquery#job"
 	job.Configuration.JobType = "QUERY"
@@ -1145,6 +1146,48 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		}
 	}
 	return job, nil
+}
+
+func (h *jobsInsertHandler) addQueryResultToDynamicDestinationTable(ctx context.Context, tx *connection.Tx, r *jobsInsertRequest, response *internaltypes.QueryResponse) error {
+	projectID := r.project.ID
+	jobID := r.job.JobReference.JobId
+	datasetID := jobID
+	tableID := jobID
+
+	tableDef, err := h.tableDefFromQueryResponse(tableID, response)
+	if err != nil {
+		return err
+	}
+	tableDef.SetupMetadata(projectID, datasetID)
+	table := metadata.NewTable(r.server.metaRepo, projectID, datasetID, tableID, tableDef.Metadata)
+	dataset := metadata.NewDataset(
+		r.server.metaRepo,
+		projectID,
+		datasetID,
+		&bigqueryv2.Dataset{
+			Id: fmt.Sprintf("%s:%s", projectID, datasetID),
+			DatasetReference: &bigqueryv2.DatasetReference{
+				ProjectId: projectID,
+				DatasetId: datasetID,
+			},
+		},
+		[]*metadata.Table{table},
+		nil,
+		nil,
+	)
+	if err := r.project.AddDataset(ctx, tx.Tx(), dataset); err != nil {
+		return err
+	}
+	if err := r.server.metaRepo.AddTable(ctx, tx.Tx(), table); err != nil {
+		return err
+	}
+	if err := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(projectID, datasetID)); err != nil {
+		return err
+	}
+	if err := r.server.contentRepo.AddTableData(ctx, tx, projectID, datasetID, tableDef); err != nil {
+		return fmt.Errorf("failed to add table data: %w", err)
+	}
+	return nil
 }
 
 func (h *jobsListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

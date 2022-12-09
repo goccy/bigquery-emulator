@@ -32,13 +32,13 @@ type Table struct {
 	Metadata map[string]interface{} `yaml:"metadata"`
 }
 
-func (t *Table) SetupMetadata(projectID, datasetID string) {
+func (t *Table) ToBigqueryV2(projectID, datasetID string) *bigqueryv2.Table {
 	fields := make([]*bigqueryv2.TableFieldSchema, len(t.Columns))
 	for i, col := range t.Columns {
 		fields[i] = col.TableFieldSchema()
 	}
 	now := time.Now().Unix()
-	encodedTableData, _ := json.Marshal(&bigqueryv2.Table{
+	return &bigqueryv2.Table{
 		Type: "TABLE",
 		Kind: "bigquery#table",
 		Id:   fmt.Sprintf("%s:%s.%s", projectID, datasetID, t.ID),
@@ -53,7 +53,11 @@ func (t *Table) SetupMetadata(projectID, datasetID string) {
 		NumRows:          uint64(len(t.Data)),
 		CreationTime:     now,
 		LastModifiedTime: uint64(now),
-	})
+	}
+}
+
+func (t *Table) SetupMetadata(projectID, datasetID string) {
+	encodedTableData, _ := json.Marshal(t.ToBigqueryV2(projectID, datasetID))
 	var tableMetadata map[string]interface{}
 	_ = json.Unmarshal(encodedTableData, &tableMetadata)
 	t.Metadata = tableMetadata
