@@ -10,7 +10,7 @@ require (
 	github.com/goccy/go-json v0.10.0
 	github.com/goccy/go-yaml v1.9.5
 	github.com/goccy/go-zetasql v0.5.1
-	github.com/goccy/go-zetasqlite v0.12.0
+	github.com/goccy/go-zetasqlite v0.12.1
 	github.com/google/go-cmp v0.5.9
 	github.com/googleapis/gax-go/v2 v2.7.0
 	github.com/gorilla/mux v1.8.0
