@@ -12,15 +12,18 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/goccy/go-json"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/option"
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/logger"
@@ -1046,12 +1049,310 @@ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *
 	)
 }
 
+const (
+	gcsEmulatorHostEnvName = "STORAGE_EMULATOR_HOST"
+	gcsURIPrefix           = "gs://"
+)
+
+func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+	var opts []option.ClientOption
+	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		opts = append(
+			opts,
+			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
+			option.WithoutAuthentication(),
+		)
+	}
+	client, err := storage.NewClient(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	startTime := time.Now()
+	for _, uri := range r.job.Configuration.Load.SourceUris {
+		if !strings.HasPrefix(uri, gcsURIPrefix) {
+			return nil, fmt.Errorf("load source uri must start with gs://")
+		}
+		uri = strings.TrimLeft(uri, gcsURIPrefix)
+		paths := strings.Split(uri, "/")
+		if len(paths) < 2 {
+			return nil, fmt.Errorf("unexpected gcs uri format %s", uri)
+		}
+		bucketName := paths[0]
+		objectPath := strings.Join(paths[1:], "/")
+		reader, err := client.Bucket(bucketName).Object(objectPath).NewReader(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get gcs object reader for %s: %w", uri, err)
+		}
+		if err := h.importFromGCSObject(ctx, r, reader); err != nil {
+			return nil, err
+		}
+	}
+	endTime := time.Now()
+	job := r.job
+	job.Kind = "bigquery#job"
+	job.Configuration.JobType = "LOAD"
+	job.SelfLink = fmt.Sprintf(
+		"http://%s/bigquery/v2/projects/%s/jobs/%s",
+		r.server.httpServer.Addr,
+		r.project.ID,
+		job.JobReference.JobId,
+	)
+	job.Status = &bigqueryv2.JobStatus{State: "DONE"}
+	job.Statistics = &bigqueryv2.JobStatistics{
+		CreationTime: startTime.Unix(),
+		StartTime:    startTime.Unix(),
+		EndTime:      endTime.Unix(),
+	}
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.project.AddJob(
+		ctx,
+		tx.Tx(),
+		metadata.NewJob(
+			r.server.metaRepo,
+			r.project.ID,
+			job.JobReference.JobId,
+			job,
+			nil,
+			nil,
+		),
+	); err != nil {
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if !job.Configuration.DryRun {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit job: %w", err)
+		}
+	}
+	return job, nil
+}
+
+func (h *jobsInsertHandler) importFromGCSObject(ctx context.Context, r *jobsInsertRequest, reader *storage.Reader) error {
+	defer func() {
+		_ = reader.Close()
+	}()
+	job := metadata.NewJob(
+		r.server.metaRepo,
+		r.project.ID,
+		r.job.JobReference.JobId,
+		r.job,
+		nil,
+		nil,
+	)
+	if err := new(uploadContentHandler).Handle(ctx, &uploadContentRequest{
+		server:  r.server,
+		project: r.project,
+		job:     job,
+		reader:  reader,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+	var opts []option.ClientOption
+	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		opts = append(
+			opts,
+			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
+			option.WithoutAuthentication(),
+		)
+	}
+	client, err := storage.NewClient(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	startTime := time.Now()
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.RollbackIfNotCommitted()
+	extract := r.job.Configuration.Extract
+	sourceTable := extract.SourceTable
+	response, err := r.server.contentRepo.Query(
+		ctx,
+		tx,
+		sourceTable.ProjectId,
+		sourceTable.DatasetId,
+		fmt.Sprintf("SELECT * FROM `%s`", sourceTable.TableId),
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, uri := range extract.DestinationUris {
+		if !strings.HasPrefix(uri, gcsURIPrefix) {
+			return nil, fmt.Errorf("destination uri must start with gs://")
+		}
+		uri = strings.TrimLeft(uri, gcsURIPrefix)
+		paths := strings.Split(uri, "/")
+		if len(paths) < 2 {
+			return nil, fmt.Errorf("unexpected gcs uri format %s", uri)
+		}
+		bucketName := paths[0]
+		objectPath := strings.Join(paths[1:], "/")
+		bucket := client.Bucket(bucketName)
+		_ = bucket.Create(ctx, r.project.ID, nil) // ignore "already exists" error.
+		writer := bucket.Object(objectPath).NewWriter(ctx)
+		if err := h.exportToGCSWithObject(ctx, response, extract, writer); err != nil {
+			return nil, err
+		}
+	}
+	endTime := time.Now()
+	job := r.job
+	job.Kind = "bigquery#job"
+	job.Configuration.JobType = "EXTRACT"
+	job.SelfLink = fmt.Sprintf(
+		"http://%s/bigquery/v2/projects/%s/jobs/%s",
+		r.server.httpServer.Addr,
+		r.project.ID,
+		job.JobReference.JobId,
+	)
+	job.Status = &bigqueryv2.JobStatus{State: "DONE"}
+	job.Statistics = &bigqueryv2.JobStatistics{
+		CreationTime: startTime.Unix(),
+		StartTime:    startTime.Unix(),
+		EndTime:      endTime.Unix(),
+	}
+	if err := r.project.AddJob(
+		ctx,
+		tx.Tx(),
+		metadata.NewJob(
+			r.server.metaRepo,
+			r.project.ID,
+			job.JobReference.JobId,
+			job,
+			nil,
+			nil,
+		),
+	); err != nil {
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if !job.Configuration.DryRun {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit job: %w", err)
+		}
+	}
+	return job, nil
+}
+
+func (h *jobsInsertHandler) exportToGCSWithObject(ctx context.Context, response *internaltypes.QueryResponse, extract *bigqueryv2.JobConfigurationExtract, writer *storage.Writer) (e error) {
+	defer func() {
+		if err := writer.Close(); err != nil {
+			e = err
+		}
+	}()
+	switch extract.DestinationFormat {
+	case "CSV":
+		if len(response.Rows) == 0 {
+			if _, err := writer.Write(nil); err != nil {
+				return fmt.Errorf("failed to empty table data to gcs object: %w", err)
+			}
+			return nil
+		}
+		csvWriter := csv.NewWriter(writer)
+		var columns []string
+		for _, cell := range response.Rows[0].F {
+			columns = append(columns, cell.Name)
+		}
+		if extract.PrintHeader == nil {
+			if err := csvWriter.Write(columns); err != nil {
+				return fmt.Errorf("failed to encode csv columns: %w", err)
+			}
+		}
+		for _, row := range response.Rows {
+			data, err := row.Data()
+			if err != nil {
+				return fmt.Errorf("failed to get data from table row: %w", err)
+			}
+			var records []string
+			for _, col := range columns {
+				value := data[col]
+				if value == nil {
+					records = append(records, "")
+					continue
+				}
+				if v, ok := value.(string); ok {
+					records = append(records, v)
+					continue
+				}
+				jsonValue, err := json.Marshal(value)
+				if err != nil {
+					return fmt.Errorf("failed to encode row value: %w", err)
+				}
+				records = append(records, string(jsonValue))
+			}
+			if err := csvWriter.Write(records); err != nil {
+				return fmt.Errorf("failed to encode csv data: %w", err)
+			}
+		}
+		csvWriter.Flush()
+		if err := csvWriter.Error(); err != nil {
+			return fmt.Errorf("failed to encode csv data: %w", err)
+		}
+	case "NEWLINE_DELIMITED_JSON":
+		writer.ContentType = "application/json"
+		enc := json.NewEncoder(writer)
+		for _, row := range response.Rows {
+			data, err := row.Data()
+			if err != nil {
+				return fmt.Errorf("failed to get data from table row: %w", err)
+			}
+			if err := enc.Encode(data); err != nil {
+				return fmt.Errorf("failed to encode table data: %w", err)
+			}
+		}
+	case "PARQUET":
+		var opts []parquet.WriterOption
+		switch extract.Compression {
+		case "GZIP":
+			opts = append(opts, parquet.Compression(&parquet.Gzip))
+		case "SNAPPY":
+			opts = append(opts, parquet.Compression(&parquet.Snappy))
+		case "DEFLATE":
+			opts = append(opts, parquet.Compression(&parquet.Gzip))
+		}
+		_ = opts
+		fallthrough
+	default:
+		return fmt.Errorf("failed to export to gcs: unsupported destination format %s", extract.DestinationFormat)
+	}
+	return nil
+}
+
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	job := r.job
 	if job.Configuration == nil {
 		return nil, fmt.Errorf("unspecified job configuration")
 	}
 	if job.Configuration.Query == nil {
+		if job.Configuration.Load != nil && len(job.Configuration.Load.SourceUris) != 0 {
+			// load from google cloud storage
+			job, err := h.importFromGCS(ctx, r)
+			if err != nil {
+				return nil, fmt.Errorf("failed to import from gcs: %w", err)
+			}
+			return job, nil
+		} else if job.Configuration.Extract != nil && len(job.Configuration.Extract.DestinationUris) != 0 {
+			job, err := h.exportToGCS(ctx, r)
+			if err != nil {
+				return nil, fmt.Errorf("failed to export to gcs: %w", err)
+			}
+			return job, nil
+		}
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
