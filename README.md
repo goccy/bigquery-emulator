@@ -22,6 +22,10 @@ Although this project is still in **beta** version, many features are already av
 
 We've been implemented the all [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
 
+## Google Cloud Storage linkage
+
+BigQuery emulator supports loading data from Google Cloud Storage and extracting table data. Currently, only CSV and JSON data types can be used for extracting. If you use Google Cloud Storage emulator, please set `STORAGE_EMULATOR_HOST` environment variable.
+
 ## BigQuery Storage API
 
 Supports gRPC-based read/write using [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage).
