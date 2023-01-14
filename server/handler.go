@@ -2486,13 +2486,22 @@ type tablesListRequest struct {
 func (h *tablesListHandler) Handle(ctx context.Context, r *tablesListRequest) (*bigqueryv2.TableList, error) {
 	var tables []*bigqueryv2.TableListTables
 	for _, tableID := range r.dataset.TableIDs() {
+		table, err := r.dataset.Table(tableID).Content()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get table metadata from %s: %w", tableID, err)
+		}
 		tables = append(tables, &bigqueryv2.TableListTables{
-			Id: tableID,
-			TableReference: &bigqueryv2.TableReference{
-				ProjectId: r.project.ID,
-				DatasetId: r.dataset.ID,
-				TableId:   tableID,
-			},
+			Clustering:        table.Clustering,
+			CreationTime:      table.CreationTime,
+			ExpirationTime:    table.ExpirationTime,
+			FriendlyName:      table.FriendlyName,
+			Id:                table.Id,
+			Kind:              table.Kind,
+			Labels:            table.Labels,
+			RangePartitioning: table.RangePartitioning,
+			TableReference:    table.TableReference,
+			TimePartitioning:  table.TimePartitioning,
+			Type:              table.Type,
 		})
 	}
 	return &bigqueryv2.TableList{
