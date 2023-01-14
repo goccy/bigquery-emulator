@@ -2408,6 +2408,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	table.CreationTime = now
 	table.LastModifiedTime = uint64(now)
 	table.Type = string(DefaultTableType) // TODO: need to handle other table types
+	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/datasets/%s/tables/%s",
 		r.server.httpServer.Addr,
