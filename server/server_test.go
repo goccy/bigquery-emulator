@@ -1739,12 +1739,12 @@ WHERE
 ORDER BY qty DESC;`)
 	query.Parameters = []bigquery.QueryParameter{
 		{
-			Name:  "someday",
-			Value: time.Date(2022, 9, 9, 0, 0, 0, 0, time.UTC),
-		},
-		{
 			Name:  "min_qty",
 			Value: 100,
+		},
+		{
+			Name:  "someday",
+			Value: time.Date(2022, 9, 9, 0, 0, 0, 0, time.UTC),
 		},
 	}
 
@@ -1763,6 +1763,7 @@ ORDER BY qty DESC;`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var rowCount int
 	for {
 		var row []bigquery.Value
 		if err := it.Next(&row); err != nil {
@@ -1773,6 +1774,10 @@ ORDER BY qty DESC;`)
 				t.Fatal(err)
 			}
 		}
+		rowCount++
 		fmt.Println(row)
+	}
+	if rowCount != 1 {
+		t.Fatal("failed to get result")
 	}
 }

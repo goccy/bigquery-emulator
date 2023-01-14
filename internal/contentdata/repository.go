@@ -128,8 +128,11 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
-		// param.Name
-		values = append(values, param.ParameterValue.Value)
+		if param.Name != "" {
+			values = append(values, sql.Named(param.Name, param.ParameterValue.Value))
+		} else {
+			values = append(values, param.ParameterValue.Value)
+		}
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
 	logger.Logger(ctx).Info(
