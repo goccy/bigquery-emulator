@@ -2408,6 +2408,9 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	table.CreationTime = now
 	table.LastModifiedTime = uint64(now)
 	table.Type = string(DefaultTableType) // TODO: need to handle other table types
+	if table.View != nil {
+		table.Type = string(ViewTableType)
+	}
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/datasets/%s/tables/%s",
@@ -2452,6 +2455,11 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	}
 	if r.table.Schema != nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			return nil, errInternalError(err.Error())
+		}
+	}
+	if r.table.View != nil {
+		if err := r.server.contentRepo.CreateView(ctx, tx, r.table); err != nil {
 			return nil, errInternalError(err.Error())
 		}
 	}
