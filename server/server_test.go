@@ -524,6 +524,117 @@ func TestTable(t *testing.T) {
 	}
 }
 
+func TestView(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table"
+		viewName    = "view"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	schema, err := bigquery.InferSchema(TableSchema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := client.Dataset(datasetName).Table(tableName)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Name:           "table",
+		Schema:         schema,
+		ExpirationTime: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertRow := &TableSchema{
+		Int:   -1,
+		Str:   "2",
+		Float: 3,
+		Struct: &StructType{
+			A: 4,
+			B: "5",
+			C: 6,
+		},
+		Array: []*StructType{
+			{
+				A: 7,
+				B: "8",
+				C: 9,
+			},
+		},
+		IntArray: []int{10},
+		Time:     time.Now(),
+	}
+	if err := table.Inserter().Put(ctx, []*TableSchema{insertRow}); err != nil {
+		t.Fatal(err)
+	}
+
+	// view
+
+	view := client.Dataset(datasetName).Table(viewName)
+
+	if err := view.Create(ctx, &bigquery.TableMetadata{
+		Name:      viewName,
+		ViewQuery: "SELECT ABS(Int) AS Int FROM table",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := client.Query("SELECT * FROM dataset1.view")
+
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type ViewRow struct {
+		Int int
+	}
+	var viewRows []*ViewRow
+	for {
+		var viewRow ViewRow
+		if err := it.Next(&viewRow); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		viewRows = append(viewRows, &viewRow)
+	}
+
+	if len(viewRows) != 1 {
+		t.Fatalf("failed to get view data. view rows length is %d", len(viewRows))
+	}
+	if viewRows[0].Int != 1 {
+		t.Fatal("unexpected view row data")
+	}
+}
+
 func TestDuplicateTable(t *testing.T) {
 	const (
 		projectName = "test"
