@@ -19,4 +19,7 @@ COPY --from=0 /work/bigquery-emulator /bin/bigquery-emulator
 
 WORKDIR /work
 
+EXPOSE 9050
+EXPOSE 9060
+
 ENTRYPOINT ["/bin/bigquery-emulator"]
