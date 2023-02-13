@@ -100,6 +100,29 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	return nil
 }
 
+func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+	ref := table.TableReference
+	if ref == nil {
+		return fmt.Errorf("TableReference is nil")
+	}
+	viewDefinition := table.View
+	if viewDefinition == nil {
+		return fmt.Errorf("ViewDefinition is nil")
+	}
+	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewDefinition.Query)
+	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to create view %s: %w", query, err)
+	}
+	return nil
+}
+
 func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) string {
 	var elem string
 	if field.Type == "RECORD" {
