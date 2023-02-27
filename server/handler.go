@@ -23,6 +23,7 @@ import (
 	"github.com/goccy/go-json"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	"github.com/goccy/bigquery-emulator/internal/connection"
@@ -1079,12 +1080,44 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 		}
 		bucketName := paths[0]
 		objectPath := strings.Join(paths[1:], "/")
-		reader, err := client.Bucket(bucketName).Object(objectPath).NewReader(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get gcs object reader for %s: %w", uri, err)
-		}
-		if err := h.importFromGCSObject(ctx, r, reader); err != nil {
-			return nil, err
+		switch strings.Count(objectPath, "*") {
+		case 0:
+			reader, err := client.Bucket(bucketName).Object(objectPath).NewReader(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get gcs object reader for %s: %w", uri, err)
+			}
+			if err := h.importFromGCSObject(ctx, r, reader); err != nil {
+				return nil, err
+			}
+		case 1:
+			splitPath := strings.Split(objectPath, "*")
+			prefix := splitPath[0]
+			suffix := splitPath[1]
+			query := &storage.Query{
+				Prefix: prefix,
+			}
+			query.SetAttrSelection([]string{"Name"})
+			it := client.Bucket(bucketName).Objects(ctx, query)
+			for {
+				attrs, err := it.Next()
+				if err == iterator.Done {
+					break
+				}
+				if err != nil {
+					return nil, fmt.Errorf("failed to list gcs object for %s: %w", uri, err)
+				}
+				if strings.HasSuffix(attrs.Name, suffix) {
+					reader, err := client.Bucket(bucketName).Object(attrs.Name).NewReader(ctx)
+					if err != nil {
+						return nil, fmt.Errorf("failed to get gcs object reader for %s: %w", uri, err)
+					}
+					if err := h.importFromGCSObject(ctx, r, reader); err != nil {
+						return nil, err
+					}
+				}
+			}
+		default:
+			return nil, fmt.Errorf("the number of wildcards in gcs uri must be 0 or 1")
 		}
 	}
 	endTime := time.Now()
