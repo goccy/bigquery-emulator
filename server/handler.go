@@ -79,7 +79,7 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			decodeJSONErr = err
 			return
 		}
-		addr := h.server.httpServer.Addr
+		addr := h.server.hostname
 		if !strings.HasPrefix(addr, "http") {
 			addr = "http://" + addr
 		}
@@ -260,7 +260,7 @@ func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
-	addr := server.httpServer.Addr
+	addr := server.hostname
 	if !strings.HasPrefix(addr, "http") {
 		addr = "http://" + addr
 	}
@@ -1093,7 +1093,7 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 	job.Configuration.JobType = "LOAD"
 	job.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/jobs/%s",
-		r.server.httpServer.Addr,
+		r.server.hostname,
 		r.project.ID,
 		job.JobReference.JobId,
 	)
@@ -1217,7 +1217,7 @@ func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertReques
 	job.Configuration.JobType = "EXTRACT"
 	job.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/jobs/%s",
-		r.server.httpServer.Addr,
+		r.server.hostname,
 		r.project.ID,
 		job.JobReference.JobId,
 	)
@@ -1400,7 +1400,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	job.Configuration.Query.Priority = "INTERACTIVE"
 	job.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/jobs/%s",
-		r.server.httpServer.Addr,
+		r.server.hostname,
 		r.project.ID,
 		job.JobReference.JobId,
 	)
@@ -2414,7 +2414,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
 		"http://%s/bigquery/v2/projects/%s/datasets/%s/tables/%s",
-		r.server.httpServer.Addr,
+		r.server.hostname,
 		r.project.ID,
 		r.dataset.ID,
 		r.table.TableReference.TableId,

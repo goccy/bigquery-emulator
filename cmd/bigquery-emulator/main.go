@@ -17,6 +17,7 @@ import (
 type option struct {
 	Project      string           `description:"specify the project name" long:"project"`
 	Dataset      string           `description:"specify the dataset name" long:"dataset"`
+	Hostname     string           `description:"specify optionally the hostname to use for redirects" long:"hostname" default:"127.0.0.1:9050"`
 	HTTPPort     uint16           `description:"specify the http port number. this port used by bigquery api" long:"port" default:"9050"`
 	GRPCPort     uint16           `description:"specify the grpc port number. this port used by bigquery storage api" long:"grpc-port" default:"9060"`
 	LogLevel     server.LogLevel  `description:"specify the log level (debug/info/warn/error)" long:"log-level" default:"error"`
@@ -109,6 +110,10 @@ func runServer(args []string, opt option) error {
 		}
 	}
 
+	if opt.Hostname != "" {
+		bqServer.SetHostname(opt.Hostname)
+	}
+
 	ctx := context.Background()
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
@@ -127,7 +132,7 @@ func runServer(args []string, opt option) error {
 	go func() {
 		httpAddr := fmt.Sprintf("0.0.0.0:%d", opt.HTTPPort)
 		grpcAddr := fmt.Sprintf("0.0.0.0:%d", opt.GRPCPort)
-		fmt.Fprintf(os.Stdout, "[bigquery-emulator] REST server listening at %s\n", httpAddr)
+		fmt.Fprintf(os.Stdout, "[bigquery-emulator] REST server listening at %s(hostname=%s)\n", httpAddr, opt.Hostname)
 		fmt.Fprintf(os.Stdout, "[bigquery-emulator] gRPC server listening at %s\n", grpcAddr)
 		done <- bqServer.Serve(ctx, httpAddr, grpcAddr)
 	}()

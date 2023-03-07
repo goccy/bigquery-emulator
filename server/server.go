@@ -23,6 +23,7 @@ import (
 type Server struct {
 	Handler      http.Handler
 	storage      Storage
+	hostname     string
 	db           *sql.DB
 	loggerConfig *zap.Config
 	logger       *zap.Logger
@@ -35,7 +36,7 @@ type Server struct {
 }
 
 func New(storage Storage) (*Server, error) {
-	server := &Server{storage: storage}
+	server := &Server{storage: storage, hostname: "0.0.0.0:9050"}
 	if storage == TempStorage {
 		f, err := os.CreateTemp("", "")
 		if err != nil {
@@ -173,6 +174,10 @@ func (s *Server) SetLogLevel(level LogLevel) error {
 	}
 	s.logger = logger
 	return nil
+}
+
+func (s *Server) SetHostname(hostname string) {
+	s.hostname = hostname
 }
 
 type LogFormat string
