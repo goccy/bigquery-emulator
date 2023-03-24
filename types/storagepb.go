@@ -1,8 +1,8 @@
 package types
 
 import (
+	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
-	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 )
 
 func TableToProto(t *bigqueryv2.Table) *storagepb.TableSchema {

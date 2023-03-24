@@ -7,7 +7,6 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
-	"io/ioutil"
 	"log"
 	"math"
 	"os"
@@ -51,7 +50,7 @@ func CredentialsEnv(ctx context.Context, envVar string, scopes ...string) *googl
 		return creds
 	}
 
-	data, err := ioutil.ReadFile(key)
+	data, err := os.ReadFile(key)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -100,7 +99,7 @@ func jwtConfigFromFile(filename string, scopes []string) (*jwt.Config, error) {
 	if filename == "" {
 		return nil, nil
 	}
-	jsonKey, err := ioutil.ReadFile(filename)
+	jsonKey, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read the JSON key file, err: %v", err)
 	}

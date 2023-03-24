@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/format"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -120,7 +119,7 @@ type {{ .HandlerName }}Handler struct {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, buf, 0644)
+	return os.WriteFile(path, buf, 0644)
 }
 
 func repoRoot() string {

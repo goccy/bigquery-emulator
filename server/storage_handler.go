@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"context"
 	"fmt"
 	"io"
@@ -14,9 +15,8 @@ import (
 	"github.com/apache/arrow/go/v10/arrow/ipc"
 	"github.com/apache/arrow/go/v10/arrow/memory"
 	"github.com/goccy/go-json"
-	goavro "github.com/linkedin/goavro/v2"
+	"github.com/linkedin/goavro/v2"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
-	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
