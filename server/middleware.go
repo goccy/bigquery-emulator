@@ -30,7 +30,7 @@ func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 			defer func() {
 				if err := recover(); err != nil {
 					ctx := logger.WithLogger(r.Context(), s.logger)
-					logger.L.Errorf("panic %v, %v", err, string(debug.Stack()))
+					logger.Logger(r.Context()).Error(fmt.Sprintf("panic %v, %v", err, string(debug.Stack())))
 					errorResponse(ctx, w, errInternalError(fmt.Sprintf("%+v", err)))
 					return
 				}
