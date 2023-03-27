@@ -5,6 +5,7 @@ import (
 	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"context"
 	"fmt"
+	"google.golang.org/protobuf/types/known/anypb"
 	"io"
 	"strings"
 	"sync"
@@ -381,6 +382,7 @@ type writeStreamStatus struct {
 	tableMetadata *bigqueryv2.Table
 	rows          types.Data
 	finalized     bool
+	offset        int64
 }
 
 func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storagepb.CreateWriteStreamRequest) (*storagepb.WriteStream, error) {
@@ -471,10 +473,10 @@ func (s *storageWriteServer) getMessageDescriptor(req *storagepb.AppendRowsReque
 func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDesc protoreflect.MessageDescriptor, stream storagepb.BigQueryWrite_AppendRowsServer) error {
 	streamName := req.GetWriteStream()
 	s.mu.RLock()
-	var status *writeStreamStatus
+	var streamStatus *writeStreamStatus
 	if streamName == "" {
 		for _, s := range s.streamMap {
-			status = s
+			streamStatus = s
 			break
 		}
 	} else {
@@ -482,24 +484,57 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 		if !exists {
 			return fmt.Errorf("failed to get stream from %s", streamName)
 		}
-		status = s
+		streamStatus = s
 	}
 	s.mu.RUnlock()
-	if status.finalized {
-		return fmt.Errorf("stream is already finalized")
+
+	if streamStatus.finalized {
+		return s.sendStorageErr(
+			stream,
+			streamName,
+			codes.InvalidArgument,
+			storagepb.StorageError_STREAM_FINALIZED,
+			"stream has been finalized and cannot be appended")
 	}
+
 	offset := req.GetOffset().Value
+
+	var defaultStream bool
+	if strings.HasSuffix(streamName, "_default") {
+		defaultStream = true
+	}
+
+	// TODO(dm): validate default stream
+
+	if !defaultStream {
+		if offset > streamStatus.offset {
+			return s.sendStorageErr(
+				stream,
+				streamName,
+				codes.OutOfRange,
+				storagepb.StorageError_OFFSET_OUT_OF_RANGE,
+				fmt.Sprintf("the offset is out of range, expected %d but received %d", streamStatus.offset, offset))
+		} else if offset < streamStatus.offset {
+			return s.sendStorageErr(
+				stream,
+				streamName,
+				codes.AlreadyExists,
+				storagepb.StorageError_OFFSET_ALREADY_EXISTS,
+				fmt.Sprintf("the offset is within the stream, expected %d but received %d", streamStatus.offset, offset))
+		}
+	}
+
 	rows := req.GetProtoRows().GetRows().GetSerializedRows()
 	data, err := s.decodeData(msgDesc, rows)
 	if err != nil {
 		s.sendErrorMessage(stream, streamName, err)
 		return err
 	}
-	if status.streamType == storagepb.WriteStream_COMMITTED {
+	if streamStatus.streamType == storagepb.WriteStream_COMMITTED {
 		ctx := context.Background()
 		ctx = logger.WithLogger(ctx, s.server.logger)
 
-		conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
+		conn, err := s.server.connMgr.Connection(ctx, streamStatus.projectID, streamStatus.datasetID)
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
 			return err
@@ -510,14 +545,20 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 			return err
 		}
 		defer tx.RollbackIfNotCommitted()
-		if err := s.insertTableData(ctx, tx, status, data); err != nil {
+		if err := s.insertTableData(ctx, tx, streamStatus, data); err != nil {
 			s.sendErrorMessage(stream, streamName, err)
 			return err
 		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if !defaultStream {
+			streamStatus.offset += int64(len(rows))
+		}
 	} else {
-		status.rows = append(status.rows, data...)
+		streamStatus.rows = append(streamStatus.rows, data...)
 	}
-	return s.sendResult(stream, streamName, offset+int64(len(rows)))
+	return s.sendResult(stream, streamName, offset)
 }
 
 func (s *storageWriteServer) sendResult(stream storagepb.BigQueryWrite_AppendRowsServer, streamName string, offset int64) error {
@@ -538,6 +579,37 @@ func (s *storageWriteServer) sendErrorMessage(stream storagepb.BigQueryWrite_App
 			Error: &status.Status{
 				Code:    int32(codes.Internal),
 				Message: err.Error(),
+			},
+		},
+	})
+}
+
+func (s *storageWriteServer) sendStorageErr(
+	stream storagepb.BigQueryWrite_AppendRowsServer,
+	streamName string,
+	errCode codes.Code,
+	storageErrorCode storagepb.StorageError_StorageErrorCode,
+	errMessage string) error {
+	storageErrBy, err := proto.Marshal(&storagepb.StorageError{
+		Code:         storageErrorCode,
+		Entity:       streamName,
+		ErrorMessage: errMessage,
+	})
+	if err != nil {
+		return err
+	}
+	return stream.Send(&storagepb.AppendRowsResponse{
+		WriteStream: streamName,
+		Response: &storagepb.AppendRowsResponse_Error{
+			Error: &status.Status{
+				Code:    int32(errCode),
+				Message: errMessage,
+				Details: []*anypb.Any{
+					{
+						TypeUrl: "type.googleapis.com/google.cloud.bigquery.storage.v1.StorageError",
+						Value:   storageErrBy,
+					},
+				},
 			},
 		},
 	})
@@ -679,6 +751,7 @@ func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.
 }
 
 func (s *storageWriteServer) FinalizeWriteStream(ctx context.Context, req *storagepb.FinalizeWriteStreamRequest) (*storagepb.FinalizeWriteStreamResponse, error) {
+	// TODO(dm): return an error when trying to finalize a default stream
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status, exists := s.streamMap[req.GetName()]
