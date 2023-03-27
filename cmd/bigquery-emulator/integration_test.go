@@ -3,6 +3,7 @@ package main
 import (
 	"cloud.google.com/go/bigquery/storage/managedwriter"
 	"context"
+	"flag"
 	"fmt"
 	testdata2 "github.com/goccy/bigquery-emulator/cmd/bigquery-emulator/testdata"
 	"github.com/goccy/bigquery-emulator/server"
@@ -34,12 +35,10 @@ import (
 var (
 	defaultTestTimeout = 45 * time.Second
 
-	projectID       = "emulator-test"
-	httpPort        = uint16(9053)
-	grpcPort        = uint16(9063)
-	httpURL         = fmt.Sprintf("http://localhost:%d", httpPort)
-	grpcURL         = fmt.Sprintf("localhost:%d", grpcPort)
-	disableEmulator = false
+	httpPort = uint16(9053)
+	grpcPort = uint16(9063)
+	httpURL  = fmt.Sprintf("http://localhost:%d", httpPort)
+	grpcURL  = fmt.Sprintf("localhost:%d", grpcPort)
 )
 
 // our test data has cardinality 5 for names, 3 for values
@@ -51,21 +50,30 @@ var testSimpleData = []*testdata2.SimpleMessageProto2{
 	{Name: proto.String("five"), Value: proto.Int64(2)},
 }
 
+var (
+	disableEmulator = flag.Bool("disable-emulator", false, "disable the bigquery emulator and run tests against the real BigQuery GCP service")
+	projectID       = flag.String("project-id", "emulator-test", "GCP project ID")
+)
+
 func TestMain(m *testing.M) {
-	go func() {
-		opt := option{
-			Project:   projectID,
-			HTTPPort:  httpPort,
-			GRPCPort:  grpcPort,
-			LogLevel:  server.LogLevelDebug,
-			LogFormat: server.LogFormatConsole,
-		}
-		if err := runServer([]string{}, opt); err != nil {
-			panic(err)
-		}
-	}()
-	// TODO(dm): check if the server is ready instead of just sleeping
-	time.Sleep(5 * time.Second)
+	flag.Parse()
+
+	if !*disableEmulator {
+		go func() {
+			opt := option{
+				Project:   *projectID,
+				HTTPPort:  httpPort,
+				GRPCPort:  grpcPort,
+				LogLevel:  server.LogLevelDebug,
+				LogFormat: server.LogFormatConsole,
+			}
+			if err := runServer([]string{}, opt); err != nil {
+				panic(err)
+			}
+		}()
+		// TODO(dm): check if the server is ready instead of just sleeping
+		time.Sleep(5 * time.Second)
+	}
 
 	exitCode := m.Run()
 
@@ -82,7 +90,7 @@ func getTestClients(ctx context.Context, t *testing.T) (*managedwriter.Client, *
 	}
 
 	storageClientOptions := []googleoption.ClientOption{}
-	if !disableEmulator {
+	if !*disableEmulator {
 		storageClientOptions = append(storageClientOptions, googleoption.WithEndpoint(grpcURL))
 		storageClientOptions = append(storageClientOptions, googleoption.WithGRPCDialOption(
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -92,17 +100,19 @@ func getTestClients(ctx context.Context, t *testing.T) (*managedwriter.Client, *
 		storageClientOptions = append(storageClientOptions, googleoption.WithTokenSource(ts))
 	}
 
-	client, err := managedwriter.NewClient(ctx, projectID, storageClientOptions...)
+	client, err := managedwriter.NewClient(ctx, *projectID, storageClientOptions...)
 	if err != nil {
 		t.Fatalf("couldn't create managedwriter client: %v", err)
 	}
 
 	bqClientOptions := []googleoption.ClientOption{}
-	if !disableEmulator {
+	if !*disableEmulator {
 		bqClientOptions = append(bqClientOptions, googleoption.WithEndpoint(httpURL))
 		bqClientOptions = append(bqClientOptions, googleoption.WithoutAuthentication())
+	} else {
+		storageClientOptions = append(storageClientOptions, googleoption.WithTokenSource(ts))
 	}
-	bqClient, err := bigquery.NewClient(ctx, projectID, bqClientOptions...)
+	bqClient, err := bigquery.NewClient(ctx, *projectID, bqClientOptions...)
 	if err != nil {
 		t.Fatalf("couldn't create bigquery client: %v", err)
 	}
@@ -610,15 +620,14 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 	if err != nil {
 		t.Errorf("failed to send append: %v", err)
 	}
-	//
 	off, err := result.GetResult(ctx)
 	if err == nil {
-		t.Errorf("expected error, got offset %d", off)
+		t.Fatalf("expected error, got offset %d", off)
 	}
 
 	apiErr, ok := apierror.FromError(err)
 	if !ok {
-		t.Errorf("expected apierror, got %T: %v", err, err)
+		t.Fatalf("expected apierror, got %[1]T: %[1]v", err)
 	}
 	se := &storagepb.StorageError{}
 	e := apiErr.Details().ExtractProtoMessage(se)
@@ -636,7 +645,7 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 	}
 	off, err = result.GetResult(ctx)
 	if err != nil {
-		t.Errorf("expected offset, got error %v", err)
+		t.Fatalf("expected offset, got error %v", err)
 	}
 	wantOffset := int64(0)
 	if off != wantOffset {
@@ -645,7 +654,7 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 	// Now, send at the start offset again.
 	result, err = ms.AppendRows(ctx, data, managedwriter.WithOffset(0))
 	if err != nil {
-		t.Errorf("failed to send append: %v", err)
+		t.Fatalf("failed to send append: %v", err)
 	}
 	off, err = result.GetResult(ctx)
 	if err == nil {
@@ -653,7 +662,7 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 	}
 	apiErr, ok = apierror.FromError(err)
 	if !ok {
-		t.Errorf("expected apierror, got %T: %v", err, err)
+		t.Fatalf("expected apierror, got %T: %v", err, err)
 	}
 	se = &storagepb.StorageError{}
 	e = apiErr.Details().ExtractProtoMessage(se)
@@ -675,7 +684,7 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 	}
 	off, err = result.GetResult(ctx)
 	if err == nil {
-		t.Errorf("expected error, got offset %d", off)
+		t.Fatalf("expected error, got offset %d", off)
 	}
 	apiErr, ok = apierror.FromError(err)
 	if !ok {
