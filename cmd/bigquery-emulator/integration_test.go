@@ -228,19 +228,19 @@ func DefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 		managedwriter.WithSchemaDescriptor(descriptorProto),
 	)
 	if err != nil {
-		t.Fatalf("NewManagedStream: %v", err)
+		t.Fatalf("NewManagedStream: %s", err)
 	}
 	validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
 
 	// First, send the test rows individually.
 	var result *managedwriter.AppendResult
-	for k, mesg := range testSimpleData {
-		b, err := proto.Marshal(mesg)
+	for k, data := range testSimpleData {
+		protoBy, err := proto.Marshal(data)
 		if err != nil {
 			t.Errorf("failed to marshal message %d: %v", k, err)
 		}
-		data := [][]byte{b}
-		result, err = ms.AppendRows(ctx, data)
+		dataBy := [][]byte{protoBy}
+		result, err = ms.AppendRows(ctx, dataBy)
 		if err != nil {
 			t.Errorf("single-row append %d failed: %v", k, err)
 		}
@@ -248,7 +248,7 @@ func DefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 	// Wait for the result to indicate ready, then validate.
 	o, err := result.GetResult(ctx)
 	if err != nil {
-		t.Errorf("result error for last send: %v", err)
+		t.Fatalf("result error for last send: %v", err)
 	}
 	if o != managedwriter.NoStreamOffset {
 		t.Errorf("offset mismatch, got %d want %d", o, managedwriter.NoStreamOffset)
@@ -258,15 +258,15 @@ func DefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 		withDistinctValues("name", int64(len(testSimpleData))))
 
 	// Now, send the test rows grouped into in a single append.
-	var data [][]byte
-	for k, mesg := range testSimpleData {
-		b, err := proto.Marshal(mesg)
+	var dataBy [][]byte
+	for k, data := range testSimpleData {
+		protoBy, err := proto.Marshal(data)
 		if err != nil {
 			t.Errorf("failed to marshal message %d: %v", k, err)
 		}
-		data = append(data, b)
+		dataBy = append(dataBy, protoBy)
 	}
-	result, err = ms.AppendRows(ctx, data)
+	result, err = ms.AppendRows(ctx, dataBy)
 	if err != nil {
 		t.Errorf("grouped-row append failed: %v", err)
 	}
