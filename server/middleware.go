@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -29,6 +30,7 @@ func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 			defer func() {
 				if err := recover(); err != nil {
 					ctx := logger.WithLogger(r.Context(), s.logger)
+					logger.Logger(r.Context()).Error(fmt.Sprintf("panic %v, %v", err, string(debug.Stack())))
 					errorResponse(ctx, w, errInternalError(fmt.Sprintf("%+v", err)))
 					return
 				}
@@ -159,8 +161,7 @@ func withProjectMiddleware() func(http.Handler) http.Handler {
 				server := serverFromContext(ctx)
 				project, err := server.metaRepo.FindProject(ctx, projectID)
 				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					fmt.Fprintln(w, err)
+					errorResponse(ctx, w, errInternalError(fmt.Sprintf("project %s not found: %s", projectID, err)))
 					return
 				}
 				if project == nil {
