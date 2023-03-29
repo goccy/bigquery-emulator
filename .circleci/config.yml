@@ -28,7 +28,9 @@ jobs:
           no_output_timeout: 25m
       - run:
           name: Push docker image
-          command: docker push us.gcr.io/marble-light-dev/bigquery-emulator:latest
+          command: |
+            docker tag bigquery-emulator-build-image us.gcr.io/marble-light-dev/bigquery-emulator:latest
+            docker push us.gcr.io/marble-light-dev/bigquery-emulator:latest
       - save_cache:
           key: gomodcache-{{ checksum "go.sum" }}
           paths:
