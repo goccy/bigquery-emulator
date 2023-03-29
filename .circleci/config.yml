@@ -1,0 +1,43 @@
+version: 2.1
+parameters:
+  machine_image:
+    type: string
+    default: "ubuntu-2204:2023.02.1"
+
+jobs:
+  build:
+    resource_class: xlarge
+    machine:
+      image:
+      docker_layer_caching: true
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - gomodcache-{{ checksum "go.sum" }}
+      - run:
+          name: Docker login
+          command: echo ${GCP_SERVICE_KEY} | docker login -u _json_key --password-stdin https://us.gcr.io
+      - run:
+          name: Build binary
+          command: docker compose up builder
+          no_output_timeout: 25m
+      - run:
+          name: Build docker image
+          command: docker compose build build-image
+          no_output_timeout: 25m
+      - save_cache:
+          key: gomodcache-{{ checksum "go.sum" }}
+          paths:
+            - ~/project/_gomodcache
+
+workflows:
+  build:
+    jobs:
+      - build:
+          context:
+            - Shared
+          filters:
+            branches:
+              only:
+                - main

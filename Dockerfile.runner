@@ -1,0 +1,7 @@
+FROM --platform=$TARGETPLATFORM debian:bullseye
+
+COPY ./bin/bigquery-emulator /bin/bigquery-emulator
+
+WORKDIR /work
+
+ENTRYPOINT ["/bin/bigquery-emulator"]

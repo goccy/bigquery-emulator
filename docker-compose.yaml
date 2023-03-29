@@ -1,0 +1,28 @@
+services:
+
+  build-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+
+  build-binary:
+    build:
+      context: .
+      dockerfile: Dockerfile.builder
+    mem_swappiness: 100
+    memswap_limit: -1
+    platform: linux/amd64
+    environment:
+      - GOMODCACHE=/work/_gomodcache
+    volumes:
+      - ./cmd:/work/cmd
+      - ./internal:/work/internal
+      - ./server:/work/server
+      - ./types:/work/types
+      - ./bin:/work/bin
+      - ./Makefile:/work/Makefile
+      - ./go.mod:/work/go.mod
+      - ./go.sum:/work/go.sum
+      - ./_gomodcache:/work/_gomodcache
+    working_dir: /work
+    command: make build
