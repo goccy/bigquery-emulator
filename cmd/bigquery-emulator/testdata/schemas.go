@@ -22,6 +22,17 @@ var (
 		{Name: "value", Type: bigquery.IntegerFieldType},
 	}
 
+	SimpleMessageWithWrapperSchema = bigquery.Schema{
+		{Name: "name", Type: bigquery.StringFieldType, Required: true},
+		{
+			Name: "value",
+			Type: bigquery.RecordFieldType,
+			Schema: bigquery.Schema{
+				{Name: "value", Type: bigquery.IntegerFieldType},
+			},
+		},
+	}
+
 	SimpleMessageEvolvedSchema = bigquery.Schema{
 		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 		{Name: "value", Type: bigquery.IntegerFieldType},

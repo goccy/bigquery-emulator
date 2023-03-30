@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/bigquery"
@@ -237,9 +238,9 @@ func withNonNullCount(colname string, nonNullCount int64) constraintOption {
 // withDistinctValues validates the exact cardinality of a column.
 func withDistinctValues(colname string, distinctVals int64) constraintOption {
 	return func(vi *validationInfo) {
-		resultCol := fmt.Sprintf("distinct_count_%s", colname)
+		resultCol := fmt.Sprintf("distinct_count_%s", strings.ReplaceAll(colname, ".", "_"))
 		vi.constraints[resultCol] = &constraint{
-			projection:    fmt.Sprintf("COUNT(DISTINCT `%s`) AS `%s`", colname, resultCol),
+			projection:    fmt.Sprintf("COUNT(DISTINCT %s) AS `%s`", colname, resultCol),
 			expectedValue: distinctVals,
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	testdata2 "github.com/goccy/bigquery-emulator/cmd/bigquery-emulator/testdata"
+	"github.com/goccy/bigquery-emulator/cmd/bigquery-emulator/testdata"
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/rs/xid"
 	"google.golang.org/grpc"
@@ -42,13 +42,23 @@ var (
 )
 
 // our test data has cardinality 5 for names, 3 for values
-var testSimpleData = []*testdata2.SimpleMessageProto2{
-	{Name: proto.String("one"), Value: proto.Int64(1)},
-	{Name: proto.String("two"), Value: proto.Int64(2)},
-	{Name: proto.String("three"), Value: proto.Int64(3)},
-	{Name: proto.String("four"), Value: proto.Int64(1)},
-	{Name: proto.String("five"), Value: proto.Int64(2)},
-}
+var (
+	testSimpleData = []*testdata.SimpleMessageProto2{
+		{Name: proto.String("one"), Value: proto.Int64(1)},
+		{Name: proto.String("two"), Value: proto.Int64(2)},
+		{Name: proto.String("three"), Value: proto.Int64(3)},
+		{Name: proto.String("four"), Value: proto.Int64(1)},
+		{Name: proto.String("five"), Value: proto.Int64(2)},
+	}
+
+	testSimpleDataProto3 = []*testdata.SimpleMessageProto3{
+		{Name: "one", Value: &wrapperspb.Int64Value{Value: 1}},
+		{Name: "two", Value: &wrapperspb.Int64Value{Value: 2}},
+		{Name: "three", Value: &wrapperspb.Int64Value{Value: 3}},
+		{Name: "four", Value: &wrapperspb.Int64Value{Value: 1}},
+		{Name: "five", Value: &wrapperspb.Int64Value{Value: 2}},
+	}
+)
 
 var (
 	disableEmulator = flag.Bool("disable-emulator", false, "disable the bigquery emulator and run tests against the real BigQuery GCP service")
@@ -165,9 +175,9 @@ func TestIntegration_ManagedWriter(t *testing.T) {
 	defer cancel()
 
 	t.Run("group", func(t *testing.T) {
-		t.Run("DefaultStream", func(t *testing.T) {
+		t.Run("testDefaultStream", func(t *testing.T) {
 			t.Parallel()
-			DefaultStream(ctx, t, mwClient, bqClient, dataset)
+			testDefaultStream(ctx, t, mwClient, bqClient, dataset)
 		})
 		t.Run("DefaultStreamDynamicJSON", func(t *testing.T) {
 			t.Parallel()
@@ -207,18 +217,131 @@ func TestIntegration_ManagedWriter(t *testing.T) {
 		t.Run("TestLargeInsertWithRetry", func(t *testing.T) {
 			testLargeInsertWithRetry(ctx, t, mwClient, bqClient, dataset)
 		})
+		t.Run("KnownWrapperTypes", func(t *testing.T) {
+			t.Parallel()
+			testKnownWrapperTypes(ctx, t, mwClient, bqClient, dataset)
+			testKnownWrapperTypesRecords(ctx, t, mwClient, bqClient, dataset)
+		})
 
 	})
 }
 
-func DefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
+func testKnownWrapperTypesRecords(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageWithWrapperSchema}); err != nil {
 		t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
 	}
 	// We'll use a precompiled test proto, but we need it's corresponding descriptorproto representation
 	// to send as the stream's schema.
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto3{}
+	descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("failed to normalize descriptor: %s", err)
+	}
+
+	// setup a new stream.
+	ms, err := mwClient.NewManagedStream(ctx,
+		managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithSchemaDescriptor(descriptorProto),
+	)
+	if err != nil {
+		t.Fatalf("NewManagedStream: %s", err)
+	}
+	validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+	// Now, send the test rows grouped into in a single append.
+	var dataBy [][]byte
+	for k, data := range testSimpleDataProto3 {
+		protoBy, err := proto.Marshal(data)
+		if err != nil {
+			t.Errorf("failed to marshal message %d: %v", k, err)
+		}
+		dataBy = append(dataBy, protoBy)
+	}
+	result, err := ms.AppendRows(ctx, dataBy)
+	if err != nil {
+		t.Errorf("grouped-row append failed: %v", err)
+	}
+	// Wait for the result to indicate ready, then validate again.  Our total rows have increased, but
+	// cardinality should not.
+	o, err := result.GetResult(ctx)
+	if err != nil {
+		t.Errorf("result error for last send: %v", err)
+	}
+	if o != managedwriter.NoStreamOffset {
+		t.Errorf("offset mismatch, got %d want %d", o, managedwriter.NoStreamOffset)
+	}
+
+	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
+		withExactRowCount(int64(len(testSimpleDataProto3))),
+		withDistinctValues("name", int64(len(testSimpleDataProto3))),
+		withDistinctValues("value.value", int64(3)),
+	)
+}
+
+func testKnownWrapperTypes(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
+	testTable := dataset.Table(xid.New().String())
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
+		t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+	}
+	// We'll use a precompiled test proto, but we need it's corresponding descriptorproto representation
+	// to send as the stream's schema.
+	m := &testdata.SimpleMessageProto3{}
+	descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("failed to normalize descriptor: %s", err)
+	}
+
+	// setup a new stream.
+	ms, err := mwClient.NewManagedStream(ctx,
+		managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithSchemaDescriptor(descriptorProto),
+	)
+	if err != nil {
+		t.Fatalf("NewManagedStream: %s", err)
+	}
+	validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+	// Now, send the test rows grouped into in a single append.
+	var dataBy [][]byte
+	for k, data := range testSimpleDataProto3 {
+		protoBy, err := proto.Marshal(data)
+		if err != nil {
+			t.Errorf("failed to marshal message %d: %v", k, err)
+		}
+		dataBy = append(dataBy, protoBy)
+	}
+	result, err := ms.AppendRows(ctx, dataBy)
+	if err != nil {
+		t.Errorf("grouped-row append failed: %v", err)
+	}
+	// Wait for the result to indicate ready, then validate again.  Our total rows have increased, but
+	// cardinality should not.
+	o, err := result.GetResult(ctx)
+	if err != nil {
+		t.Errorf("result error for last send: %v", err)
+	}
+	if o != managedwriter.NoStreamOffset {
+		t.Errorf("offset mismatch, got %d want %d", o, managedwriter.NoStreamOffset)
+	}
+
+	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
+		withExactRowCount(int64(len(testSimpleDataProto3))),
+		withDistinctValues("name", int64(len(testSimpleDataProto3))),
+		withDistinctValues("value", int64(3)),
+	)
+}
+
+func testDefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
+	testTable := dataset.Table(xid.New().String())
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
+		t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+	}
+	// We'll use a precompiled test proto, but we need it's corresponding descriptorproto representation
+	// to send as the stream's schema.
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	// setup a new stream.
@@ -288,11 +411,11 @@ func DefaultStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 
 func testDefaultStreamDynamicJSON(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	md, descriptorProto := setupDynamicDescriptors(t, testdata2.SimpleMessageSchema)
+	md, descriptorProto := setupDynamicDescriptors(t, testdata.SimpleMessageSchema)
 
 	ms, err := mwClient.NewManagedStream(ctx,
 		managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
@@ -349,11 +472,11 @@ func testDefaultStreamDynamicJSON(ctx context.Context, t *testing.T, mwClient *m
 
 func testBufferedStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	ms, err := mwClient.NewManagedStream(ctx,
@@ -402,11 +525,11 @@ func testBufferedStream(ctx context.Context, t *testing.T, mwClient *managedwrit
 
 func testCommittedStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	// setup a new stream.
@@ -452,7 +575,7 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 	testTable := dataset.Table(xid.New().String())
 
 	if err := testTable.Create(ctx, &bigquery.TableMetadata{
-		Schema: testdata2.ExampleEmployeeSchema,
+		Schema: testdata.ExampleEmployeeSchema,
 		Clustering: &bigquery.Clustering{
 			Fields: []string{"id"},
 		},
@@ -467,7 +590,7 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 		t.Fatalf("failed ALTER TABLE: %v", err)
 	}
 
-	m := &testdata2.ExampleEmployeeCDC{}
+	m := &testdata.ExampleEmployeeCDC{}
 	descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
 	if err != nil {
 		t.Fatalf("NormalizeDescriptor: %v", err)
@@ -486,7 +609,7 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 	validateTableConstraints(ctx, t, bqClient, testTable, "before send",
 		withExactRowCount(0))
 
-	initialEmployees := []*testdata2.ExampleEmployeeCDC{
+	initialEmployees := []*testdata.ExampleEmployeeCDC{
 		{
 			Id:           proto.Int64(1),
 			Username:     proto.String("alice"),
@@ -544,7 +667,7 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 	defer updateWriter.Close()
 
 	// Change bob via an UPSERT CDC
-	newBob := proto.Clone(initialEmployees[1]).(*testdata2.ExampleEmployeeCDC)
+	newBob := proto.Clone(initialEmployees[1]).(*testdata.ExampleEmployeeCDC)
 	newBob.Salary = proto.Int64(105000)
 	newBob.Departments = []string{"research", "product"}
 	newBob.XCHANGE_TYPE = proto.String("UPSERT")
@@ -564,7 +687,7 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 		withDistinctValues("id", int64(len(initialEmployees))))
 
 	// remote clarice via DELETE CDC
-	removeClarice := &testdata2.ExampleEmployeeCDC{
+	removeClarice := &testdata.ExampleEmployeeCDC{
 		Id:           proto.Int64(3),
 		XCHANGE_TYPE: proto.String("DELETE"),
 	}
@@ -587,11 +710,11 @@ func testSimpleCDC(ctx context.Context, t *testing.T, mwClient *managedwriter.Cl
 // testErrorBehaviors intentionally issues problematic requests to verify error behaviors.
 func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	// setup a new stream.
@@ -703,11 +826,11 @@ func testErrorBehaviors(ctx context.Context, t *testing.T, mwClient *managedwrit
 
 func testPendingStream(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	ms, err := mwClient.NewManagedStream(ctx,
@@ -773,11 +896,11 @@ func testPendingStream(ctx context.Context, t *testing.T, mwClient *managedwrite
 
 func testLargeInsertNoRetry(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	ms, err := mwClient.NewManagedStream(ctx,
@@ -839,11 +962,11 @@ func testLargeInsertNoRetry(ctx context.Context, t *testing.T, mwClient *managed
 
 func testLargeInsertWithRetry(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	ms, err := mwClient.NewManagedStream(ctx,
@@ -915,11 +1038,11 @@ func testInstrumentation(ctx context.Context, t *testing.T, mwClient *managedwri
 	}
 
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	// setup a new stream.
@@ -1028,11 +1151,11 @@ func testInstrumentation(ctx context.Context, t *testing.T, mwClient *managedwri
 
 func testSchemaEvolution(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
 	testTable := dataset.Table(xid.New().String())
-	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata2.SimpleMessageSchema}); err != nil {
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
 		t.Fatalf("failed to create test table %s: %v", testTable.FullyQualifiedName(), err)
 	}
 
-	m := &testdata2.SimpleMessageProto2{}
+	m := &testdata.SimpleMessageProto2{}
 	descriptorProto := protodesc.ToDescriptorProto(m.ProtoReflect().Descriptor())
 
 	// setup a new stream.
@@ -1073,7 +1196,7 @@ func testSchemaEvolution(ctx context.Context, t *testing.T, mwClient *managedwri
 		withExactRowCount(int64(len(testSimpleData))))
 
 	// Now, evolve the underlying table schema.
-	_, err = testTable.Update(ctx, bigquery.TableMetadataToUpdate{Schema: testdata2.SimpleMessageEvolvedSchema}, "")
+	_, err = testTable.Update(ctx, bigquery.TableMetadataToUpdate{Schema: testdata.SimpleMessageEvolvedSchema}, "")
 	if err != nil {
 		t.Errorf("failed to evolve table schema: %v", err)
 	}
@@ -1100,7 +1223,7 @@ func testSchemaEvolution(ctx context.Context, t *testing.T, mwClient *managedwri
 	}
 
 	// ready descriptor, send an additional append
-	m2 := &testdata2.SimpleMessageEvolvedProto2{
+	m2 := &testdata.SimpleMessageEvolvedProto2{
 		Name:  proto.String("evolved"),
 		Value: proto.Int64(180),
 		Other: proto.String("hello evolution"),
@@ -1153,17 +1276,17 @@ func TestIntegration_ProtoNormalization(t *testing.T) {
 	t.Run("group", func(t *testing.T) {
 		t.Run("ComplexType", func(t *testing.T) {
 			t.Parallel()
-			schema := testdata2.ComplexTypeSchema
-			mesg := &testdata2.ComplexType{
-				NestedRepeatedType: []*testdata2.NestedType{
+			schema := testdata.ComplexTypeSchema
+			mesg := &testdata.ComplexType{
+				NestedRepeatedType: []*testdata.NestedType{
 					{
-						InnerType: []*testdata2.InnerType{
+						InnerType: []*testdata.InnerType{
 							{Value: []string{"a", "b", "c"}},
 							{Value: []string{"x", "y", "z"}},
 						},
 					},
 				},
-				InnerType: &testdata2.InnerType{
+				InnerType: &testdata.InnerType{
 					Value: []string{"top"},
 				},
 			}
@@ -1176,8 +1299,8 @@ func TestIntegration_ProtoNormalization(t *testing.T) {
 		})
 		t.Run("WithWellKnownTypes", func(t *testing.T) {
 			t.Parallel()
-			schema := testdata2.WithWellKnownTypesSchema
-			mesg := &testdata2.WithWellKnownTypes{
+			schema := testdata.WithWellKnownTypesSchema
+			mesg := &testdata.WithWellKnownTypes{
 				Int64Value: proto.Int64(123),
 				WrappedInt64: &wrapperspb.Int64Value{
 					Value: 456,
@@ -1197,14 +1320,14 @@ func TestIntegration_ProtoNormalization(t *testing.T) {
 		})
 		t.Run("WithExternalEnum", func(t *testing.T) {
 			t.Parallel()
-			schema := testdata2.ExternalEnumMessageSchema
-			mesg := &testdata2.ExternalEnumMessage{
-				MsgA: &testdata2.EnumMsgA{
+			schema := testdata.ExternalEnumMessageSchema
+			mesg := &testdata.ExternalEnumMessage{
+				MsgA: &testdata.EnumMsgA{
 					Foo: proto.String("foo"),
-					Bar: testdata2.ExtEnum_THING.Enum(),
+					Bar: testdata.ExtEnum_THING.Enum(),
 				},
-				MsgB: &testdata2.EnumMsgB{
-					Baz: testdata2.ExtEnum_OTHER_THING.Enum(),
+				MsgB: &testdata.EnumMsgB{
+					Baz: testdata.ExtEnum_OTHER_THING.Enum(),
 				},
 			}
 			b, err := proto.Marshal(mesg)
@@ -1273,14 +1396,14 @@ func TestIntegration_MultiplexWrites(t *testing.T) {
 	}{
 		{
 			tbl:    dataset.Table(xid.New().String()),
-			schema: testdata2.SimpleMessageSchema,
+			schema: testdata.SimpleMessageSchema,
 			dp: func() *descriptorpb.DescriptorProto {
-				m := &testdata2.SimpleMessageProto2{}
+				m := &testdata.SimpleMessageProto2{}
 				dp, _ := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
 				return dp
 			}(),
 			sampleRow: func() []byte {
-				msg := &testdata2.SimpleMessageProto2{
+				msg := &testdata.SimpleMessageProto2{
 					Name:  proto.String("sample_name"),
 					Value: proto.Int64(1001),
 				}
@@ -1294,14 +1417,14 @@ func TestIntegration_MultiplexWrites(t *testing.T) {
 		},
 		{
 			tbl:    dataset.Table(xid.New().String()),
-			schema: testdata2.ValidationBaseSchema,
+			schema: testdata.ValidationBaseSchema,
 			dp: func() *descriptorpb.DescriptorProto {
-				m := &testdata2.ValidationP2Optional{}
+				m := &testdata.ValidationP2Optional{}
 				dp, _ := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
 				return dp
 			}(),
 			sampleRow: func() []byte {
-				msg := &testdata2.ValidationP2Optional{
+				msg := &testdata.ValidationP2Optional{
 					Int64Field:  proto.Int64(69),
 					StringField: proto.String("validation_string"),
 				}
@@ -1315,14 +1438,14 @@ func TestIntegration_MultiplexWrites(t *testing.T) {
 		},
 		{
 			tbl:    dataset.Table(xid.New().String()),
-			schema: testdata2.GithubArchiveSchema,
+			schema: testdata.GithubArchiveSchema,
 			dp: func() *descriptorpb.DescriptorProto {
-				m := &testdata2.GithubArchiveMessageProto2{}
+				m := &testdata.GithubArchiveMessageProto2{}
 				dp, _ := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
 				return dp
 			}(),
 			sampleRow: func() []byte {
-				msg := &testdata2.GithubArchiveMessageProto2{
+				msg := &testdata.GithubArchiveMessageProto2{
 					Payload: proto.String("payload_string"),
 					Id:      proto.String("some_id"),
 				}

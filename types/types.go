@@ -476,6 +476,19 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 			if !exists {
 				continue
 			}
+
+			// Only try to unwrap the known wrapper types if the field is not a record.
+			// If the field type is a record, then the wrapper type is part of the schema.
+			if field.Type != "RECORD" {
+				// Wrapper types are encoded as a map with a single key "value".
+				if wrapper, isWrapper := v.(map[string]interface{}); isWrapper {
+					// If the wrapper has a value key, then unwrap it.
+					if wrapperValue, hasWrapperValue := wrapper["value"]; hasWrapperValue {
+						v = wrapperValue
+					}
+				}
+			}
+
 			v, err := normalizeData(v, field)
 			if err != nil {
 				return nil, err
