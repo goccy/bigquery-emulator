@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 package testdata;
-option go_package = "cloud.google.com/go/bigquery/storage/managedwriter/testdata";
+option go_package = "cmd/bigquery-emulator/testdata";
 
 import "google/protobuf/wrappers.proto";
 
@@ -24,6 +24,8 @@ message SimpleMessageProto3 {
     string name = 1;
     // value is a simple int64 value.
     google.protobuf.Int64Value value = 2;
+
+    int64 other_value = 3;
 }
 
 

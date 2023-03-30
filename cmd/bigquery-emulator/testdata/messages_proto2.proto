@@ -14,7 +14,7 @@
 
 syntax = "proto2";
 package testdata;
-option go_package = "cloud.google.com/go/bigquery/storage/managedwriter/testdata";
+option go_package = "cmd/bigquery-emulator/testdata";
 
 
 // SimpleMessage represents a simple message that transmits a string and int64 value.

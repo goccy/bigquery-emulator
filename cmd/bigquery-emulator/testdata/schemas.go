@@ -20,6 +20,7 @@ var (
 	SimpleMessageSchema = bigquery.Schema{
 		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 		{Name: "value", Type: bigquery.IntegerFieldType},
+		//{Name: "other_value", Type: bigquery.IntegerFieldType, Required: true},
 	}
 
 	SimpleMessageWithWrapperSchema = bigquery.Schema{
