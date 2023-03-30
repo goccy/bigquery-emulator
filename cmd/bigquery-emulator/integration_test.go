@@ -52,6 +52,7 @@ var (
 	}
 
 	testSimpleDataProto3 = []*testdata.SimpleMessageProto3{
+		{Name: "zero", Value: &wrapperspb.Int64Value{Value: 0}},
 		{Name: "one", Value: &wrapperspb.Int64Value{Value: 1}},
 		{Name: "two", Value: &wrapperspb.Int64Value{Value: 2}},
 		{Name: "three", Value: &wrapperspb.Int64Value{Value: 3}},
@@ -330,7 +331,7 @@ func testKnownWrapperTypes(ctx context.Context, t *testing.T, mwClient *managedw
 	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
 		withExactRowCount(int64(len(testSimpleDataProto3))),
 		withDistinctValues("name", int64(len(testSimpleDataProto3))),
-		withDistinctValues("value", int64(3)),
+		withDistinctValues("value", int64(4)),
 	)
 }
 
@@ -405,7 +406,7 @@ func testDefaultStream(ctx context.Context, t *testing.T, mwClient *managedwrite
 	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
 		withExactRowCount(int64(2*len(testSimpleData))),
 		withDistinctValues("name", int64(len(testSimpleData))),
-		withDistinctValues("value", int64(3)),
+		withDistinctValues("value", int64(4)),
 	)
 }
 

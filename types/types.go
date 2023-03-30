@@ -485,6 +485,20 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 					// If the wrapper has a value key, then unwrap it.
 					if wrapperValue, hasWrapperValue := wrapper["value"]; hasWrapperValue {
 						v = wrapperValue
+					} else {
+						// If the data was wrapped but didn't have a value set, then default to the field's type.
+						switch field.Type {
+						case "INTEGER", "INT64":
+							v = 0
+						case "FLOAT", "FLOAT64", "NUMERIC", "BIGNUMERIC":
+							v = 0.0
+						case "BOOLEAN", "BOOL":
+							v = false
+						case "BYTES":
+							v = []byte{}
+						case "STRING":
+							v = ""
+						}
 					}
 				}
 			}
