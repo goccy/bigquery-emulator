@@ -509,6 +509,34 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 			}
 			rowData[k] = v
 		}
+		// If the proto message was unmarshaled it means it had all the required fields defined as part of its schema
+		// The required fields will only be set if the client had created the message using proto2
+		// If they used proto3 and then built the descriptor using the adapt.NormalizeDescriptor function, then all fields will be optional
+		// Here we set a default value for all the table schema required fields not set in the proto message
+
+		for fieldName, field := range nameToFieldMap {
+			if _, ok := rowData[fieldName]; ok {
+				continue
+			}
+			if field.Mode != "REQUIRED" {
+				continue
+			}
+			var v interface{}
+			// TODO(dm): support other types, e.g. TIMESTAMP, DATE, TIME, DATETIME, GEOGRAPHY and JSON
+			switch field.Type {
+			case "INTEGER", "INT64":
+				v = 0
+			case "FLOAT", "FLOAT64", "NUMERIC", "BIGNUMERIC":
+				v = 0.0
+			case "BOOLEAN", "BOOL":
+				v = false
+			case "BYTES":
+				v = []byte{}
+			case "STRING":
+				v = ""
+			}
+			rowData[fieldName] = v
+		}
 		newData = append(newData, rowData)
 	}
 	return &Table{ID: t.TableReference.TableId, Columns: columns, Data: newData}, nil

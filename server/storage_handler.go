@@ -474,6 +474,72 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 
 	streamStatus.appendStream = stream
 	streamStatus.messageDesc = msgDesc
+
+	// Validate the proto message descriptor against the stream table schema.
+	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+	for _, field := range streamStatus.tableMetadata.Schema.Fields {
+		nameToFieldMap[field.Name] = field
+	}
+	// TODO(dm): check nested fields
+	for i := 0; i < streamStatus.messageDesc.Fields().Len(); i++ {
+		field := streamStatus.messageDesc.Fields().Get(i)
+		schemaField, ok := nameToFieldMap[field.JSONName()]
+		if !ok {
+			err := fmt.Errorf("proto field %s not found in table %s schema", field.JSONName(), streamStatus.tableMetadata.Id)
+			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.InvalidArgument, err.Error())
+			return err
+		}
+		kind := field.Kind()
+
+		if kind.String() == "message" {
+			messageName := string(field.Message().FullName())
+			// TODO(dm): check for all known wrapper types
+			if strings.HasSuffix(messageName, "google_protobuf_Int64Value") {
+				kind = protoreflect.Int64Kind
+			}
+		}
+
+		invalidSchema := false
+		switch schemaField.Type {
+		// TODO(dm): support other types, e.g. TIMESTAMP, DATE, TIME, DATETIME, GEOGRAPHY, JSON, RECORD and REPEATED
+		case "INTEGER", "INT64":
+			switch kind {
+			case protoreflect.Int32Kind, protoreflect.Uint32Kind, protoreflect.Int64Kind, protoreflect.Uint64Kind, protoreflect.EnumKind:
+			default:
+				invalidSchema = true
+			}
+		case "FLOAT", "FLOAT64", "NUMERIC", "BIGNUMERIC":
+			switch kind {
+			case protoreflect.Int32Kind, protoreflect.Uint32Kind, protoreflect.Int64Kind, protoreflect.Uint64Kind, protoreflect.FloatKind, protoreflect.StringKind, protoreflect.BytesKind:
+			default:
+				invalidSchema = true
+			}
+		case "BOOLEAN", "BOOL":
+			switch kind {
+			case protoreflect.Int32Kind, protoreflect.Uint32Kind, protoreflect.Int64Kind, protoreflect.Uint64Kind, protoreflect.BoolKind:
+			default:
+				invalidSchema = true
+			}
+		case "BYTES":
+			switch kind {
+			case protoreflect.BytesKind, protoreflect.StringKind:
+			default:
+				invalidSchema = true
+			}
+		case "STRING":
+			switch kind {
+			case protoreflect.EnumKind, protoreflect.StringKind:
+			default:
+				invalidSchema = true
+			}
+		}
+		if invalidSchema {
+			schemaErr := fmt.Errorf("schema field mismatch for %s, bigquery expects %s and the proto message had a %s type", schemaField.Name, schemaField.Type, kind)
+			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.InvalidArgument, schemaErr.Error())
+			return schemaErr
+		}
+	}
+
 	for {
 		if err := s.appendRows(req, streamStatus); err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
@@ -541,7 +607,7 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, stream
 	rows := req.GetProtoRows().GetRows().GetSerializedRows()
 	data, err := s.decodeData(streamStatus.messageDesc, rows)
 	if err != nil {
-		s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), err)
+		s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.InvalidArgument, err.Error())
 		return err
 	}
 	if streamStatus.streamType == storagepb.WriteStream_COMMITTED {
@@ -550,17 +616,17 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, stream
 
 		conn, err := s.server.connMgr.Connection(ctx, streamStatus.projectID, streamStatus.datasetID)
 		if err != nil {
-			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), err)
+			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.Internal, err.Error())
 			return err
 		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
-			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), err)
+			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.Internal, err.Error())
 			return err
 		}
 		defer tx.RollbackIfNotCommitted()
 		if err := s.insertTableData(ctx, tx, streamStatus, data); err != nil {
-			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), err)
+			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.Internal, err.Error())
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -588,13 +654,17 @@ func (s *storageWriteServer) sendResult(stream storagepb.BigQueryWrite_AppendRow
 	})
 }
 
-func (s *storageWriteServer) sendErrorMessage(stream storagepb.BigQueryWrite_AppendRowsServer, streamName string, err error) error {
+func (s *storageWriteServer) sendErrorMessage(
+	stream storagepb.BigQueryWrite_AppendRowsServer,
+	streamName string,
+	errCode codes.Code,
+	errMessage string) error {
 	return stream.Send(&storagepb.AppendRowsResponse{
 		WriteStream: streamName,
 		Response: &storagepb.AppendRowsResponse_Error{
 			Error: &status.Status{
-				Code:    int32(codes.Internal),
-				Message: err.Error(),
+				Code:    int32(errCode),
+				Message: errMessage,
 			},
 		},
 	})
@@ -744,6 +814,7 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 	if err != nil {
 		return err
 	}
+
 	if err := s.server.contentRepo.AddTableData(
 		ctx,
 		tx,

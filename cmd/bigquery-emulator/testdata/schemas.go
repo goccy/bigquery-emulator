@@ -20,7 +20,6 @@ var (
 	SimpleMessageSchema = bigquery.Schema{
 		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 		{Name: "value", Type: bigquery.IntegerFieldType},
-		//{Name: "other_value", Type: bigquery.IntegerFieldType, Required: true},
 	}
 
 	SimpleMessageWithWrapperSchema = bigquery.Schema{
@@ -38,6 +37,18 @@ var (
 		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 		{Name: "value", Type: bigquery.IntegerFieldType},
 		{Name: "other", Type: bigquery.StringFieldType},
+	}
+
+	SimpleMessageRequiredSchema = bigquery.Schema{
+		{Name: "name", Type: bigquery.StringFieldType, Required: true},
+		{Name: "value", Type: bigquery.IntegerFieldType, Required: true},
+		{Name: "other", Type: bigquery.IntegerFieldType},
+	}
+
+	SimpleMessageInvalidSchema = bigquery.Schema{
+		{Name: "value", Type: bigquery.IntegerFieldType, Required: true},
+		{Name: "other", Type: bigquery.StringFieldType},
+		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 	}
 
 	GithubArchiveSchema = bigquery.Schema{

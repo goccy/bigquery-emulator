@@ -224,6 +224,222 @@ func TestIntegration_ManagedWriter(t *testing.T) {
 			testKnownWrapperTypesRecords(ctx, t, mwClient, bqClient, dataset)
 		})
 
+		t.Run("SchemaValidation", func(t *testing.T) {
+			t.Parallel()
+			testSchemaValidation(ctx, t, mwClient, bqClient, dataset)
+		})
+
+	})
+}
+
+func testSchemaValidation(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
+	t.Run("UnknownFields", func(t *testing.T) {
+		testTable := dataset.Table(xid.New().String())
+		if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageSchema}); err != nil {
+			t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+		}
+
+		m := &testdata.SimpleMessageWithExtraFieldsProto3{}
+		descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+		if err != nil {
+			t.Fatalf("failed to normalize descriptor: %s", err)
+		}
+
+		ms, err := mwClient.NewManagedStream(ctx,
+			managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+			managedwriter.WithType(managedwriter.DefaultStream),
+			managedwriter.WithSchemaDescriptor(descriptorProto),
+		)
+		if err != nil {
+			t.Fatalf("NewManagedStream: %s", err)
+		}
+		validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+		testData := []*testdata.SimpleMessageWithExtraFieldsProto3{
+			{Name: "one", UnknownName: "yolo", Value: &wrapperspb.Int64Value{Value: 1}},
+		}
+
+		var dataBy [][]byte
+		for k, data := range testData {
+			protoBy, err := proto.Marshal(data)
+			if err != nil {
+				t.Errorf("failed to marshal message %d: %v", k, err)
+			}
+			dataBy = append(dataBy, protoBy)
+		}
+		result, err := ms.AppendRows(ctx, dataBy)
+		if err != nil {
+			t.Fatalf("grouped-row append failed: %v", err)
+		}
+		_, err = result.GetResult(ctx)
+		if err == nil {
+			t.Fatalf("expected invalid argument error, got nil")
+		}
+
+		apiErr, ok := apierror.FromError(err)
+		if !ok {
+			t.Fatalf("expected apierror, got %[1]T: %[1]v", err)
+		}
+		if apiErr.GRPCStatus().Code() != codes.InvalidArgument {
+			t.Fatalf("expected code %d, got %d", codes.InvalidArgument, apiErr.GRPCStatus().Code())
+		}
+	})
+
+	t.Run("TypeMismatch", func(t *testing.T) {
+		testTable := dataset.Table(xid.New().String())
+		if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageInvalidSchema}); err != nil {
+			t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+		}
+
+		m := &testdata.SimpleMessageRequiredProto3{}
+		descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+		if err != nil {
+			t.Fatalf("failed to normalize descriptor: %s", err)
+		}
+
+		ms, err := mwClient.NewManagedStream(ctx,
+			managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+			managedwriter.WithType(managedwriter.DefaultStream),
+			managedwriter.WithSchemaDescriptor(descriptorProto),
+		)
+		if err != nil {
+			t.Fatalf("NewManagedStream: %s", err)
+		}
+		validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+		testData := []*testdata.SimpleMessageRequiredProto3{
+			{Name: "one", Value: 1, Other: &wrapperspb.Int64Value{Value: 1}},
+		}
+
+		var dataBy [][]byte
+		for k, data := range testData {
+			protoBy, err := proto.Marshal(data)
+			if err != nil {
+				t.Errorf("failed to marshal message %d: %v", k, err)
+			}
+			dataBy = append(dataBy, protoBy)
+		}
+		result, err := ms.AppendRows(ctx, dataBy)
+		if err != nil {
+			t.Fatalf("grouped-row append failed: %v", err)
+		}
+		_, err = result.GetResult(ctx)
+		if err == nil {
+			t.Fatalf("expected invalid argument error, got nil")
+		}
+		apiErr, ok := apierror.FromError(err)
+		if !ok {
+			t.Fatalf("expected apierror, got %[1]T: %[1]v", err)
+		}
+		if apiErr.GRPCStatus().Code() != codes.InvalidArgument {
+			t.Fatalf("expected code %d, got %d", codes.InvalidArgument, apiErr.GRPCStatus().Code())
+		}
+	})
+
+	t.Run("Proto2RequiredFields", func(t *testing.T) {
+		testTable := dataset.Table(xid.New().String())
+		if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageRequiredSchema}); err != nil {
+			t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+		}
+
+		m := &testdata.SimpleMessageRequiredProto2{}
+		descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+		if err != nil {
+			t.Fatalf("failed to normalize descriptor: %s", err)
+		}
+
+		ms, err := mwClient.NewManagedStream(ctx,
+			managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+			managedwriter.WithType(managedwriter.DefaultStream),
+			managedwriter.WithSchemaDescriptor(descriptorProto),
+		)
+		if err != nil {
+			t.Fatalf("NewManagedStream: %s", err)
+		}
+		validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+		testData := []*testdata.SimpleMessageRequiredProto3{
+			{},
+		}
+
+		var dataBy [][]byte
+		for k, data := range testData {
+			protoBy, err := proto.Marshal(data)
+			if err != nil {
+				t.Errorf("failed to marshal message %d: %v", k, err)
+			}
+			dataBy = append(dataBy, protoBy)
+		}
+		result, err := ms.AppendRows(ctx, dataBy)
+		if err != nil {
+			t.Fatalf("grouped-row append failed: %v", err)
+		}
+		_, err = result.GetResult(ctx)
+		if err == nil {
+			t.Fatalf("expected invalid argument error, got nil")
+		}
+		apiErr, ok := apierror.FromError(err)
+		if !ok {
+			t.Fatalf("expected apierror, got %[1]T: %[1]v", err)
+		}
+		if apiErr.GRPCStatus().Code() != codes.InvalidArgument {
+			t.Fatalf("expected code %d, got %d", codes.InvalidArgument, apiErr.GRPCStatus().Code())
+		}
+	})
+
+	t.Run("Proto3RequiredFields", func(t *testing.T) {
+		testTable := dataset.Table(xid.New().String())
+		if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleMessageRequiredSchema}); err != nil {
+			t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+		}
+
+		m := &testdata.SimpleMessageRequiredProto3{}
+		descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+		if err != nil {
+			t.Fatalf("failed to normalize descriptor: %s", err)
+		}
+
+		ms, err := mwClient.NewManagedStream(ctx,
+			managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+			managedwriter.WithType(managedwriter.DefaultStream),
+			managedwriter.WithSchemaDescriptor(descriptorProto),
+		)
+		if err != nil {
+			t.Fatalf("NewManagedStream: %s", err)
+		}
+		validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+		testData := []*testdata.SimpleMessageRequiredProto3{
+			{},
+		}
+
+		var dataBy [][]byte
+		for k, data := range testData {
+			protoBy, err := proto.Marshal(data)
+			if err != nil {
+				t.Errorf("failed to marshal message %d: %v", k, err)
+			}
+			dataBy = append(dataBy, protoBy)
+		}
+		result, err := ms.AppendRows(ctx, dataBy)
+		if err != nil {
+			t.Errorf("grouped-row append failed: %v", err)
+		}
+		o, err := result.GetResult(ctx)
+		if err != nil {
+			t.Fatalf("result error for last send: %v", err)
+		}
+
+		if o != managedwriter.NoStreamOffset {
+			t.Errorf("offset mismatch, got %d want %d", o, managedwriter.NoStreamOffset)
+		}
+
+		validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
+			withExactRowCount(int64(len(testData))),
+			withStringValueCount("name", "", 1),
+			withIntegerValueCount("value", 0, 1),
+			withNullCount("other", 1),
+		)
 	})
 }
 
