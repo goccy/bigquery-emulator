@@ -37,12 +37,19 @@ message SimpleMessageRequiredProto3 {
 message SimpleMessageWithExtraFieldsProto3 {
     // name is a simple scalar string.
     string name = 1;
-
     string unknown_name = 2;
-
     // value is a simple int64 value.
     google.protobuf.Int64Value value = 3;
 }
+
+message SimpleGithubMessageProto3 {
+    // name is a simple scalar string.
+    string name = 1;
+    // value is a simple int64 value.
+    google.protobuf.Int64Value value = 2;
+    GithubArchiveRepoProto3 repo = 3;
+}
+
 
 message GithubArchiveEntityProto3 {
     google.protobuf.Int64Value id = 1;

@@ -493,9 +493,24 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 
 		if kind.String() == "message" {
 			messageName := string(field.Message().FullName())
-			// TODO(dm): check for all known wrapper types
 			if strings.HasSuffix(messageName, "google_protobuf_Int64Value") {
 				kind = protoreflect.Int64Kind
+			} else if strings.HasSuffix(messageName, "google_protobuf_UInt64Value") {
+				kind = protoreflect.Uint64Kind
+			} else if strings.HasSuffix(messageName, "google_protobuf_Int42Value") {
+				kind = protoreflect.Int32Kind
+			} else if strings.HasSuffix(messageName, "google_protobuf_UInt32Value") {
+				kind = protoreflect.Uint32Kind
+			} else if strings.HasSuffix(messageName, "google_protobuf_StringValue") {
+				kind = protoreflect.StringKind
+			} else if strings.HasSuffix(messageName, "google_protobuf_BytesValue") {
+				kind = protoreflect.BytesKind
+			} else if strings.HasSuffix(messageName, "google_protobuf_DoubleValue") {
+				kind = protoreflect.DoubleKind
+			} else if strings.HasSuffix(messageName, "google_protobuf_FloatValue") {
+				kind = protoreflect.FloatKind
+			} else if strings.HasSuffix(messageName, "google_protobuf_BoolValue") {
+				kind = protoreflect.BoolKind
 			}
 		}
 
@@ -534,7 +549,7 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 			}
 		}
 		if invalidSchema {
-			schemaErr := fmt.Errorf("schema field mismatch for %s, bigquery expects %s and the proto message had a %s type", schemaField.Name, schemaField.Type, kind)
+			schemaErr := fmt.Errorf("schema field mismatch for %s, bigquery expects %q and the proto message had a %q type", schemaField.Name, schemaField.Type, kind)
 			s.sendErrorMessage(streamStatus.appendStream, streamStatus.stream.GetName(), codes.InvalidArgument, schemaErr.Error())
 			return schemaErr
 		}

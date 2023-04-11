@@ -51,6 +51,20 @@ var (
 		{Name: "name", Type: bigquery.StringFieldType, Required: true},
 	}
 
+	SimpleGithubMessageSchema = bigquery.Schema{
+		{Name: "name", Type: bigquery.StringFieldType, Required: true},
+		{Name: "value", Type: bigquery.IntegerFieldType},
+		{
+			Name: "repo",
+			Type: bigquery.RecordFieldType,
+			Schema: bigquery.Schema{
+				{Name: "id", Type: bigquery.IntegerFieldType},
+				{Name: "name", Type: bigquery.StringFieldType},
+				{Name: "url", Type: bigquery.StringFieldType},
+			},
+		},
+	}
+
 	GithubArchiveSchema = bigquery.Schema{
 		{Name: "type", Type: bigquery.StringFieldType},
 		{Name: "public", Type: bigquery.BooleanFieldType},

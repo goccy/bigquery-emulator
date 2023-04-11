@@ -59,6 +59,15 @@ var (
 		{Name: "four", Value: &wrapperspb.Int64Value{Value: 1}},
 		{Name: "five", Value: &wrapperspb.Int64Value{Value: 2}},
 	}
+
+	testSimpleGithubDataProto3 = []*testdata.SimpleGithubMessageProto3{
+		{Name: "zero", Value: &wrapperspb.Int64Value{Value: 0}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-zero"}}},
+		{Name: "one", Value: &wrapperspb.Int64Value{Value: 1}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-one"}}},
+		{Name: "two", Value: &wrapperspb.Int64Value{Value: 2}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-two"}}},
+		{Name: "three", Value: &wrapperspb.Int64Value{Value: 3}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-three"}}},
+		{Name: "four", Value: &wrapperspb.Int64Value{Value: 1}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-four"}}},
+		{Name: "five", Value: &wrapperspb.Int64Value{Value: 2}, Repo: &testdata.GithubArchiveRepoProto3{Name: &wrapperspb.StringValue{Value: "repo-five"}}},
+	}
 )
 
 var (
@@ -222,13 +231,12 @@ func TestIntegration_ManagedWriter(t *testing.T) {
 			t.Parallel()
 			testKnownWrapperTypes(ctx, t, mwClient, bqClient, dataset)
 			testKnownWrapperTypesRecords(ctx, t, mwClient, bqClient, dataset)
+			testNestedKnownWrapperTypes(ctx, t, mwClient, bqClient, dataset)
 		})
-
 		t.Run("SchemaValidation", func(t *testing.T) {
 			t.Parallel()
 			testSchemaValidation(ctx, t, mwClient, bqClient, dataset)
 		})
-
 	})
 }
 
@@ -548,6 +556,61 @@ func testKnownWrapperTypes(ctx context.Context, t *testing.T, mwClient *managedw
 		withExactRowCount(int64(len(testSimpleDataProto3))),
 		withDistinctValues("name", int64(len(testSimpleDataProto3))),
 		withDistinctValues("value", int64(4)),
+	)
+}
+
+func testNestedKnownWrapperTypes(ctx context.Context, t *testing.T, mwClient *managedwriter.Client, bqClient *bigquery.Client, dataset *bigquery.Dataset) {
+	testTable := dataset.Table(xid.New().String())
+	if err := testTable.Create(ctx, &bigquery.TableMetadata{Schema: testdata.SimpleGithubMessageSchema}); err != nil {
+		t.Fatalf("failed to create test table %q: %v", testTable.FullyQualifiedName(), err)
+	}
+	// We'll use a precompiled test proto, but we need it's corresponding descriptorproto representation
+	// to send as the stream's schema.
+	m := &testdata.SimpleGithubMessageProto3{}
+	descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("failed to normalize descriptor: %s", err)
+	}
+
+	// setup a new stream.
+	ms, err := mwClient.NewManagedStream(ctx,
+		managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(testTable.ProjectID, testTable.DatasetID, testTable.TableID)),
+		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithSchemaDescriptor(descriptorProto),
+	)
+	if err != nil {
+		t.Fatalf("NewManagedStream: %s", err)
+	}
+	validateTableConstraints(ctx, t, bqClient, testTable, "before send", withExactRowCount(0))
+
+	// Now, send the test rows grouped into in a single append.
+	var dataBy [][]byte
+	for k, data := range testSimpleGithubDataProto3 {
+		protoBy, err := proto.Marshal(data)
+		if err != nil {
+			t.Errorf("failed to marshal message %d: %v", k, err)
+		}
+		dataBy = append(dataBy, protoBy)
+	}
+	result, err := ms.AppendRows(ctx, dataBy)
+	if err != nil {
+		t.Errorf("grouped-row append failed: %v", err)
+	}
+	// Wait for the result to indicate ready, then validate again.  Our total rows have increased, but
+	// cardinality should not.
+	o, err := result.GetResult(ctx)
+	if err != nil {
+		t.Errorf("result error for last send: %v", err)
+	}
+	if o != managedwriter.NoStreamOffset {
+		t.Errorf("offset mismatch, got %d want %d", o, managedwriter.NoStreamOffset)
+	}
+
+	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
+		withExactRowCount(int64(len(testSimpleDataProto3))),
+		withDistinctValues("name", int64(len(testSimpleGithubDataProto3))),
+		withDistinctValues("value", int64(4)),
+		withDistinctValues("repo.name", int64(len(testSimpleGithubDataProto3))),
 	)
 }
 

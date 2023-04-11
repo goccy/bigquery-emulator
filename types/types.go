@@ -477,32 +477,6 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 				continue
 			}
 
-			// Only try to unwrap the known wrapper types if the field is not a record.
-			// If the field type is a record, then the wrapper type is part of the schema.
-			if field.Type != "RECORD" {
-				// Wrapper types are encoded as a map with a single key "value".
-				if wrapper, isWrapper := v.(map[string]interface{}); isWrapper {
-					// If the wrapper has a value key, then unwrap it.
-					if wrapperValue, hasWrapperValue := wrapper["value"]; hasWrapperValue {
-						v = wrapperValue
-					} else {
-						// If the data was wrapped but didn't have a value set, then default to the field's type.
-						switch field.Type {
-						case "INTEGER", "INT64":
-							v = 0
-						case "FLOAT", "FLOAT64", "NUMERIC", "BIGNUMERIC":
-							v = 0.0
-						case "BOOLEAN", "BOOL":
-							v = false
-						case "BYTES":
-							v = []byte{}
-						case "STRING":
-							v = ""
-						}
-					}
-				}
-			}
-
 			v, err := normalizeData(v, field)
 			if err != nil {
 				return nil, err
@@ -597,6 +571,31 @@ func parseDatetime(v string) (time.Time, error) {
 }
 
 func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	// Only try to unwrap the known wrapper types if the field is not a record.
+	// If the field type is a record, then the wrapper type is part of the schema.
+	if field.Type != "RECORD" {
+		// Wrapper types are encoded as a map with a single key "value".
+		if wrapper, isWrapper := v.(map[string]interface{}); isWrapper {
+			// If the wrapper has a value key, then unwrap it.
+			if wrapperValue, hasWrapperValue := wrapper["value"]; hasWrapperValue {
+				v = wrapperValue
+			} else {
+				// If the data was wrapped but didn't have a value set, then default to the field's type.
+				switch field.Type {
+				case "INTEGER", "INT64":
+					v = 0
+				case "FLOAT", "FLOAT64", "NUMERIC", "BIGNUMERIC":
+					v = 0.0
+				case "BOOLEAN", "BOOL":
+					v = false
+				case "BYTES":
+					v = []byte{}
+				case "STRING":
+					v = ""
+				}
+			}
+		}
+	}
 	rv := reflect.ValueOf(v)
 	kind := rv.Kind()
 	if Mode(field.Mode) == RepeatedMode {
