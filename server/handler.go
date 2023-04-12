@@ -1072,7 +1072,7 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 		if !strings.HasPrefix(uri, gcsURIPrefix) {
 			return nil, fmt.Errorf("load source uri must start with gs://")
 		}
-		uri = strings.TrimLeft(uri, gcsURIPrefix)
+		uri = strings.TrimPrefix(uri, gcsURIPrefix)
 		paths := strings.Split(uri, "/")
 		if len(paths) < 2 {
 			return nil, fmt.Errorf("unexpected gcs uri format %s", uri)
@@ -1197,7 +1197,7 @@ func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertReques
 		if !strings.HasPrefix(uri, gcsURIPrefix) {
 			return nil, fmt.Errorf("destination uri must start with gs://")
 		}
-		uri = strings.TrimLeft(uri, gcsURIPrefix)
+		uri = strings.TrimPrefix(uri, gcsURIPrefix)
 		paths := strings.Split(uri, "/")
 		if len(paths) < 2 {
 			return nil, fmt.Errorf("unexpected gcs uri format %s", uri)
