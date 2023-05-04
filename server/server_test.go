@@ -1597,6 +1597,161 @@ func TestImportFromGCS(t *testing.T) {
 	}
 }
 
+func TestImportWithWildcardFromGCS(t *testing.T) {
+	const (
+		projectID  = "test"
+		datasetID  = "dataset1"
+		tableID    = "table_a"
+		publicHost = "127.0.0.1"
+		bucketName = "test-bucket"
+		sourceName = "path/to/*.json"
+	)
+
+	var (
+		targetSourceFiles = []string{
+			"path/to/data.json",
+			"path/to/under/data.json",
+		}
+		nonTargetSourceFiles = []string{
+			"path/not/data.json",
+			"path/to/data.csv",
+		}
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("id", types.INT64),
+					types.NewColumn("value", types.INT64),
+				},
+				nil,
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	files := make([]string, len(targetSourceFiles)+len(nonTargetSourceFiles))
+	copy(files, targetSourceFiles)
+	copy(files[len(targetSourceFiles):], nonTargetSourceFiles)
+	var initialObjects []fakestorage.Object
+	for i, file := range files {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		for j := 0; j < 3; j++ {
+			if err := enc.Encode(map[string]interface{}{
+				"id":    i*10 + j + 1,
+				"value": (i+1)*10 + j + 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		initialObjects = append(initialObjects, fakestorage.Object{
+			ObjectAttrs: fakestorage.ObjectAttrs{
+				BucketName: bucketName,
+				Name:       file,
+				Size:       int64(len(buf.Bytes())),
+			},
+			Content: buf.Bytes(),
+		})
+	}
+
+	storageServer, err := fakestorage.NewServerWithOptions(fakestorage.Options{
+		InitialObjects: initialObjects,
+		PublicHost:     publicHost,
+		Scheme:         "http",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storageServerURL := storageServer.URL()
+	u, err := url.Parse(storageServerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageEmulatorHost := fmt.Sprintf("http://%s:%s", publicHost, u.Port())
+	t.Setenv("STORAGE_EMULATOR_HOST", storageEmulatorHost)
+
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+		storageServer.Stop()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	gcsSourceURL := fmt.Sprintf("gs://%s/%s", bucketName, sourceName)
+	gcsRef := bigquery.NewGCSReference(gcsSourceURL)
+	gcsRef.SourceFormat = bigquery.JSON
+	gcsRef.AutoDetect = true
+	loader := client.Dataset(datasetID).Table(tableID).LoaderFrom(gcsRef)
+	loader.WriteDisposition = bigquery.WriteTruncate
+	job, err := loader.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Err() != nil {
+		t.Fatal(status.Err())
+	}
+
+	query := client.Query(fmt.Sprintf("SELECT * FROM %s.%s", datasetID, tableID))
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type row struct {
+		ID    int64
+		Value int64
+	}
+	var rows []*row
+	for {
+		var r row
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, &r)
+	}
+	if diff := cmp.Diff([]*row{
+		{ID: 1, Value: 11},
+		{ID: 2, Value: 12},
+		{ID: 3, Value: 13},
+		{ID: 11, Value: 21},
+		{ID: 12, Value: 22},
+		{ID: 13, Value: 23},
+	}, rows); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
 func TestExportToGCS(t *testing.T) {
 	const (
 		projectID  = "test"
