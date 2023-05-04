@@ -151,10 +151,14 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
+		value, err := r.queryParameterValueToGoValue(param.ParameterValue)
+		if err != nil {
+			return nil, err
+		}
 		if param.Name != "" {
-			values = append(values, sql.Named(param.Name, param.ParameterValue.Value))
+			values = append(values, sql.Named(param.Name, value))
 		} else {
-			values = append(values, param.ParameterValue.Value)
+			values = append(values, value)
 		}
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
@@ -239,6 +243,32 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		Rows:        tableRows,
 		TotalBytes:  totalBytes,
 	}, nil
+}
+
+func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue) (interface{}, error) {
+	switch {
+	case len(value.ArrayValues) != 0:
+		arr := make([]interface{}, 0, len(value.ArrayValues))
+		for _, v := range value.ArrayValues {
+			elem, err := r.queryParameterValueToGoValue(v)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, elem)
+		}
+		return arr, nil
+	case len(value.StructValues) != 0:
+		st := make(map[string]interface{}, len(value.StructValues))
+		for k, v := range value.StructValues {
+			elem, err := r.queryParameterValueToGoValue(&v)
+			if err != nil {
+				return nil, err
+			}
+			st[k] = elem
+		}
+		return st, nil
+	}
+	return value.Value, nil
 }
 
 // zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.
