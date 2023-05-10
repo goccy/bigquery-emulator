@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1286,6 +1287,65 @@ func TestCreateTempTable(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	}
+}
+
+func TestQueryDryRun(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		"test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	t.Run("dry run succeeds, but no job is commited", func(t *testing.T) {
+		query := client.Query("SELECT 1")
+		query.DryRun = true
+		job, err := query.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = job.Wait(ctx)
+		if err == nil {
+			t.Fatal("expected job-is-not-found created err")
+		}
+		if !strings.Contains(err.Error(), "is not found") {
+			t.Fatalf("expected no job was created err, instead got: %s", err.Error())
+		}
+	})
+
+	t.Run("dry run fails: syntax error", func(t *testing.T) {
+		query := client.Query("")
+		query.DryRun = true
+		_, err := query.Run(ctx)
+
+		if err == nil {
+			t.Fatal("expected err")
+		}
+
+		if !strings.Contains(err.Error(), "Unexpected end of statement") {
+			t.Fatalf("expected end-of-statemen err, instead got: %s", err.Error())
+		}
+	})
 }
 
 func TestQueryWithTimestampType(t *testing.T) {

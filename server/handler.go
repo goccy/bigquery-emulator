@@ -1407,6 +1407,10 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.Configuration.Query.Query,
 		job.Configuration.Query.QueryParameters,
 	)
+	if jobErr != nil && job.Configuration.DryRun {
+		return nil, jobErr
+	}
+
 	endTime := time.Now()
 	if job.JobReference.JobId == "" {
 		job.JobReference.JobId = randomID() // generate job id
