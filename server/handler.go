@@ -679,7 +679,7 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -691,21 +691,21 @@ type datasetsInsertRequest struct {
 	dataset *bigqueryv2.Dataset
 }
 
-func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, error) {
+func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, *ServerError) {
 	if r.dataset.DatasetReference == nil {
-		return nil, fmt.Errorf("DatasetReference is nil")
+		return nil, errInvalid(fmt.Errorf("DatasetReference is nil").Error())
 	}
 	datasetID := r.dataset.DatasetReference.DatasetId
 	if datasetID == "" {
-		return nil, fmt.Errorf("dataset id is empty")
+		return nil, errInvalid(fmt.Errorf("dataset id is empty").Error())
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to get connection: %w", err).Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to start transaction: %w", err).Error())
 	}
 	defer tx.RollbackIfNotCommitted()
 
@@ -722,10 +722,13 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
-		return nil, err
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
 	}
 	return &bigqueryv2.DatasetListDatasets{
 		DatasetReference: &bigqueryv2.DatasetReference{
@@ -1366,35 +1369,35 @@ func (h *jobsInsertHandler) exportToGCSWithObject(ctx context.Context, response 
 	return nil
 }
 
-func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, *ServerError) {
 	job := r.job
 	if job.Configuration == nil {
-		return nil, fmt.Errorf("unspecified job configuration")
+		return nil, errInvalid(fmt.Errorf("unspecified job configuration").Error())
 	}
 	if job.Configuration.Query == nil {
 		if job.Configuration.Load != nil && len(job.Configuration.Load.SourceUris) != 0 {
 			// load from google cloud storage
 			job, err := h.importFromGCS(ctx, r)
 			if err != nil {
-				return nil, fmt.Errorf("failed to import from gcs: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to import from gcs: %w", err).Error())
 			}
 			return job, nil
 		} else if job.Configuration.Extract != nil && len(job.Configuration.Extract.DestinationUris) != 0 {
 			job, err := h.exportToGCS(ctx, r)
 			if err != nil {
-				return nil, fmt.Errorf("failed to export to gcs: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to export to gcs: %w", err).Error())
 			}
 			return job, nil
 		}
-		return nil, fmt.Errorf("unspecified job configuration query")
+		return nil, errInvalid(fmt.Errorf("unspecified job configuration query").Error())
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to get connection: %w", err).Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInternalError(fmt.Errorf("failed to start transaction: %w", err).Error())
 	}
 	defer tx.RollbackIfNotCommitted()
 	hasDestinationTable := job.Configuration.Query.DestinationTable != nil
@@ -1417,14 +1420,14 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			tableRef := job.Configuration.Query.DestinationTable
 			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
 			if err != nil {
-				return nil, err
+				return nil, errInternalError(err.Error())
 			}
 			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-				return nil, fmt.Errorf("failed to add table data: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to add table data: %w", err).Error())
 			}
 		} else if response.TotalRows > 0 {
 			if err := h.addQueryResultToDynamicDestinationTable(ctx, tx, r, response); err != nil {
-				return nil, fmt.Errorf("failed to add query result to dynamic destination table: %w", err)
+				return nil, errInternalError(fmt.Errorf("failed to add query result to dynamic destination table: %w", err).Error())
 			}
 		}
 	}
@@ -1472,11 +1475,14 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			jobErr,
 		),
 	); err != nil {
-		return nil, fmt.Errorf("failed to add job: %w", err)
+		if errors.Is(err, metadata.ErrDuplicatedJob) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInternalError(fmt.Errorf("failed to add job: %w", err).Error())
 	}
 	if !job.Configuration.DryRun {
 		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("failed to commit job: %w", err)
+			return nil, errInternalError(fmt.Errorf("failed to commit job: %w", err).Error())
 		}
 	}
 	return job, nil
