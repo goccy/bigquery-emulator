@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/goccy/bigquery-emulator/internal/metadata"
 	"reflect"
 	"sort"
 	"strings"
@@ -391,7 +392,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	return nil
 }
 
-func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tableIDs []string) error {
+func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tables []*metadata.Table) error {
 	tx.SetProjectAndDataset(projectID, datasetID)
 	if err := tx.ContentRepoMode(); err != nil {
 		return err
@@ -400,10 +401,10 @@ func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projec
 		_ = tx.MetadataRepoMode()
 	}()
 
-	for _, tableID := range tableIDs {
-		tablePath := r.tablePath(projectID, datasetID, tableID)
+	for _, table := range tables {
+		tablePath := r.tablePath(projectID, datasetID, table.ID)
 		logger.Logger(ctx).Debug("delete table", zap.String("table", tablePath))
-		query := fmt.Sprintf("DROP TABLE `%s`", tablePath)
+		query := fmt.Sprintf("DROP %s `%s`", table.Type(), tablePath)
 		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to delete table %s: %w", query, err)
 		}

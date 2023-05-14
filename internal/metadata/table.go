@@ -9,6 +9,17 @@ import (
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
+type TableType string
+
+const (
+	DefaultTableType          TableType = "TABLE"
+	ViewTableType             TableType = "VIEW"
+	ExternalTableType         TableType = "EXTERNAL"
+	MaterializedViewTableType TableType = "MATERIALIZED_VIEW"
+	SnapshotTableType         TableType = "SNAPSHOT"
+	UnknownTableType          TableType = "UNKNOWN"
+)
+
 type Table struct {
 	ID        string
 	ProjectID string
@@ -27,6 +38,17 @@ func (t *Table) Insert(ctx context.Context, tx *sql.Tx) error {
 
 func (t *Table) Delete(ctx context.Context, tx *sql.Tx) error {
 	return t.repo.DeleteTable(ctx, tx, t)
+}
+
+func (t *Table) Type() TableType {
+	switch t.metadata["type"].(string) {
+	case "TABLE":
+		return DefaultTableType
+	case "VIEW":
+		return ViewTableType
+	default:
+		return UnknownTableType
+	}
 }
 
 func (t *Table) Content() (*bigqueryv2.Table, error) {
