@@ -21,12 +21,13 @@ type (
 	}
 
 	QueryResponse struct {
-		JobReference *bigqueryv2.JobReference `json:"jobReference"`
-		Schema       *bigqueryv2.TableSchema  `json:"schema"`
-		Rows         []*TableRow              `json:"rows"`
-		TotalRows    uint64                   `json:"totalRows,string"`
-		JobComplete  bool                     `json:"jobComplete"`
-		TotalBytes   int64                    `json:"-"`
+		JobReference   *bigqueryv2.JobReference   `json:"jobReference"`
+		Schema         *bigqueryv2.TableSchema    `json:"schema"`
+		Rows           []*TableRow                `json:"rows"`
+		TotalRows      uint64                     `json:"totalRows,string"`
+		JobComplete    bool                       `json:"jobComplete"`
+		TotalBytes     int64                      `json:"-"`
+		ChangedCatalog *zetasqlite.ChangedCatalog `json:"-"`
 	}
 
 	TableDataList struct {

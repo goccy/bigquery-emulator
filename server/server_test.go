@@ -70,7 +70,7 @@ func TestSimpleQuery(t *testing.T) {
 				}
 				t.Fatal(err)
 			}
-			fmt.Println("row = ", row)
+			t.Log("row = ", row)
 		}
 	})
 }
@@ -366,7 +366,7 @@ func TestQuery(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		fmt.Println("row = ", row)
+		t.Log("row = ", row)
 	}
 }
 
@@ -521,6 +521,75 @@ func TestTable(t *testing.T) {
 		ExpirationTime: time.Now().Add(1 * time.Hour),
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDirectDDL(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "foo"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectID, types.NewDataset(datasetID))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	tableName := fmt.Sprintf("%s.%s.%s", projectID, datasetID, tableID)
+	if _, err := client.Query(fmt.Sprintf("CREATE TABLE %s(name STRING)", tableName)).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tableIter := client.Dataset(datasetID).Tables(ctx)
+	table, err := tableIter.Next()
+	if err != nil {
+		if err != iterator.Done {
+			t.Fatal(err)
+		}
+	}
+	if table == nil {
+		t.Fatal("failed to get created table")
+	}
+	if table.TableID != tableID {
+		t.Fatalf("failed to get table. got table-id is %s", table.TableID)
+	}
+	if _, err := client.Query(`DROP TABLE test.dataset1.foo`).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tableIter = client.Dataset(datasetID).Tables(ctx)
+	var tableCount int
+	for {
+		if _, err := tableIter.Next(); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		tableCount++
+	}
+	if tableCount != 0 {
+		t.Fatalf("failed to drop table. table count is %d", tableCount)
 	}
 }
 
@@ -814,7 +883,7 @@ func TestDataFromStruct(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		fmt.Println("row = ", row)
+		t.Log("row = ", row)
 	}
 	if err := client.Dataset("dataset1").DeleteWithContents(ctx); err != nil {
 		t.Fatal(err)
@@ -921,7 +990,7 @@ func TestMultiDatasets(t *testing.T) {
 				}
 				t.Fatal(err)
 			}
-			fmt.Println("row = ", row)
+			t.Log("row = ", row)
 		}
 	}
 	{
@@ -941,7 +1010,7 @@ func TestMultiDatasets(t *testing.T) {
 				}
 				t.Fatal(err)
 			}
-			fmt.Println("row = ", row)
+			t.Log("row = ", row)
 		}
 	}
 	{
@@ -2041,7 +2110,7 @@ ORDER BY qty DESC;`)
 			}
 		}
 		rowCount++
-		fmt.Println(row)
+		t.Log(row)
 	}
 	if rowCount != 1 {
 		t.Fatal("failed to get result")
