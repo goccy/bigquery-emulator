@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
+	"runtime"
 	"runtime/debug"
 	"sync"
 
@@ -32,6 +33,15 @@ func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 					ctx := logger.WithLogger(r.Context(), s.logger)
 					logger.Logger(r.Context()).Error(fmt.Sprintf("panic %v, %v", err, string(debug.Stack())))
 					errorResponse(ctx, w, errInternalError(fmt.Sprintf("%+v", err)))
+					var frame int = 1
+					for {
+						_, file, line, ok := runtime.Caller(frame)
+						if !ok {
+							break
+						}
+						s.logger.Error(fmt.Sprintf("%d: %v:%d", frame, file, line))
+						frame++
+					}
 					return
 				}
 			}()
