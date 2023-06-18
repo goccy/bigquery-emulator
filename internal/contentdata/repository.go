@@ -42,10 +42,12 @@ func (r *Repository) getConnection(ctx context.Context, projectID, datasetID str
 			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
 		}
 		if datasetID == "" {
-			zetasqliteConn.SetNamePath([]string{projectID})
+			_ = zetasqliteConn.SetNamePath([]string{projectID})
 		} else {
-			zetasqliteConn.SetNamePath([]string{projectID, datasetID})
+			_ = zetasqliteConn.SetNamePath([]string{projectID, datasetID})
 		}
+		const maxNamePath = 3 // projectID and datasetID and tableID
+		zetasqliteConn.SetMaxNamePath(maxNamePath)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("failed to setup connection: %w", err)
