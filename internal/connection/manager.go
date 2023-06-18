@@ -68,7 +68,7 @@ func (t *Tx) MetadataRepoMode() error {
 		if !ok {
 			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
 		}
-		zetasqliteConn.SetNamePath([]string{})
+		_ = zetasqliteConn.SetNamePath([]string{})
 		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to setup connection: %w", err)
@@ -83,10 +83,12 @@ func (t *Tx) ContentRepoMode() error {
 			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
 		}
 		if t.conn.DatasetID == "" {
-			zetasqliteConn.SetNamePath([]string{t.conn.ProjectID})
+			_ = zetasqliteConn.SetNamePath([]string{t.conn.ProjectID})
 		} else {
-			zetasqliteConn.SetNamePath([]string{t.conn.ProjectID, t.conn.DatasetID})
+			_ = zetasqliteConn.SetNamePath([]string{t.conn.ProjectID, t.conn.DatasetID})
 		}
+		const maxNamePath = 3 // projectID and datasetID and tableID
+		zetasqliteConn.SetMaxNamePath(maxNamePath)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to setup connection: %w", err)
