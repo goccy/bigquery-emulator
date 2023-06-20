@@ -2209,3 +2209,112 @@ func TestMultipleProject(t *testing.T) {
 		t.Fatalf("failed to get data from sub project: %s", name)
 	}
 }
+
+func TestInformationSchema(t *testing.T) {
+	const (
+		projectID    = "test"
+		datasetID    = "test_dataset"
+		subProjectID = "sub"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						"INFORMATION_SCHEMA.COLUMNS",
+						[]*types.Column{
+							types.NewColumn("table_schema", types.STRING),
+							types.NewColumn("table_name", types.STRING),
+							types.NewColumn("column_name", types.STRING),
+						},
+						types.Data{
+							{
+								"table_schema": "test_ds",
+								"table_name":   "table_type_graph",
+								"column_name":  "id",
+							},
+						},
+					),
+				),
+			),
+			types.NewProject(subProjectID),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	t.Run("query from same project", func(t *testing.T) {
+		client, err := bigquery.NewClient(
+			ctx,
+			projectID,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		it, err := client.Query("SELECT * FROM test_dataset.INFORMATION_SCHEMA.COLUMNS").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err != iterator.Done {
+					t.Fatal(err)
+				}
+				break
+			}
+			if len(row) != 3 {
+				t.Fatalf("failed to get row: %v", row)
+			}
+		}
+	})
+
+	t.Run("query from sub project", func(t *testing.T) {
+		client, err := bigquery.NewClient(
+			ctx,
+			subProjectID,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		it, err := client.Query("SELECT * FROM test.test_dataset.INFORMATION_SCHEMA.COLUMNS").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err != iterator.Done {
+					t.Fatal(err)
+				}
+				break
+			}
+			if len(row) != 3 {
+				t.Fatalf("failed to get row: %v", row)
+			}
+		}
+	})
+
+}
