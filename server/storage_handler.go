@@ -478,17 +478,21 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 			break
 		}
 	} else {
-		s, exists := s.streamMap[streamName]
+		st, exists := s.streamMap[streamName]
 		if !exists {
+			s.mu.RUnlock()
 			return fmt.Errorf("failed to get stream from %s", streamName)
 		}
-		status = s
+		status = st
 	}
 	s.mu.RUnlock()
 	if status.finalized {
 		return fmt.Errorf("stream is already finalized")
 	}
-	offset := req.GetOffset().Value
+	offset := int64(0)
+	if req.GetOffset() != nil {
+		offset = req.GetOffset().Value
+	}
 	rows := req.GetProtoRows().GetRows().GetSerializedRows()
 	data, err := s.decodeData(msgDesc, rows)
 	if err != nil {
