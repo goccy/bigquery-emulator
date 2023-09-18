@@ -512,6 +512,10 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 			s.sendErrorMessage(stream, streamName, err)
 			return err
 		}
+		if err := tx.Commit(); err != nil {
+			s.sendErrorMessage(stream, streamName, err)
+			return err
+		}
 	} else {
 		status.rows = append(status.rows, data...)
 	}
@@ -674,15 +678,14 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
 	s.mu.RLock()
 	status, exists := s.streamMap[req.Name]
+	s.mu.RUnlock()
 	if !exists {
-		s.mu.RUnlock()
 		stream, err := s.createDefaultStream(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find stream from %s", req.Name)
 		}
 		return stream, err
 	}
-	s.mu.RUnlock()
 	return status.stream, nil
 }
 
@@ -776,16 +779,24 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 	}, nil
 }
 
+/*
+*
+According to google documentation (https://pkg.go.dev/cloud.google.com/go/bigquery/storage/apiv1#BigQueryWriteClient.GetWriteStream)
+every table has a special stream named ‘_default’ to which data can be written. This stream doesn’t need to be created using CreateWriteStream
+
+Here we create the default stream and add it to map in case it not exists yet, the GetWriteStreamRequest given as second
+argument should have Name in this format: projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default
+*/
 func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
 	streamId := req.Name
 	suffix := "_default"
 	streams := "/streams/"
 	if !strings.HasSuffix(streamId, suffix) {
-		return nil, fmt.Errorf("unexpected stream id: %s", streamId)
+		return nil, fmt.Errorf("unexpected stream id: %s, expected '%s' suffix", streamId, suffix)
 	}
 	index := strings.LastIndex(streamId, streams)
 	if index == -1 {
-		return nil, fmt.Errorf("unexpected stream id: %s", streamId)
+		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
 	}
 	streamPart := streamId[:index]
 	writeStreamReq := &storagepb.CreateWriteStreamRequest{
