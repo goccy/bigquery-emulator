@@ -2,11 +2,11 @@ package types
 
 import (
 	"fmt"
+	"github.com/goccy/go-zetasqlite"
 	"time"
 
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
-	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -52,7 +52,7 @@ func (r *TableRow) Data() (map[string]interface{}, error) {
 	for _, cell := range r.F {
 		v, err := cell.Data()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get data from cell %q: %w", cell.Name, err)
 		}
 		rowMap[cell.Name] = v
 	}

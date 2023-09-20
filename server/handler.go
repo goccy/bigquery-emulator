@@ -1034,7 +1034,7 @@ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *
 	for _, row := range response.Rows {
 		rowData, err := row.Data()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get row data: %w", err)
 		}
 		data = append(data, rowData)
 	}
@@ -1457,7 +1457,7 @@ func (h *jobsInsertHandler) addQueryResultToDynamicDestinationTable(ctx context.
 
 	tableDef, err := h.tableDefFromQueryResponse(tableID, response)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create table definition from query: %w", err)
 	}
 	tableDef.SetupMetadata(projectID, datasetID)
 	table := metadata.NewTable(r.server.metaRepo, projectID, datasetID, tableID, tableDef.Metadata)
@@ -1477,13 +1477,13 @@ func (h *jobsInsertHandler) addQueryResultToDynamicDestinationTable(ctx context.
 		nil,
 	)
 	if err := r.project.AddDataset(ctx, tx.Tx(), dataset); err != nil {
-		return err
+		return fmt.Errorf("failed to add dataset: %w", err)
 	}
 	if err := r.server.metaRepo.AddTable(ctx, tx.Tx(), table); err != nil {
-		return err
+		return fmt.Errorf("failed to add table: %w", err)
 	}
 	if err := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(projectID, datasetID)); err != nil {
-		return err
+		return fmt.Errorf("failed to create table: %w", err)
 	}
 	if err := r.server.contentRepo.AddTableData(ctx, tx, projectID, datasetID, tableDef); err != nil {
 		return fmt.Errorf("failed to add table data: %w", err)
