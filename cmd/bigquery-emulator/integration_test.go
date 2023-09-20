@@ -658,7 +658,9 @@ func testDefaultStream(ctx context.Context, t *testing.T, mwClient *managedwrite
 	}
 	validateTableConstraints(ctx, t, bqClient, testTable, "after first send round",
 		withExactRowCount(int64(len(testSimpleData))),
-		withDistinctValues("name", int64(len(testSimpleData))))
+		withDistinctValues("name", int64(len(testSimpleData))),
+		withDistinctValues("value", int64(3)),
+	)
 
 	// Now, send the test rows grouped into in a single append.
 	var dataBy [][]byte
@@ -685,7 +687,7 @@ func testDefaultStream(ctx context.Context, t *testing.T, mwClient *managedwrite
 	validateTableConstraints(ctx, t, bqClient, testTable, "after second send round",
 		withExactRowCount(int64(2*len(testSimpleData))),
 		withDistinctValues("name", int64(len(testSimpleData))),
-		withDistinctValues("value", int64(4)),
+		withDistinctValues("value", int64(3)),
 	)
 }
 

@@ -446,31 +446,10 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 		return err
 	}
 
-	var streamStatus *writeStreamStatus
-	streamName := req.GetWriteStream()
-	s.mu.RLock()
-	streamStatus, _ = s.streamMap[streamName]
-	s.mu.RUnlock()
-	// create the default stream on demand
-	if streamStatus == nil && strings.HasSuffix(streamName, "_default") {
-		nameParts := strings.Split(streamName, "/")
-		if _, err := s.CreateWriteStream(context.Background(), &storagepb.CreateWriteStreamRequest{
-			Parent: strings.Join(nameParts[:len(nameParts)-2], "/"),
-			WriteStream: &storagepb.WriteStream{
-				Name: streamName,
-				Type: storagepb.WriteStream_COMMITTED,
-			},
-		}); err != nil {
-			return fmt.Errorf("failed to create default stream: %w", err)
-		}
+	streamStatus, err := s.getWriteStream(req.GetWriteStream())
+	if err != nil {
+		return fmt.Errorf("failed to get write stream: %w", err)
 	}
-	s.mu.RLock()
-	streamStatus, _ = s.streamMap[streamName]
-	if streamStatus == nil {
-		s.mu.RUnlock()
-		return fmt.Errorf("stream %s not found", streamName)
-	}
-	s.mu.RUnlock()
 
 	streamStatus.appendStream = stream
 	streamStatus.messageDesc = msgDesc
@@ -843,13 +822,11 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 }
 
 func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	status, exists := s.streamMap[req.Name]
-	if !exists {
-		return nil, fmt.Errorf("failed to find stream from %s", req.Name)
+	streamStatus, err := s.getWriteStream(req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get write stream: %w", err)
 	}
-	return status.stream, nil
+	return streamStatus.stream, nil
 }
 
 func (s *storageWriteServer) FinalizeWriteStream(ctx context.Context, req *storagepb.FinalizeWriteStreamRequest) (*storagepb.FinalizeWriteStreamResponse, error) {
@@ -941,6 +918,42 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 	return &storagepb.FlushRowsResponse{
 		Offset: offset,
 	}, nil
+}
+
+// getWriteStream accepts a fully qualified stream name and returns a writeStreamStatus reference
+// the input stream name expected format is: projects/{{project}}/datasets/{{dataset}}/tables/{{table}}/streams/{{name}}
+// if the stream can't be found and has the name of _default, it will be created on demand.
+func (s *storageWriteServer) getWriteStream(streamName string) (*writeStreamStatus, error) {
+	s.mu.RLock()
+	streamStatus, _ := s.streamMap[streamName]
+	s.mu.RUnlock()
+
+	if streamStatus != nil {
+		return streamStatus, nil
+	}
+
+	// create the default stream for the table
+	if strings.HasSuffix(streamName, "_default") {
+		nameParts := strings.Split(streamName, "/")
+		if _, err := s.CreateWriteStream(context.Background(), &storagepb.CreateWriteStreamRequest{
+			Parent: strings.Join(nameParts[:len(nameParts)-2], "/"),
+			WriteStream: &storagepb.WriteStream{
+				Name: streamName,
+				Type: storagepb.WriteStream_COMMITTED,
+			},
+		}); err != nil {
+			return nil, fmt.Errorf("failed to create default stream: %w", err)
+		}
+	}
+
+	s.mu.RLock()
+	streamStatus, _ = s.streamMap[streamName]
+	if streamStatus == nil {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("stream %s not found", streamName)
+	}
+	s.mu.RUnlock()
+	return streamStatus, nil
 }
 
 func getIDsFromPath(path string) (string, string, string, error) {
