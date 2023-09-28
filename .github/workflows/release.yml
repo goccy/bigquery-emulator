@@ -20,12 +20,13 @@ jobs:
             go-version: "1.18"
 
     steps:
-    - name: setup Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v2
-      with:
-        go-version: ${{ matrix.go-version }}
     - name: checkout
       uses: actions/checkout@v3
+    - name: setup Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache: true
     - name: extract version from tags
       id: meta
       run: |
