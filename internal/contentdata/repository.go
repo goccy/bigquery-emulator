@@ -315,8 +315,8 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 	}
 	// array type
 	var (
-		cells      []*internaltypes.TableCell
-		totalBytes int64
+		cells            = []*internaltypes.TableCell{}
+		totalBytes int64 = 0
 	)
 	for i := 0; i < rv.Len(); i++ {
 		cell, err := r.convertValueToCell(rv.Index(i).Interface())
