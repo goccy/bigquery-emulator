@@ -13,11 +13,11 @@ jobs:
           - os: ubuntu-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-linux-amd64
-            go-version: "1.18"
+            go-version: "1.21"
           - os: macos-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-darwin-amd64
-            go-version: "1.18"
+            go-version: "1.21"
 
     steps:
     - name: checkout

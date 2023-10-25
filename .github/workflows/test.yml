@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.18" ]
+        go-version: [ "1.21" ]
     runs-on: ${{ matrix.os }}
     steps:
     - name: checkout
@@ -63,7 +63,7 @@ jobs:
     strategy:
       matrix:
         os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.18" ]
+        go-version: [ "1.21" ]
     runs-on: ${{ matrix.os }}
     steps:
     - name: setup Go ${{ matrix.go-version }}
