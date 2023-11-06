@@ -42,10 +42,12 @@ func (r *Repository) getConnection(ctx context.Context, projectID, datasetID str
 			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
 		}
 		if datasetID == "" {
-			zetasqliteConn.SetNamePath([]string{projectID})
+			_ = zetasqliteConn.SetNamePath([]string{projectID})
 		} else {
-			zetasqliteConn.SetNamePath([]string{projectID, datasetID})
+			_ = zetasqliteConn.SetNamePath([]string{projectID, datasetID})
 		}
+		const maxNamePath = 3 // projectID and datasetID and tableID
+		zetasqliteConn.SetMaxNamePath(maxNamePath)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("failed to setup connection: %w", err)
@@ -151,10 +153,14 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
+		value, err := r.queryParameterValueToGoValue(param.ParameterValue)
+		if err != nil {
+			return nil, err
+		}
 		if param.Name != "" {
-			values = append(values, sql.Named(param.Name, param.ParameterValue.Value))
+			values = append(values, sql.Named(param.Name, value))
 		} else {
-			values = append(values, param.ParameterValue.Value)
+			values = append(values, value)
 		}
 	}
 	fields := []*bigqueryv2.TableFieldSchema{}
@@ -168,6 +174,10 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		return nil, err
 	}
 	defer rows.Close()
+	changedCatalog, err := zetasqlite.ChangedCatalogFromRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed catalog: %w", err)
+	}
 	colNames, err := rows.Columns()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
@@ -234,11 +244,38 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		Schema: &bigqueryv2.TableSchema{
 			Fields: fields,
 		},
-		TotalRows:   uint64(len(tableRows)),
-		JobComplete: true,
-		Rows:        tableRows,
-		TotalBytes:  totalBytes,
+		TotalRows:      uint64(len(tableRows)),
+		JobComplete:    true,
+		Rows:           tableRows,
+		TotalBytes:     totalBytes,
+		ChangedCatalog: changedCatalog,
 	}, nil
+}
+
+func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue) (interface{}, error) {
+	switch {
+	case len(value.ArrayValues) != 0:
+		arr := make([]interface{}, 0, len(value.ArrayValues))
+		for _, v := range value.ArrayValues {
+			elem, err := r.queryParameterValueToGoValue(v)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, elem)
+		}
+		return arr, nil
+	case len(value.StructValues) != 0:
+		st := make(map[string]interface{}, len(value.StructValues))
+		for k, v := range value.StructValues {
+			elem, err := r.queryParameterValueToGoValue(&v)
+			if err != nil {
+				return nil, err
+			}
+			st[k] = elem
+		}
+		return st, nil
+	}
+	return value.Value, nil
 }
 
 // zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.

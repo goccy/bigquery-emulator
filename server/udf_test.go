@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"cloud.google.com/go/bigquery"
@@ -93,6 +92,6 @@ FROM
 			}
 			t.Fatal(err)
 		}
-		fmt.Println("row = ", row)
+		t.Log("row = ", row)
 	}
 }

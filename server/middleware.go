@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
+	"runtime"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -30,6 +31,15 @@ func recoveryMiddleware(s *Server) func(http.Handler) http.Handler {
 				if err := recover(); err != nil {
 					ctx := logger.WithLogger(r.Context(), s.logger)
 					errorResponse(ctx, w, errInternalError(fmt.Sprintf("%+v", err)))
+					var frame int = 1
+					for {
+						_, file, line, ok := runtime.Caller(frame)
+						if !ok {
+							break
+						}
+						s.logger.Error(fmt.Sprintf("%d: %v:%d", frame, file, line))
+						frame++
+					}
 					return
 				}
 			}()
