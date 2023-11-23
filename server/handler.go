@@ -1062,6 +1062,7 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 		opts = append(
 			opts,
 			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
+			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
 		)
 	}
