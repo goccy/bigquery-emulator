@@ -20,7 +20,7 @@ Although this project is still in **beta** version, many features are already av
 
 ## BigQuery API
 
-We've been implemented the all [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
+We've been implemented all the [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
 
 ## Google Cloud Storage linkage
 
