@@ -73,6 +73,48 @@ func TestSimpleQuery(t *testing.T) {
 			t.Log("row = ", row)
 		}
 	})
+
+	t.Run("empty array", func(t *testing.T) {
+		query := client.Query("SELECT []")
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row []bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+		}
+		if len(row) != 1 || row[0] == nil {
+			t.Fatal("Failed to query empty ARRAY")
+		}
+	})
+
+	t.Run("null array", func(t *testing.T) {
+		query := client.Query("SELECT CAST(NULL AS ARRAY<STRING>)")
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row []bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+		}
+		if len(row) != 1 || row[0] == nil {
+			t.Fatal("Failed to query null ARRAY")
+		}
+	})
 }
 
 func TestDataset(t *testing.T) {

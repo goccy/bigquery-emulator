@@ -222,6 +222,10 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		resultValues := make([]interface{}, 0, len(values))
 		for idx, value := range values {
 			v := reflect.ValueOf(value).Elem().Interface()
+			if v == nil && fields[idx].Mode == string(types.RepeatedMode) {
+				// GoogleSQL for BigQuery translates a NULL array into an empty array in the query result
+				v = []interface{}{}
+			}
 			cell, err := r.convertValueToCell(v)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert value to cell: %w", err)
@@ -315,8 +319,8 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 	}
 	// array type
 	var (
-		cells      []*internaltypes.TableCell
-		totalBytes int64
+		cells            = []*internaltypes.TableCell{}
+		totalBytes int64 = 0
 	)
 	for i := 0; i < rv.Len(); i++ {
 		cell, err := r.convertValueToCell(rv.Index(i).Interface())
