@@ -10,11 +10,11 @@ jobs:
     strategy:
       matrix:
         os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.18" ]
+        go-version: [ "1.21.5" ]
     runs-on: ${{ matrix.os }}
     steps:
     - name: checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: setup Go ${{ matrix.go-version }}
       uses: actions/setup-go@v4
       with:
@@ -63,7 +63,7 @@ jobs:
     strategy:
       matrix:
         os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.18" ]
+        go-version: [ "1.21.5" ]
     runs-on: ${{ matrix.os }}
     steps:
     - name: setup Go ${{ matrix.go-version }}
@@ -71,7 +71,7 @@ jobs:
       with:
         go-version: ${{ matrix.go-version }}
     - name: checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: cache for linux
       uses: actions/cache@v3
       if: runner.os == 'Linux'
