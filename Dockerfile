@@ -1,15 +1,13 @@
-FROM golang:1.18.3-bullseye
+FROM ghcr.io/goccy/go-zetasql:latest
 
 ARG VERSION
 
 WORKDIR /work
 
-RUN apt-get update && apt-get install -y --no-install-recommends clang
-
-COPY ./go.* ./
-RUN go mod download
-
 COPY . ./
+
+RUN go mod edit -replace github.com/goccy/go-zetasql=../go-zetasql
+RUN go mod download
 
 RUN make emulator/build
 
