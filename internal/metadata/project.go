@@ -3,9 +3,13 @@ package metadata
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+var ErrDuplicatedDataset = errors.New("dataset is already created")
+var ErrDuplicatedJob = errors.New("job is already created")
 
 type Project struct {
 	ID         string
@@ -69,7 +73,7 @@ func (p *Project) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.datasetMap[dataset.ID]; exists {
-		return fmt.Errorf("dataset %s is already created", dataset.ID)
+		return ErrDuplicatedDataset
 	}
 	if err := dataset.Insert(ctx, tx); err != nil {
 		return err
@@ -111,7 +115,7 @@ func (p *Project) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.jobMap[job.ID]; exists {
-		return fmt.Errorf("job %s is already created", job.ID)
+		return ErrDuplicatedJob
 	}
 	if err := job.Insert(ctx, tx); err != nil {
 		return err
