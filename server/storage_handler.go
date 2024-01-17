@@ -478,11 +478,12 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 			break
 		}
 	} else {
-		s, exists := s.streamMap[streamName]
+		st, exists := s.streamMap[streamName]
 		if !exists {
+			s.mu.RUnlock()
 			return fmt.Errorf("failed to get stream from %s", streamName)
 		}
-		status = s
+		status = st
 	}
 	s.mu.RUnlock()
 	if status.finalized {
