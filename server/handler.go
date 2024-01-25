@@ -1014,7 +1014,7 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 	}
 
 	if r.maxResults != maxResultsDefaultValue {
-		rows = rows[:r.maxResults]
+		rows = rows[:min(int64(len(rows)), r.maxResults)]
 	}
 
 	return &internaltypes.GetQueryResultsResponse{
