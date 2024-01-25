@@ -555,6 +555,8 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 const (
 	formatOptionsUseInt64TimestampParam = "formatOptions.useInt64Timestamp"
 	deleteContentsParam                 = "deleteContents"
+	maxResults                          = "maxResults"
+	maxResultsDefaultValue              = -1
 )
 
 func isDeleteContents(r *http.Request) bool {
@@ -579,6 +581,22 @@ func parseQueryValueAsBool(r *http.Request, key string) bool {
 		return false
 	}
 	return b
+}
+
+func parseQueryValueAsInt64(r *http.Request, key string, defaultValue int64) int64 {
+	queryValues := r.URL.Query()
+	values, exists := queryValues[key]
+	if !exists {
+		return defaultValue
+	}
+	if len(values) != 1 {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -966,6 +984,7 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		server:            server,
 		project:           project,
 		job:               job,
+		maxResults:        parseQueryValueAsInt64(r, maxResults, maxResultsDefaultValue),
 		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
 	})
 	if err != nil {
@@ -980,6 +999,7 @@ type jobsGetQueryResultsRequest struct {
 	project           *metadata.Project
 	job               *metadata.Job
 	useInt64Timestamp bool
+	maxResults        int64
 }
 
 func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*internaltypes.GetQueryResultsResponse, error) {
@@ -988,6 +1008,15 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 		return nil, err
 	}
 	rows := internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
+
+	if r.maxResults == 0 {
+		rows = nil
+	}
+
+	if r.maxResults != maxResultsDefaultValue {
+		rows = rows[:r.maxResults]
+	}
+
 	return &internaltypes.GetQueryResultsResponse{
 		JobReference: &bigqueryv2.JobReference{
 			ProjectId: r.project.ID,
