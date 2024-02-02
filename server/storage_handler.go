@@ -488,7 +488,10 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 	if status.finalized {
 		return fmt.Errorf("stream is already finalized")
 	}
-	offset := req.GetOffset().Value
+	offset := int64(0)
+	if req.GetOffset() != nil {
+		offset = req.GetOffset().Value
+	}
 	rows := req.GetProtoRows().GetRows().GetSerializedRows()
 	data, err := s.decodeData(msgDesc, rows)
 	if err != nil {
