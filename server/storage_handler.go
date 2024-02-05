@@ -517,6 +517,10 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 			s.sendErrorMessage(stream, streamName, err)
 			return err
 		}
+		if err := tx.Commit(); err != nil {
+			s.sendErrorMessage(stream, streamName, err)
+			return err
+		}
 	} else {
 		status.rows = append(status.rows, data...)
 	}
