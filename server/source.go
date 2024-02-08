@@ -32,12 +32,12 @@ func YAMLSource(path string) Source {
 		if err := dec.Decode(&v); err != nil {
 			return errors.New(yaml.FormatError(err, false, true))
 		}
-		return s.addProjects(context.Background(), v.Projects)
+		return s.addProjects(context.Background(), v.Projects, true)
 	}
 }
 
 func StructSource(projects ...*types.Project) Source {
 	return func(s *Server) error {
-		return s.addProjects(context.Background(), projects)
+		return s.addProjects(context.Background(), projects, false)
 	}
 }
