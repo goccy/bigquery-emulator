@@ -376,29 +376,40 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		columns = append(columns, col.Name)
 	}
 	sort.Strings(columns)
-	rows := make([]string, 0, len(table.Data))
-	values := make([]interface{}, 0, len(table.Data)*len(columns))
-	for _, data := range table.Data {
-		placeholders := make([]string, 0, len(data))
-		for _, col := range columns {
-			values = append(values, data[col])
-			placeholders = append(placeholders, "?")
-		}
-		rows = append(rows, fmt.Sprintf("(%s)", strings.Join(placeholders, ",")))
-	}
+	placeholders := make([]string, 0, len(columns))
 	columnsWithEscape := make([]string, 0, len(columns))
 	for _, col := range columns {
+		placeholders = append(placeholders, "?")
 		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", col))
 	}
+
 	query := fmt.Sprintf(
-		"INSERT `%s` (%s) VALUES %s",
+		"INSERT `%s` (%s) VALUES (%s)",
 		r.tablePath(projectID, datasetID, table.ID),
 		strings.Join(columnsWithEscape, ","),
-		strings.Join(rows, ","),
+		strings.Join(placeholders, ","),
 	)
-	if _, err := tx.Tx().ExecContext(ctx, query, values...); err != nil {
+
+	stmt, err := tx.Tx().PrepareContext(ctx, query)
+	if err != nil {
 		return err
 	}
+
+	for _, data := range table.Data {
+		values := make([]interface{}, 0, len(table.Columns))
+		for _, column := range columns {
+			if value, found := data[column]; found {
+				values = append(values, value)
+			} else {
+				values = append(values, nil)
+			}
+		}
+
+		if _, err = stmt.ExecContext(ctx, values...); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
