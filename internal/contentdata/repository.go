@@ -4,11 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/goccy/go-zetasqlite"
 	"reflect"
-	"sort"
 	"strings"
 
-	"github.com/goccy/go-zetasqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 
@@ -371,16 +370,16 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		_ = tx.MetadataRepoMode()
 	}()
 
-	var columns []string
+	var columns []*types.Column
 	for _, col := range table.Columns {
-		columns = append(columns, col.Name)
+		columns = append(columns, col)
 	}
-	sort.Strings(columns)
+
 	placeholders := make([]string, 0, len(columns))
 	columnsWithEscape := make([]string, 0, len(columns))
 	for _, col := range columns {
 		placeholders = append(placeholders, "?")
-		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", col))
+		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", col.Name))
 	}
 
 	query := fmt.Sprintf(
@@ -397,15 +396,28 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 
 	for _, data := range table.Data {
 		values := make([]interface{}, 0, len(table.Columns))
+
 		for _, column := range columns {
-			if value, found := data[column]; found {
+			if value, found := data[column.Name]; found {
+				isTimestampColumn := column.Type == types.TIMESTAMP
+				inputString, isInputString := value.(string)
+
+				if isInputString && isTimestampColumn {
+					parsedTimestamp, err := zetasqlite.TimeFromTimestampValue(inputString)
+					// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
+					if err == nil {
+						values = append(values, parsedTimestamp)
+						continue
+					}
+				}
+
 				values = append(values, value)
 			} else {
 				values = append(values, nil)
 			}
 		}
 
-		if _, err = stmt.ExecContext(ctx, values...); err != nil {
+		if _, err := stmt.ExecContext(ctx, values...); err != nil {
 			return err
 		}
 	}
