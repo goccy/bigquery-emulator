@@ -1399,6 +1399,92 @@ func TestCreateTempTable(t *testing.T) {
 	}
 }
 
+type TestTs struct {
+	Name       string    `bigquery:"name"`
+	ReportTime time.Time `bigquery:"report_time"`
+}
+
+func TestTabledataListInt64Timestamp(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	client.Dataset(datasetName).Table(tableName).Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{
+			{
+				Name: "name",
+				Type: "STRING",
+			},
+			{
+				Name: "report_time",
+				Type: "TIMESTAMP",
+			},
+		},
+	})
+	// Insert data
+	testData := []TestTs{
+		{
+			Name:       "test1",
+			ReportTime: time.Now().UTC(),
+		},
+		{
+			Name:       "test2",
+			ReportTime: time.Now().UTC(),
+		},
+	}
+
+	u := client.Dataset(datasetName).Table(tableName).Inserter()
+	err = u.Put(ctx, testData)
+	if err != nil {
+		t.Fatalf("failed to insert rows: %s", err)
+	}
+
+	// Load the data
+	it := client.Dataset(datasetName).Table(tableName).Read(ctx)
+	var tData []TestTs
+	for {
+		var ts TestTs
+		err := it.Next(&ts)
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		tData = append(tData, ts)
+	}
+}
+
 func TestQueryWithTimestampType(t *testing.T) {
 	const (
 		projectName = "test"
