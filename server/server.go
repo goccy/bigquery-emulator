@@ -240,7 +240,7 @@ func (s *Server) Serve(ctx context.Context, httpAddr, httpsAddr, grpcAddr string
 	var eg errgroup.Group
 	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
 	eg.Go(func() error { return httpServer.Serve(httpListener) })
-	eg.Go(func() error { return httpsServer.ListenAndServeTLS("server.crt", "server.key") })
+	eg.Go(func() error { return httpsServer.ListenAndServeTLS("ssl/server.crt", "ssl/server.key") })
 	return eg.Wait()
 }
 
