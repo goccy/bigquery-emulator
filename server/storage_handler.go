@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	storagepb "cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"github.com/apache/arrow/go/v10/arrow"
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"github.com/apache/arrow/go/v10/arrow/ipc"
@@ -16,7 +17,6 @@ import (
 	"github.com/goccy/go-json"
 	goavro "github.com/linkedin/goavro/v2"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
-	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
