@@ -1,6 +1,6 @@
 # BigQuery Emulator
 
-![Go](https://github.com/goccy/bigquery-emulator/workflows/Go/badge.svg)
+[![build and test](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml/badge.svg)](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml)
 [![GoDoc](https://godoc.org/github.com/goccy/bigquery-emulator?status.svg)](https://pkg.go.dev/github.com/goccy/bigquery-emulator?tab=doc)
 
 
