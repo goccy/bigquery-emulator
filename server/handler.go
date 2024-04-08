@@ -1673,11 +1673,16 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+	useInt64Timestamp := false
+	if options := req.FormatOptions; options != nil {
+		useInt64Timestamp = options.UseInt64Timestamp
+	}
+	useInt64Timestamp = useInt64Timestamp || isFormatOptionsUseInt64Timestamp(r)
 	res, err := h.Handle(ctx, &jobsQueryRequest{
 		server:            server,
 		project:           project,
 		queryRequest:      &req,
-		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
+		useInt64Timestamp: useInt64Timestamp,
 	})
 	if err != nil {
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
