@@ -1013,6 +1013,10 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 		rows = nil
 	}
 
+	if r.maxResults < -1 {
+		return nil, fmt.Errorf("invalid maxResults parameter; must be greater than or equal to [-1], got [%i]", r.maxResults)
+	}
+
 	if r.maxResults != maxResultsDefaultValue {
 		rows = rows[:min(int64(len(rows)), r.maxResults)]
 	}
