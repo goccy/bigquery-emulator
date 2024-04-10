@@ -13,23 +13,23 @@ import (
 )
 
 type Project struct {
-	ID       string     `yaml:"id" validate:"required"`
-	Datasets []*Dataset `yaml:"datasets" validate:"required"`
-	Jobs     []*Job     `yaml:"jobs"`
+	ID       string     `json:"id" yaml:"id" validate:"required"`
+	Datasets []*Dataset `json:"datasets" yaml:"datasets" validate:"required"`
+	Jobs     []*Job     `json:"jobs" yaml:"jobs"`
 }
 
 type Dataset struct {
-	ID       string     `yaml:"id" validate:"required"`
-	Tables   []*Table   `yaml:"tables"`
-	Models   []*Model   `yaml:"models"`
-	Routines []*Routine `yaml:"routines"`
+	ID       string     `json:"id" yaml:"id" validate:"required"`
+	Tables   []*Table   `json:"tables" yaml:"tables"`
+	Models   []*Model   `json:"models" yaml:"models"`
+	Routines []*Routine `json:"routines" yaml:"routines"`
 }
 
 type Table struct {
-	ID       string                 `yaml:"id" validate:"required"`
-	Columns  []*Column              `yaml:"columns" validate:"required"`
-	Data     Data                   `yaml:"data"`
-	Metadata map[string]interface{} `yaml:"metadata"`
+	ID       string                 `json:"id" yaml:"id" validate:"required"`
+	Columns  []*Column              `json:"columns" yaml:"columns" validate:"required"`
+	Data     Data                   `json:"data" yaml:"data"`
+	Metadata map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
 func (t *Table) ToBigqueryV2(projectID, datasetID string) *bigqueryv2.Table {
@@ -86,10 +86,10 @@ const (
 )
 
 type Column struct {
-	Name   string    `yaml:"name" validate:"required"`
-	Type   Type      `yaml:"type" validate:"type"`
-	Mode   Mode      `yaml:"mode" validate:"mode"`
-	Fields []*Column `yaml:"fields"`
+	Name   string    `json:"name" yaml:"name" validate:"required"`
+	Type   Type      `json:"type" yaml:"type" validate:"type"`
+	Mode   Mode      `json:"mode" yaml:"mode" validate:"mode"`
+	Fields []*Column `json:"fields" yaml:"fields"`
 }
 
 func (c *Column) FormatType() string {
@@ -136,18 +136,18 @@ func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
 }
 
 type Job struct {
-	ID       string                 `yaml:"id" validate:"required"`
-	Metadata map[string]interface{} `yaml:"metadata"`
+	ID       string                 `json:"id" yaml:"id" validate:"required"`
+	Metadata map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
 type Model struct {
-	ID       string                 `yaml:"id" validate:"required"`
-	Metadata map[string]interface{} `yaml:"metadata"`
+	ID       string                 `json:"id" yaml:"id" validate:"required"`
+	Metadata map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
 type Routine struct {
-	ID       string                 `yaml:"id" validate:"required"`
-	Metadata map[string]interface{} `yaml:"metadata"`
+	ID       string                 `json:"id" yaml:"id" validate:"required"`
+	Metadata map[string]interface{} `json:"metadata" yaml:"metadata"`
 }
 
 type Type string
