@@ -23,7 +23,7 @@ type option struct {
 	LogFormat    server.LogFormat `description:"specify the log format (console/json)" long:"log-format" default:"console"`
 	Database     string           `description:"specify the database file if required. if not specified, it will be on memory" long:"database"`
 	DataFromYAML string           `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
-	DataFromJSON string           `description:"specify the path to the JSON file that contains the initial data" long:"data-from-json"`
+	DataFromJSON string           `description:"specify the path to the JSON file that contains the initial data (faster for large files)" long:"data-from-json"`
 	Version      bool             `description:"print version" long:"version" short:"v"`
 }
 
