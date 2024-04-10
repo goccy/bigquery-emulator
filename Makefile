@@ -11,4 +11,4 @@ emulator/build:
 		./cmd/bigquery-emulator
 
 docker/build:
-	docker buildx build --push --platform linux/arm64/v8,linux/amd64 -t bigquery-emulator . --build-arg VERSION=${VERSION}
+	docker buildx build --platform linux/arm64/v8,linux/amd64 -t bigquery-emulator . --build-arg VERSION=${VERSION}
