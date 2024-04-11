@@ -746,6 +746,85 @@ func TestView(t *testing.T) {
 	}
 }
 
+func TestViewEndingInSemicolon(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		viewName    = "view_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	view := client.Dataset(datasetName).Table(viewName)
+
+	if err := view.Create(ctx, &bigquery.TableMetadata{
+		Name: viewName,
+		ViewQuery: `WITH table_rows AS (
+			SELECT "Blueberry Muffins" AS item, 2 AS orders
+		)
+		SELECT item, COUNT(*) AS total_count
+		FROM table_rows
+		GROUP BY item, orders
+		ORDER BY item;`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := client.Query("SELECT * FROM dataset1.view")
+
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type ViewRow struct {
+		Int int
+	}
+	var viewRows []*ViewRow
+	for {
+		var viewRow ViewRow
+		if err := it.Next(&viewRow); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		viewRows = append(viewRows, &viewRow)
+	}
+
+	if len(viewRows) != 1 {
+		t.Fatalf("failed to get view data. view rows length is %d", len(viewRows))
+	}
+	if viewRows[0].Int != 1 {
+		t.Fatal("unexpected view row data")
+	}
+}
+
 func TestDuplicateTable(t *testing.T) {
 	const (
 		projectName = "test"
