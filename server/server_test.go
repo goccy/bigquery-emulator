@@ -795,7 +795,7 @@ func TestViewEndingInSemicolon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	query := client.Query("SELECT * FROM dataset1.view")
+	query := client.Query("SELECT * FROM dataset1.view_a")
 
 	it, err := query.Read(ctx)
 	if err != nil {
@@ -803,7 +803,8 @@ func TestViewEndingInSemicolon(t *testing.T) {
 	}
 
 	type ViewRow struct {
-		Int int
+		Item       string
+		TotalCount int
 	}
 	var viewRows []*ViewRow
 	for {
@@ -820,7 +821,7 @@ func TestViewEndingInSemicolon(t *testing.T) {
 	if len(viewRows) != 1 {
 		t.Fatalf("failed to get view data. view rows length is %d", len(viewRows))
 	}
-	if viewRows[0].Int != 1 {
+	if viewRows[0].Item != "Blueberry Muffins" {
 		t.Fatal("unexpected view row data")
 	}
 }
