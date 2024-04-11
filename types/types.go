@@ -79,6 +79,18 @@ func (m *Mode) UnmarshalYAML(b []byte) error {
 	return nil
 }
 
+func (m *Mode) UnmarshalJSON(b []byte) error {
+	switch strings.ToLower(strings.Trim(string(b), `"`)) {
+	case strings.ToLower(string(NullableMode)):
+		*m = NullableMode
+	case strings.ToLower(string(RequiredMode)):
+		*m = RequiredMode
+	case strings.ToLower(string(RepeatedMode)):
+		*m = RepeatedMode
+	}
+	return nil
+}
+
 const (
 	NullableMode Mode = "NULLABLE"
 	RequiredMode Mode = "REQUIRED"
