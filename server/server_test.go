@@ -412,6 +412,78 @@ func TestQuery(t *testing.T) {
 	}
 }
 
+func TestQueryWithDestination(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.YAMLSource(filepath.Join("testdata", "data.yaml")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	const (
+		projectName = "test"
+	)
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := client.Query("SELECT id FROM dataset1.table_a")
+	query.QueryConfig.Dst = &bigquery.Table{
+		ProjectID: projectName,
+		DatasetID: "dataset1",
+		TableID:   "table_a_materialized",
+	}
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		t.Log("row = ", row)
+	}
+
+	query = client.Query("SELECT id FROM dataset1.table_a_materialized")
+
+	it, err = query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		t.Log("row = ", row)
+	}
+}
+
 type TableSchema struct {
 	Int      int
 	Str      string
