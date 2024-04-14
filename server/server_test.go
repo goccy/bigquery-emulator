@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -849,6 +850,46 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 		}
 	} else {
 		t.Fatalf(("Threre should be error, when table name duplicates."))
+	}
+}
+
+func TestDuplicateDataset(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	dataset := client.Dataset(datasetName)
+	err = dataset.Create(ctx, nil)
+	if err == nil || !strings.HasSuffix(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate error; got %s", err)
 	}
 }
 
