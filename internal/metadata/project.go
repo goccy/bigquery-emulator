@@ -9,6 +9,7 @@ import (
 )
 
 var ErrDuplicatedDataset = errors.New("dataset is already created")
+var ErrDatasetInUse = errors.New("dataset is in use, empty the dataset before deleting it")
 
 type Project struct {
 	ID         string
@@ -91,6 +92,9 @@ func (p *Project) DeleteDataset(ctx context.Context, tx *sql.Tx, id string) erro
 	dataset, exists := p.datasetMap[id]
 	if !exists {
 		return fmt.Errorf("dataset '%s' is not found in project '%s'", id, p.ID)
+	}
+	if len(dataset.TableIDs()) > 0 {
+		return fmt.Errorf("dataset %s: %w", id, ErrDatasetInUse)
 	}
 	if err := dataset.Delete(ctx, tx); err != nil {
 		return err
