@@ -619,7 +619,7 @@ func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteReq
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.project.DeleteDataset(ctx, tx.Tx(), r.dataset.ID); err != nil {
+	if err := r.project.DeleteDataset(ctx, tx.Tx(), r.dataset.ID, r.deleteContents); err != nil {
 		return fmt.Errorf("failed to delete dataset: %w", err)
 	}
 	if r.deleteContents {

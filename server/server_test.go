@@ -53,7 +53,7 @@ func TestSimpleQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	project := types.NewProject("test")
-	if err := bqServer.Load(server.StructSource()); err != nil {
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
 		t.Fatal(err)
 	}
 	testServer := bqServer.TestServer()
