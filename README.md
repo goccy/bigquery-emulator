@@ -1,6 +1,6 @@
 # BigQuery Emulator
 
-![Go](https://github.com/goccy/bigquery-emulator/workflows/Go/badge.svg)
+[![build and test](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml/badge.svg)](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml)
 [![GoDoc](https://godoc.org/github.com/goccy/bigquery-emulator?status.svg)](https://pkg.go.dev/github.com/goccy/bigquery-emulator?tab=doc)
 
 
@@ -20,7 +20,7 @@ Although this project is still in **beta** version, many features are already av
 
 ## BigQuery API
 
-We've been implemented the all [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
+We've been implemented all the [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
 
 ## Google Cloud Storage linkage
 

@@ -212,7 +212,7 @@ func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 	httpServer := &http.Server{
 		Handler:      s.Handler,
 		Addr:         httpAddr,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: 5 * time.Minute,
 		ReadTimeout:  15 * time.Second,
 	}
 	s.httpServer = httpServer

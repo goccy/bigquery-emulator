@@ -1,0 +1,12 @@
+name: Enhancement Tracking Issue
+description: Provide supporting details for a feature in development
+labels: enhancement
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: What would you like to be added?
+      description: |
+        Please describe the feature you would like added. If it is a functionality that exists in BigQuery but not in our project, provide a link that illustrates this specific feature in BigQuery
+    validations:
+      required: true

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	storagepb "cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"github.com/apache/arrow/go/v10/arrow"
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"github.com/apache/arrow/go/v10/arrow/ipc"
@@ -16,7 +17,6 @@ import (
 	"github.com/goccy/go-json"
 	goavro "github.com/linkedin/goavro/v2"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
-	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -487,6 +487,10 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 	if status.finalized {
 		return fmt.Errorf("stream is already finalized")
 	}
+	offset := int64(0)
+	if req.GetOffset() != nil {
+		offset = req.GetOffset().Value
+	}
 	rows := req.GetProtoRows().GetRows().GetSerializedRows()
 	data, err := s.decodeData(msgDesc, rows)
 	if err != nil {
@@ -519,12 +523,8 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 	} else {
 		status.rows = append(status.rows, data...)
 	}
-	offset := req.GetOffset()
-	if offset != nil {
-		return s.sendResult(stream, streamName, offset.Value+int64(len(rows)))
+	return s.sendResult(stream, streamName, offset+int64(len(rows)))
 
-	}
-	return s.sendResult(stream, streamName, 0)
 }
 
 func (s *storageWriteServer) sendResult(stream storagepb.BigQueryWrite_AppendRowsServer, streamName string, offset int64) error {
