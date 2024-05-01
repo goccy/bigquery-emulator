@@ -28,7 +28,7 @@ ENV CGO_ENABLED=1
 RUN xx-go build -o bigquery-emulator \
   ./cmd/bigquery-emulator && xx-verify bigquery-emulator
 
-FROM debian:bullseye AS emulator
+FROM debian:bookworm AS emulator
 
 COPY --from=1 /work/bigquery-emulator /bin/bigquery-emulator
 
