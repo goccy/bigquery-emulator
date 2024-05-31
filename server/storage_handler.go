@@ -424,18 +424,18 @@ func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storage
 }
 
 func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRowsServer) error {
-	req, err := stream.Recv()
+	initialReq, err := stream.Recv()
 	if err == io.EOF {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	msgDesc, err := s.getMessageDescriptor(req)
+	msgDesc, err := s.getMessageDescriptor(initialReq)
 	if err != nil {
 		return err
 	}
-	if err := s.appendRows(req, msgDesc, stream); err != nil {
+	if err := s.appendRows(initialReq, msgDesc, stream, initialReq.WriteStream); err != nil {
 		return fmt.Errorf("failed to append rows: %w", err)
 	}
 	for {
@@ -446,7 +446,7 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 		if err != nil {
 			return err
 		}
-		if err := s.appendRows(req, msgDesc, stream); err != nil {
+		if err := s.appendRows(req, msgDesc, stream, initialReq.WriteStream); err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
 		}
 	}
@@ -468,21 +468,16 @@ func (s *storageWriteServer) getMessageDescriptor(req *storagepb.AppendRowsReque
 	return fd.Messages().ByName(protoreflect.Name(descProto.GetName())), nil
 }
 
-func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDesc protoreflect.MessageDescriptor, stream storagepb.BigQueryWrite_AppendRowsServer) error {
+func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDesc protoreflect.MessageDescriptor, stream storagepb.BigQueryWrite_AppendRowsServer, initialStreamId string) error {
 	streamName := req.GetWriteStream()
 	s.mu.RLock()
-	var status *writeStreamStatus
 	if streamName == "" {
-		for _, s := range s.streamMap {
-			status = s
-			break
-		}
-	} else {
-		s, exists := s.streamMap[streamName]
-		if !exists {
-			return fmt.Errorf("failed to get stream from %s", streamName)
-		}
-		status = s
+		streamName = initialStreamId
+	}
+
+	status, exists := s.streamMap[streamName]
+	if !exists {
+		return fmt.Errorf("failed to get stream from %s", streamName)
 	}
 	s.mu.RUnlock()
 	if status.finalized {
@@ -677,10 +672,14 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 
 func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	status, exists := s.streamMap[req.Name]
+	s.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("failed to find stream from %s", req.Name)
+		stream, err := s.createDefaultStream(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find stream from %s", req.Name)
+		}
+		return stream, err
 	}
 	return status.stream, nil
 }
@@ -773,6 +772,57 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 	return &storagepb.FlushRowsResponse{
 		Offset: offset,
 	}, nil
+}
+
+/*
+*
+According to google documentation (https://pkg.go.dev/cloud.google.com/go/bigquery/storage/apiv1#BigQueryWriteClient.GetWriteStream)
+every table has a special stream named ‘_default’ to which data can be written. This stream doesn’t need to be created using CreateWriteStream
+Here we create the default stream and add it to map in case it not exists yet, the GetWriteStreamRequest given as second
+argument should have Name in this format: projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default
+*/
+func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
+	streamId := req.Name
+	suffix := "_default"
+	streams := "/streams/"
+	if !strings.HasSuffix(streamId, suffix) {
+		return nil, fmt.Errorf("unexpected stream id: %s, expected '%s' suffix", streamId, suffix)
+	}
+	index := strings.LastIndex(streamId, streams)
+	if index == -1 {
+		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
+	}
+	streamPart := streamId[:index]
+	writeStreamReq := &storagepb.CreateWriteStreamRequest{
+		Parent: streamPart,
+		WriteStream: &storagepb.WriteStream{
+			Type: storagepb.WriteStream_COMMITTED,
+		},
+	}
+	stream, err := s.CreateWriteStream(ctx, writeStreamReq)
+	if err != nil {
+		return nil, err
+	}
+	projectID, datasetID, tableID, err := getIDsFromPath(streamPart)
+	if err != nil {
+		return nil, err
+	}
+	tableMetadata, err := getTableMetadata(ctx, s.server, projectID, datasetID, tableID)
+	if err != nil {
+		return nil, err
+	}
+	streamStatus := &writeStreamStatus{
+		streamType:    storagepb.WriteStream_COMMITTED,
+		stream:        stream,
+		projectID:     projectID,
+		datasetID:     datasetID,
+		tableID:       tableID,
+		tableMetadata: tableMetadata,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamMap[streamId] = streamStatus
+	return stream, nil
 }
 
 func getIDsFromPath(path string) (string, string, string, error) {
