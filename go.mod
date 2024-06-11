@@ -1,6 +1,6 @@
 module github.com/goccy/bigquery-emulator
 
-go 1.21.5
+go 1.19
 
 require (
 	cloud.google.com/go/bigquery v1.60.0
