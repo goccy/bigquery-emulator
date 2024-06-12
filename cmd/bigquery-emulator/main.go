@@ -15,8 +15,8 @@ import (
 )
 
 type option struct {
-	Project      string           `description:"specify the project name" long:"project"`
-	Dataset      string           `description:"specify the dataset name" long:"dataset"`
+	Project      string           `description:"specify the project name" long:"project" env:"BIGQUERY_EMULATOR_PROJECT"`
+	Dataset      string           `description:"specify the dataset name" long:"dataset" env:"BIGQUERY_EMULATOR_DATASET"`
 	HTTPPort     uint16           `description:"specify the http port number. this port used by bigquery api" long:"port" default:"9050"`
 	GRPCPort     uint16           `description:"specify the grpc port number. this port used by bigquery storage api" long:"grpc-port" default:"9060"`
 	LogLevel     server.LogLevel  `description:"specify the log level (debug/info/warn/error)" long:"log-level" default:"error"`
