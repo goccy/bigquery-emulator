@@ -188,6 +188,27 @@ read_client = bigquery_storage.BigQueryReadClient(client_options=client_options)
 result = client.query(sql).to_dataframe(bqstorage_client=read_client)
 ``` 
 
+## How to connect from JDBC
+Data exploration tools such as [JetBrains DataGrip](https://www.jetbrains.com/datagrip/) or [DBeaver](https://dbeaver.com/) are immensely valuable during development of projects using the emulator.
+
+To connect the BigQuery Emulator to these tools from the JDBC, specify the following connection URL with your project ID:
+
+```
+jdbc:bigquery://https://localhost:9050;ProjectId=EMULATOR_PROJECT_ID;
+```
+
+The following options must also be specified:
+
+|Option| Value                   |Description|
+|--|-------------------------|--|
+|`RootURL`| `https://localhost:9070` |This overwrites the URL used in the JDBC driver|
+|`SSLTrustStore`|`/ssl/truststore.jks`| This must point to the JKS TrustStore that contains the SSL certificates for both the BigQuery Emulator, as well as `oauth2.googleapis.com`. A bundled truststore is located in the repository at `ssl/truststore.jks`. If using the Docker distribution, a volume can be created to access this data.|
+|`SSLTrustStorePwd`|`test@123`|This is the password for the trust store. The default password for the bundled store is `test@123`.|
+
+Known limitation: There is no documented method to bypass the JDBC OAuth flow, so a valid GCP OAuth credential is required to connect to the emulator.
+See `Configuring Authentication` in [this document](https://storage.googleapis.com/simba-bq-release/jdbc/Simba%20Google%20BigQuery%20JDBC%20Connector%20Install%20and%20Configuration%20Guide_1.5.2.1005.pdf) for a list of valid authentication methods.
+Exercise caution when using this feature with untrusted distributions of the BigQuery Emulator, as the OAuth Bearer token will be sent to the emulator server.
+
 # Synopsis
 
 If you use the Go language as a BigQuery client, you can launch the BigQuery emulator on the same process as the testing process.  
