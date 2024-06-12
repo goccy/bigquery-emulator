@@ -41,6 +41,8 @@ func (t *Tx) Tx() *sql.Tx {
 	return t.tx
 }
 
+func (t *Tx) Conn() *Conn { return t.conn }
+
 func (t *Tx) RollbackIfNotCommitted() error {
 	if t.committed {
 		return nil
