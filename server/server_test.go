@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -2580,4 +2581,67 @@ func TestInformationSchema(t *testing.T) {
 		}
 	})
 
+}
+
+func TestPatchTable(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	description := "new description!"
+	metadata, err := client.Dataset("dataset1").Table("table_a").Update(
+		ctx,
+		bigquery.TableMetadataToUpdate{
+			Description: description,
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Description != description {
+		t.Fatalf("Expected updated description; got [%s]", metadata.Description)
+	}
+
+	metadata, err = client.Dataset("dataset1").Table("table_a").Update(
+		ctx,
+		bigquery.TableMetadataToUpdate{
+			Schema: bigquery.Schema{
+				{Name: "test_col", Type: bigquery.StringFieldType},
+			},
+		},
+		"",
+	)
+	if err == nil || !strings.Contains(err.Error(), "schema updates unsupported") {
+		t.Fatalf("expected unsupported schema update error; got [%s]", err)
+	}
 }
