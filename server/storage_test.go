@@ -395,6 +395,7 @@ func TestStorageWrite(t *testing.T) {
 	for _, test := range []struct {
 		name                            string
 		streamType                      storagepb.WriteStream_Type
+		isDefaultStream                 bool
 		expectedRowsAfterFirstWrite     int
 		expectedRowsAfterSecondWrite    int
 		expectedRowsAfterThirdWrite     int
@@ -411,6 +412,15 @@ func TestStorageWrite(t *testing.T) {
 		{
 			name:                            "committed",
 			streamType:                      storagepb.WriteStream_COMMITTED,
+			expectedRowsAfterFirstWrite:     1,
+			expectedRowsAfterSecondWrite:    4,
+			expectedRowsAfterThirdWrite:     6,
+			expectedRowsAfterExplicitCommit: 6,
+		},
+		{
+			name:                            "default",
+			streamType:                      storagepb.WriteStream_COMMITTED,
+			isDefaultStream:                 true,
 			expectedRowsAfterFirstWrite:     1,
 			expectedRowsAfterSecondWrite:    4,
 			expectedRowsAfterThirdWrite:     6,
@@ -490,24 +500,36 @@ func TestStorageWrite(t *testing.T) {
 		}
 		defer client.Close()
 		t.Run(test.name, func(t *testing.T) {
-			writeStream, err := client.CreateWriteStream(ctx, &storagepb.CreateWriteStreamRequest{
-				Parent: fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID),
-				WriteStream: &storagepb.WriteStream{
-					Type: test.streamType,
-				},
-			})
-			if err != nil {
-				t.Fatalf("CreateWriteStream: %v", err)
+			var writeStreamName string
+			fullTableName := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
+			if !test.isDefaultStream {
+				writeStream, err := client.CreateWriteStream(ctx, &storagepb.CreateWriteStreamRequest{
+					Parent: fullTableName,
+					WriteStream: &storagepb.WriteStream{
+						Type: test.streamType,
+					},
+				})
+				if err != nil {
+					t.Fatalf("CreateWriteStream: %v", err)
+				}
+				writeStreamName = writeStream.GetName()
 			}
 			m := &exampleproto.SampleData{}
 			descriptorProto, err := adapt.NormalizeDescriptor(m.ProtoReflect().Descriptor())
 			if err != nil {
 				t.Fatalf("NormalizeDescriptor: %v", err)
 			}
+			var writerOptions []managedwriter.WriterOption
+			if test.isDefaultStream {
+				writerOptions = append(writerOptions, managedwriter.WithType(managedwriter.DefaultStream))
+				writerOptions = append(writerOptions, managedwriter.WithDestinationTable(fullTableName))
+			} else {
+				writerOptions = append(writerOptions, managedwriter.WithStreamName(writeStreamName))
+			}
+			writerOptions = append(writerOptions, managedwriter.WithSchemaDescriptor(descriptorProto))
 			managedStream, err := client.NewManagedStream(
 				ctx,
-				managedwriter.WithStreamName(writeStream.GetName()),
-				managedwriter.WithSchemaDescriptor(descriptorProto),
+				writerOptions...,
 			)
 			if err != nil {
 				t.Fatalf("NewManagedStream: %v", err)
