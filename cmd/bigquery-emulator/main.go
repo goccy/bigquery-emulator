@@ -21,7 +21,7 @@ type option struct {
 	GRPCPort     uint16           `description:"specify the grpc port number. this port used by bigquery storage api" long:"grpc-port" default:"9060"`
 	LogLevel     server.LogLevel  `description:"specify the log level (debug/info/warn/error)" long:"log-level" default:"error"`
 	LogFormat    server.LogFormat `description:"specify the log format (console/json)" long:"log-format" default:"console"`
-	Database     string           `description:"specify the database file if required. if not specified, it will be on memory" long:"database"`
+	Database     string           `description:"specify the database file, use :memory: for in-memory storage. if not specified, it will be a temp file" long:"database"`
 	DataFromYAML string           `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
 	Version      bool             `description:"print version" long:"version" short:"v"`
 }
@@ -78,7 +78,9 @@ func runServer(args []string, opt option) error {
 		return fmt.Errorf("the required flag --project was not specified")
 	}
 	var db server.Storage
-	if opt.Database == "" {
+	if opt.Database == ":memory:" {
+		db = server.MemoryStorage
+	} else if opt.Database == "" {
 		db = server.TempStorage
 	} else {
 		db = server.Storage(fmt.Sprintf("file:%s?cache=shared", opt.Database))
