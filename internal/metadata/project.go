@@ -3,9 +3,13 @@ package metadata
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+var ErrDuplicatedDataset = errors.New("dataset is already created")
+var ErrDatasetInUse = errors.New("dataset is in use, empty the dataset before deleting it")
 
 type Project struct {
 	ID         string
@@ -69,7 +73,7 @@ func (p *Project) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.datasetMap[dataset.ID]; exists {
-		return fmt.Errorf("dataset %s is already created", dataset.ID)
+		return fmt.Errorf("dataset %s: %w", dataset.ID, ErrDuplicatedDataset)
 	}
 	if err := dataset.Insert(ctx, tx); err != nil {
 		return err
@@ -82,12 +86,15 @@ func (p *Project) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) 
 	return nil
 }
 
-func (p *Project) DeleteDataset(ctx context.Context, tx *sql.Tx, id string) error {
+func (p *Project) DeleteDataset(ctx context.Context, tx *sql.Tx, id string, inUseOk bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	dataset, exists := p.datasetMap[id]
 	if !exists {
 		return fmt.Errorf("dataset '%s' is not found in project '%s'", id, p.ID)
+	}
+	if !inUseOk && len(dataset.TableIDs()) > 0 {
+		return fmt.Errorf("dataset %s: %w", id, ErrDatasetInUse)
 	}
 	if err := dataset.Delete(ctx, tx); err != nil {
 		return err

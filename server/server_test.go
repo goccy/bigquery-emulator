@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,21 @@ import (
 	"google.golang.org/api/option"
 )
 
+func buildClient(ctx context.Context, project *types.Project, server *server.TestServer) (*bigquery.Client, error) {
+	client, err := bigquery.NewClient(
+		ctx,
+		project.ID,
+		option.WithEndpoint(server.URL),
+		option.WithoutAuthentication(),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+
+}
+
 func TestSimpleQuery(t *testing.T) {
 	ctx := context.Background()
 
@@ -36,7 +52,8 @@ func TestSimpleQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+	project := types.NewProject("test")
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
 		t.Fatal(err)
 	}
 	testServer := bqServer.TestServer()
@@ -45,12 +62,7 @@ func TestSimpleQuery(t *testing.T) {
 		bqServer.Stop(ctx)
 	}()
 
-	client, err := bigquery.NewClient(
-		ctx,
-		"test",
-		option.WithEndpoint(testServer.URL),
-		option.WithoutAuthentication(),
-	)
+	client, err := buildClient(ctx, project, testServer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -849,6 +861,87 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 		}
 	} else {
 		t.Fatalf(("Threre should be error, when table name duplicates."))
+	}
+}
+
+func TestDuplicateDataset(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	dataset := client.Dataset(datasetName)
+	err = dataset.Create(ctx, nil)
+	if err == nil || !strings.HasSuffix(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate error; got %s", err)
+	}
+}
+
+func TestDeleteDatasetInUseJob(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+	)
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	project := types.NewProject(projectName, types.NewDataset(datasetName,
+		types.NewTable("table1", []*types.Column{
+			types.NewColumn("id", types.STRING),
+		}, nil),
+	))
+
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := buildClient(ctx, project, testServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	dataset := client.Dataset(datasetName)
+	err = dataset.Delete(ctx)
+	if err == nil || !strings.HasSuffix(err.Error(), "resourceInUse") {
+		t.Fatalf("expected resource in use error; got %s", err)
 	}
 }
 
