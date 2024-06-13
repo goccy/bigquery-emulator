@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"github.com/goccy/bigquery-emulator/internal/contentdata"
 	"html"
 	"io"
 	"mime"
@@ -680,7 +681,7 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -692,21 +693,21 @@ type datasetsInsertRequest struct {
 	dataset *bigqueryv2.Dataset
 }
 
-func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, error) {
+func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertRequest) (*bigqueryv2.DatasetListDatasets, *ServerError) {
 	if r.dataset.DatasetReference == nil {
-		return nil, fmt.Errorf("DatasetReference is nil")
+		return nil, errInvalid("DatasetReference is nil")
 	}
 	datasetID := r.dataset.DatasetReference.DatasetId
 	if datasetID == "" {
-		return nil, fmt.Errorf("dataset id is empty")
+		return nil, errInvalid("dataset id is empty")
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
+		return nil, errInvalid(fmt.Sprintf("failed to get connection: %s", err.Error())) // TODO: improve by forwarding cause
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
+		return nil, errInvalid(fmt.Sprintf("failed to start transaction: %s", err.Error()))
 	}
 	defer tx.RollbackIfNotCommitted()
 
@@ -723,10 +724,13 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
-		return nil, err
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			return nil, errDuplicate(err.Error())
+		}
+		return nil, errInvalid(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInvalid(err.Error())
 	}
 	return &bigqueryv2.DatasetListDatasets{
 		DatasetReference: &bigqueryv2.DatasetReference{
@@ -2676,65 +2680,101 @@ func (h *tablesListHandler) Handle(ctx context.Context, r *tablesListRequest) (*
 	}, nil
 }
 
+type MetadataPatch struct {
+	Schema *bigqueryv2.TableSchema `json:"schema,omitempty"`
+}
+
 func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
 	table := tableFromContext(ctx)
-	var newTable bigqueryv2.Table
+	var newTable map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&newTable); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(&newTable); err != nil {
+		errorResponse(ctx, w, errInvalid(err.Error()))
+		return
+	}
+	var newTableTyped MetadataPatch
+	if err := json.NewDecoder(&buf).Decode(&newTableTyped); err != nil {
+		errorResponse(ctx, w, errInvalid(err.Error()))
+		return
+	}
+
+	//if _, found := newTable["schema"]; found {
+	//	errorResponse(ctx, w, errInvalid("schema updates unsupported"))
+	//	return
+	//}
+
 	res, err := h.Handle(ctx, &tablesPatchRequest{
-		server:   server,
-		project:  project,
-		dataset:  dataset,
-		table:    table,
-		newTable: &newTable,
+		server:                server,
+		project:               project,
+		dataset:               dataset,
+		table:                 table,
+		newTableMetadata:      newTable,
+		newTableMetadataTyped: &newTableTyped,
 	})
+
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		errorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, res)
+
 }
 
 type tablesPatchRequest struct {
-	server   *Server
-	project  *metadata.Project
-	dataset  *metadata.Dataset
-	table    *metadata.Table
-	newTable *bigqueryv2.Table
+	server                *Server
+	project               *metadata.Project
+	dataset               *metadata.Dataset
+	table                 *metadata.Table
+	newTableMetadata      map[string]interface{}
+	newTableMetadataTyped *MetadataPatch
 }
 
-func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	encodedTableData, err := json.Marshal(r.newTable)
-	if err != nil {
-		return nil, err
-	}
-	var tableMetadata map[string]interface{}
-	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
-		return nil, err
-	}
-
+func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, *ServerError) {
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
-		return nil, err
+	content, err := r.table.Content()
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	contentDataErr := r.server.contentRepo.AlterTable(ctx, tx, content, r.newTableMetadataTyped.Schema)
+	if contentDataErr != nil {
+		// TODO: add implementation for adding default value constraint (addDefaultValueConstraint)
+		switch contentDataErr.ErrorReason {
+		case contentdata.AlterTableExistingFieldChanged:
+			return nil, withDebugInfo(errInvalid(contentDataErr.Message), contentDataErr.Cause)
+		case contentdata.AlterTableExistingFieldRemoved:
+			return nil, withDebugInfo(errInvalid(contentDataErr.Message), contentDataErr.Cause)
+		default:
+			return nil, withDebugInfo(errInternalError(""), contentDataErr.Cause)
+		}
+	}
+	if err := r.table.Update(ctx, tx.Tx(), r.newTableMetadata); err != nil {
+		return nil, errInternalError(err.Error())
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
-	return r.newTable, nil
+	table, err := r.table.Content()
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	return table, nil
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

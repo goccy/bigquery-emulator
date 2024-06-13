@@ -96,3 +96,5 @@ require (
 	google.golang.org/genproto v0.0.0-20240213162025-012b6fc9bca9 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240314234333-6e1732d8331c // indirect
 )
+
+replace github.com/goccy/go-zetasqlite v0.19.2 => github.com/myhau/go-zetasqlite v0.19.2-fork.1

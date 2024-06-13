@@ -94,8 +94,22 @@ func New(storage Storage) (*Server, error) {
 	r.Use(withTableMiddleware())
 	r.Use(withModelMiddleware())
 	r.Use(withRoutineMiddleware())
-	server.Handler = r
+	server.Handler = &HandlerWithMethodOverride{r}
 	return server, nil
+}
+
+type HandlerWithMethodOverride struct {
+	underlyingHandler *mux.Router
+}
+
+func (h *HandlerWithMethodOverride) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	methodOverride := req.Header.Get("X-HTTP-Method-Override")
+	if methodOverride == "" {
+		h.underlyingHandler.ServeHTTP(w, req)
+		return
+	}
+	req.Method = methodOverride
+	h.underlyingHandler.ServeHTTP(w, req)
 }
 
 func (s *Server) Close() error {

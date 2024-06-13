@@ -12,6 +12,12 @@ import (
 
 var ErrDuplicatedTable = errors.New("table is already created")
 
+var ErrDuplicatedDataset = errors.New("dataset is already created")
+
+func ErrDuplicatedDatasetWithId(id string) error {
+	return fmt.Errorf("dataset with id %s, %w", id, ErrDuplicatedDataset)
+}
+
 type Dataset struct {
 	ID         string
 	ProjectID  string

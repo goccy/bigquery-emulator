@@ -80,6 +80,19 @@ const (
 	Timeout                  ErrorReason = "timeout"
 )
 
+func withDebugInfo(existingError *ServerError, cause error) *ServerError {
+	if cause == nil {
+		return existingError
+	}
+	return &ServerError{
+		Status:    existingError.Status,
+		Reason:    existingError.Reason,
+		Location:  existingError.Location,
+		Message:   existingError.Message,
+		DebugInfo: cause.Error(),
+	}
+}
+
 func errAccessDenied(msg string) *ServerError {
 	return &ServerError{
 		Status:  http.StatusForbidden,

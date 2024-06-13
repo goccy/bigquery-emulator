@@ -78,6 +78,84 @@ func (r *Repository) routinePath(projectID, datasetID, routineID string) string 
 	return strings.Join(routinePath, ".")
 }
 
+func stringReference(ref *bigqueryv2.TableReference) string {
+	return fmt.Sprintf("%s:%s.%s", ref.ProjectId, ref.DatasetId, ref.TableId)
+}
+
+func (r *Repository) AlterTable(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table, newSchema *bigqueryv2.TableSchema) *ContentDataError {
+	if newSchema == nil {
+		return nil
+	}
+
+	if err := tx.ContentRepoMode(); err != nil {
+		return ErrorWithCause(Unknown, err)
+	}
+
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+
+	ref := table.TableReference
+	if ref == nil {
+		return ErrorWithMessage(Unknown, "TableReference is nil")
+	}
+	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+
+	alterStatements := make([]string, 0)
+	oldFieldMap := make(map[string]*bigqueryv2.TableFieldSchema)
+	for _, field := range table.Schema.Fields {
+		oldFieldMap[field.Name] = field
+	}
+
+	for _, newField := range newSchema.Fields {
+		oldField, exists := oldFieldMap[newField.Name]
+		if !exists {
+			alterStatements = append(alterStatements, fmt.Sprintf("ADD COLUMN `%s` %s", newField.Name, r.encodeSchemaField(newField)))
+		} else if !reflect.DeepEqual(oldField, newField) {
+			oldFieldAfterUpdates := *oldField
+			if oldField.Description != newField.Description {
+				// it's ok, ignore
+				oldFieldAfterUpdates.Description = newField.Description
+				//alterStatements = append(alterStatements, fmt.Sprintf("ALTER COLUMN `%s` SET DEFAULT %s", newField.Name, newField.DefaultValueExpression))
+				//oldFieldAfterUpdates.Description = newField.Description
+				//if !reflect.DeepEqual(&oldFieldAfterUpdates, newField) {
+				//	message := fmt.Sprintf(
+				//		"(Todo) one change allowed at a time",
+				//	)
+				//	return ErrorWithMessage(Unknown, message)
+				//}
+			} else if oldField.DefaultValueExpression != newField.DefaultValueExpression {
+				alterStatements = append(alterStatements, fmt.Sprintf("ALTER COLUMN `%s` SET DEFAULT %s", newField.Name, newField.DefaultValueExpression))
+				oldFieldAfterUpdates.DefaultValueExpression = newField.DefaultValueExpression
+				if !reflect.DeepEqual(&oldFieldAfterUpdates, newField) {
+					message := fmt.Sprintf(
+						"(Todo) one change allowed at a time",
+					)
+					return ErrorWithMessage(Unknown, message)
+				}
+			} else {
+				return ErrorWithMessage(Unknown, "unknown")
+			}
+			// FIXME: what about field description?
+
+		}
+		delete(oldFieldMap, newField.Name)
+	}
+
+	if len(oldFieldMap) > 0 {
+		return Error(AlterTableExistingFieldRemoved)
+	}
+
+	if len(alterStatements) > 0 {
+		query := fmt.Sprintf("ALTER TABLE `%s` %s", tablePath, strings.Join(alterStatements, ", "))
+		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
+			return ErrorWithCause(Unknown, fmt.Errorf("failed to alter table %s: %w", query, err))
+		}
+	}
+
+	return nil
+}
+
 func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
 	if err := tx.ContentRepoMode(); err != nil {
 		return err

@@ -2581,3 +2581,268 @@ func TestInformationSchema(t *testing.T) {
 	})
 
 }
+
+func (s *PatchTableData) Save() (map[string]bigquery.Value, string, error) {
+	return map[string]bigquery.Value{
+		"testCol":  s.testCol,
+		"testCol2": s.testCol2,
+	}, "", nil
+}
+
+type PatchTableData struct {
+	testCol  string
+	testCol2 string
+}
+
+func TestPatchTable(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	dataset := "dataset1"
+	table := "table_a_123"
+	err = client.Dataset(dataset).Table(table).Create(
+		ctx,
+		&bigquery.TableMetadata{
+			Name:        table,
+			Description: "old description",
+			Schema: bigquery.Schema{
+				{Name: "testCol", Type: bigquery.StringFieldType},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	description := "new description!"
+	metadata, err := client.Dataset("dataset1").Table("table_a_123").Update(
+		ctx,
+		bigquery.TableMetadataToUpdate{
+			Description: description,
+		},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Description != description {
+		t.Fatalf("Expected updated description; got [%s]", metadata.Description)
+	}
+
+	metadata, err = client.Dataset("dataset1").Table("table_a_123").Update(
+		ctx,
+		bigquery.TableMetadataToUpdate{
+			Schema: bigquery.Schema{
+				{Name: "testCol", Type: bigquery.StringFieldType},
+				{Name: "testCol2", Type: bigquery.StringFieldType},
+			},
+		},
+		"",
+	)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmd, err := client.Dataset("dataset1").Table("table_a_123").Metadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, schemaEl := range tmd.Schema {
+		if schemaEl.Name == "testCol2" && schemaEl.Type == bigquery.StringFieldType {
+			found = true
+			continue
+		}
+	}
+	if !found {
+		t.Fatalf("failed to find test_col2 schema")
+	}
+
+	// Insert data
+	ins := client.Dataset("dataset1").Table("table_a_123").Inserter()
+	if err := ins.Put(ctx, &PatchTableData{testCol: "test value", testCol2: "asd"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read data
+	q := client.Query("SELECT testCol, testCol2 FROM dataset1.table_a_123")
+	it, err := q.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]bigquery.Value
+	for {
+		var row []bigquery.Value
+		err := it.Next(&row)
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			fmt.Println("Error reading row:", err)
+			return
+		}
+
+		got = append(got, row)
+	}
+
+	if len(got) != 1 {
+		t.Errorf("Unexpected number of rows: %d", len(got))
+	}
+
+	if got[0][0] != "test value" || got[0][1] != "asd" {
+		t.Errorf("Unexpected row: %v", got[0])
+	}
+}
+
+func TestMethodOverridePatchTable(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	description := "old description"
+
+	dataset := "dataset1"
+	table := "table_a_123"
+	err = client.Dataset(dataset).Table(table).Create(
+		ctx,
+		&bigquery.TableMetadata{
+			Name:        table,
+			Description: description,
+			Schema: bigquery.Schema{
+				{Name: "test_col", Type: bigquery.StringFieldType},
+			},
+			ExpirationTime: time.Now().Add(1 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	/*
+		This is equivalent to this (with updated HTTP method):
+		metadata, err := client.Dataset("dataset1").Table("table_a").Update(
+			ctx,
+			bigquery.TableMetadataToUpdate{
+				Description: description,
+			},
+			"",
+		)
+	*/
+	err = patchTableDescriptionRawHttpRequestWithMethodOverride(testServer.URL, projectName, dataset, table, "new description")
+
+	if err != nil {
+		t.Fatalf("unexpected error when overridding description %s", err)
+	}
+
+	meta, err := client.Dataset(dataset).Table(table).Metadata(ctx)
+
+	if err != nil {
+		t.Fatalf("unexpected error when overridding description %s", err)
+	}
+
+	if meta.Description != "new description" {
+		t.Fatalf("Failed, description is %s", meta.Description)
+	}
+}
+
+func patchTableDescriptionRawHttpRequestWithMethodOverride(baseUrl string, projectId string, datasetId string, tableId string, newDescription string) error {
+	fullUrl := fmt.Sprintf("%s/projects/%s/datasets/%s/tables/%s", baseUrl, projectId, datasetId, tableId)
+
+	reqBody := map[string]interface{}{
+		"tableReference": map[string]string{
+			"projectId": projectId,
+			"datasetId": datasetId,
+			"tableId":   tableId,
+		},
+		"description": newDescription,
+	}
+	jsonBody, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequest("POST", fullUrl, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-HTTP-Method-Override", "PATCH")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("expected status code 200; got %d, body: %s", resp.StatusCode, body)
+	}
+
+	return nil
+}
