@@ -1,6 +1,7 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -542,6 +543,9 @@ func parseDatetime(v string) (time.Time, error) {
 }
 
 func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	if field == nil {
+		return nil, errors.New("field is nil while normalizing json data")
+	}
 	rv := reflect.ValueOf(v)
 	kind := rv.Kind()
 	if Mode(field.Mode) == RepeatedMode {
@@ -560,7 +564,7 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 		}
 		return values, nil
 	}
-	if kind == reflect.Map {
+	if kind == reflect.Map && field.Type == "RECORD" {
 		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
 		columnNameToValueMap := map[string]interface{}{}
 		for _, f := range field.Fields {
