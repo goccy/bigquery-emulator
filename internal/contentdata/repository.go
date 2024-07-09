@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/goccy/go-json"
 	"github.com/goccy/go-zetasqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -400,6 +401,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		for _, column := range columns {
 			if value, found := data[column.Name]; found {
 				isTimestampColumn := column.Type == types.TIMESTAMP
+				isJsonColumn := column.Type == types.JSON
 				inputString, isInputString := value.(string)
 
 				if isInputString && isTimestampColumn {
@@ -409,6 +411,15 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 						values = append(values, parsedTimestamp)
 						continue
 					}
+				}
+
+				if isInputString && isJsonColumn {
+					var jsonValue interface{}
+					if err := json.Unmarshal([]byte(inputString), &jsonValue); err != nil {
+						return fmt.Errorf("failed to unmarshal json value [%s]: %w", inputString, err)
+					}
+					values = append(values, jsonValue)
+					continue
 				}
 
 				values = append(values, value)
