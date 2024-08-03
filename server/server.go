@@ -82,6 +82,7 @@ func New(storage Storage) (*Server, error) {
 	r.Handle(newDiscoveryAPIEndpoint, newDiscoveryHandler(server)).Methods("GET")
 	r.Handle(uploadAPIEndpoint, &uploadHandler{}).Methods("POST")
 	r.Handle(uploadAPIEndpoint, &uploadContentHandler{}).Methods("PUT")
+	r.Handle(projectAPIEndpoint, &projectsCreateHandler{}).Methods("POST")
 	r.PathPrefix("/").Handler(&defaultHandler{})
 	r.Use(sequentialAccessMiddleware())
 	r.Use(recoveryMiddleware(server))

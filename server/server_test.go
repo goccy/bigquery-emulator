@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -24,6 +25,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -2652,4 +2654,56 @@ func TestInformationSchema(t *testing.T) {
 		}
 	})
 
+}
+
+func TestCreateProject(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	projectID := "test"
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	it := client.Datasets(ctx)
+	// NOTE: this iterator must show error because the project does not exist.
+	if _, err := it.Next(); err == nil || err.Error() != "googleapi: Error 404: project test is not found, notFound" {
+		t.Fatal(err)
+	}
+	service, err := cloudresourcemanager.NewService(
+		ctx,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := service.Projects.Create(&cloudresourcemanager.Project{
+		ProjectId: projectID,
+	}).Do()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !operation.Done {
+		t.Fatalf("failed to create project: %v", operation)
+	}
+	it = client.Datasets(ctx)
+	// NOTE: this iterator must show iterator.Done because the project is created and empty dataset list.
+	if _, err := it.Next(); !errors.Is(err, iterator.Done) {
+		t.Fatal(err)
+	}
 }
