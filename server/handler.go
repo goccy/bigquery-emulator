@@ -53,8 +53,9 @@ func encodeResponse(ctx context.Context, w http.ResponseWriter, response interfa
 }
 
 const (
-	discoveryAPIEndpoint = "/discovery/v1/apis/bigquery/v2/rest"
-	uploadAPIEndpoint    = "/upload/bigquery/v2/projects/{projectId}/jobs"
+	discoveryAPIEndpoint    = "/discovery/v1/apis/bigquery/v2/rest"
+	newDiscoveryAPIEndpoint = "/$discovery/rest"
+	uploadAPIEndpoint       = "/upload/bigquery/v2/projects/{projectId}/jobs"
 )
 
 //go:embed resources/discovery.json
