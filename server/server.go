@@ -209,7 +209,7 @@ func (s *Server) Load(sources ...Source) error {
 	return nil
 }
 
-func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
+func (s *Server) Serve(ctx context.Context, httpAddr, httpsAddr, grpcAddr string) error {
 	httpServer := &http.Server{
 		Handler:      s.Handler,
 		Addr:         httpAddr,
@@ -217,6 +217,13 @@ func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 		ReadTimeout:  15 * time.Second,
 	}
 	s.httpServer = httpServer
+
+	httpsServer := &http.Server{
+		Handler:      s.Handler,
+		Addr:         httpsAddr,
+		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Second,
+	}
 
 	grpcServer := grpc.NewServer()
 	registerStorageServer(grpcServer, s)
@@ -234,6 +241,7 @@ func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 	var eg errgroup.Group
 	eg.Go(func() error { return grpcServer.Serve(grpcListener) })
 	eg.Go(func() error { return httpServer.Serve(httpListener) })
+	eg.Go(func() error { return httpsServer.ListenAndServeTLS("ssl/server.crt", "ssl/server.key") })
 	return eg.Wait()
 }
 
