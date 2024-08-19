@@ -32,7 +32,7 @@ import (
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
-	"github.com/segmentio/parquet-go"
+	"github.com/parquet-go/parquet-go"
 )
 
 func errorResponse(ctx context.Context, w http.ResponseWriter, e *ServerError) {
