@@ -12,10 +12,9 @@ import (
 )
 
 type AVROSchema struct {
-	Namespace string             `json:"namespace"`
-	Name      string             `json:"name"`
-	Type      string             `json:"type"`
-	Fields    []*AVROFieldSchema `json:"fields"`
+	Name   string             `json:"name"`
+	Type   string             `json:"type"`
+	Fields []*AVROFieldSchema `json:"fields"`
 }
 
 type AVROFieldSchema struct {
@@ -198,10 +197,9 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 
 func TableToAVRO(t *bigqueryv2.Table) *AVROSchema {
 	return &AVROSchema{
-		Namespace: fmt.Sprintf("%s.%s", t.TableReference.ProjectId, t.TableReference.DatasetId),
-		Name:      t.TableReference.TableId,
-		Type:      "record",
-		Fields:    TableFieldSchemasToAVRO(t.Schema.Fields),
+		Name:   t.TableReference.TableId,
+		Type:   "record",
+		Fields: TableFieldSchemasToAVRO(t.Schema.Fields),
 	}
 }
 
