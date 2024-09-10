@@ -14,7 +14,7 @@ type (
 	GetQueryResultsResponse struct {
 		JobReference *bigqueryv2.JobReference `json:"jobReference"`
 		Schema       *bigqueryv2.TableSchema  `json:"schema"`
-		Rows         []*TableRow              `json:"rows"`
+		Rows         []*TableRow              `json:"rows,omitempty"`
 		TotalRows    uint64                   `json:"totalRows,string"`
 		JobComplete  bool                     `json:"jobComplete"`
 		TotalBytes   uint64                   `json:"-"`
