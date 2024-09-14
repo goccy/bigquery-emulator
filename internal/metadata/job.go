@@ -47,6 +47,10 @@ func (j *Job) Wait(ctx context.Context) (*internaltypes.QueryResponse, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	if j.response != nil || j.err != nil {
+		return j.response, j.err
+	}
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
