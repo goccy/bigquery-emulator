@@ -630,8 +630,9 @@ func (r *Repository) AddTable(ctx context.Context, tx *sql.Tx, table *Table) err
 	return nil
 }
 
-func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table) error {
-	metadata, err := json.Marshal(table.metadata)
+func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table, metadata map[string]interface{}) error {
+	marshalledMetadata, err := json.Marshal(metadata)
+
 	if err != nil {
 		return err
 	}
@@ -640,7 +641,7 @@ func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table) 
 		sql.Named("id", table.ID),
 		sql.Named("projectID", table.ProjectID),
 		sql.Named("datasetID", table.DatasetID),
-		sql.Named("metadata", string(metadata)),
+		sql.Named("metadata", string(marshalledMetadata)),
 	); err != nil {
 		return err
 	}
