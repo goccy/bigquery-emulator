@@ -2400,7 +2400,7 @@ SELECT
 FROM test_dataset.test_table
 WHERE
  item IN UNNEST(@items)
- OR item in UNNEST(@empty);`)
+ AND @empty IS NULL;`)
 	query.Parameters = []bigquery.QueryParameter{
 		{
 			Name:  "items",

@@ -155,7 +155,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		var value interface{}
 		switch {
 		case param.ParameterType.Type == "ARRAY" && len(param.ParameterValue.ArrayValues) == 0:
-			value = []interface{}{}
+			value = nil
 		default:
 			var err error
 			value, err = r.queryParameterValueToGoValue(param.ParameterValue)
