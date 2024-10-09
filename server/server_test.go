@@ -2344,6 +2344,108 @@ func TestExportToGCS(t *testing.T) {
 	})
 }
 
+func TestQueryWithArrayParam(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("item", types.STRING),
+				},
+				types.Data{
+					{
+						"item": "something",
+					},
+				},
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	query := client.Query(`
+SELECT
+ item
+FROM test_dataset.test_table
+WHERE
+ item IN UNNEST(@items)
+ OR item in UNNEST(@empty);`)
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "items",
+			Value: []string{"something"},
+		},
+		{
+			Name:  "empty",
+			Value: []string{},
+		},
+	}
+
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := status.Err(); err != nil {
+		t.Fatal(err)
+	}
+	it, err := job.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.TotalRows != 1 {
+		t.Fatal("expected 1 row, got", it.TotalRows)
+	}
+	var rs []bigquery.Value
+	for {
+		if err := it.Next(&rs); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rs[0] != "something" {
+		t.Fatal("expected 'something', got", rs)
+	}
+}
+
 func TestQueryWithNamedParams(t *testing.T) {
 	const (
 		projectID = "test"
