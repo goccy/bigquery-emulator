@@ -16,7 +16,7 @@ import (
 
 type option struct {
 	Project      string           `description:"specify the project name" long:"project"`
-	Dataset      string           `description:"specify the dataset name" long:"dataset"`
+	Dataset      []string         `description:"specify the dataset name" long:"dataset"`
 	Host         string           `description:"specify the host" long:"host" default:"0.0.0.0"`
 	HTTPPort     uint16           `description:"specify the http port number. this port used by bigquery api" long:"port" default:"9050"`
 	GRPCPort     uint16           `description:"specify the grpc port number. this port used by bigquery storage api" long:"grpc-port" default:"9060"`
@@ -85,8 +85,10 @@ func runServer(args []string, opt option) error {
 		db = server.Storage(fmt.Sprintf("file:%s?cache=shared", opt.Database))
 	}
 	project := types.NewProject(opt.Project)
-	if opt.Dataset != "" {
-		project.Datasets = append(project.Datasets, types.NewDataset(opt.Dataset))
+	if len(opt.Dataset) > 0 {
+		for _, dataset := range opt.Dataset {
+			project.Datasets = append(project.Datasets, types.NewDataset(dataset))
+		}
 	}
 	bqServer, err := server.New(db)
 	if err != nil {
