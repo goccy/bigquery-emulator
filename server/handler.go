@@ -1400,13 +1400,17 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
+	datasetId := ""
+	if job.Configuration.Query.DefaultDataset != nil {
+		datasetId = job.Configuration.Query.DefaultDataset.DatasetId
+	}
 	hasDestinationTable := job.Configuration.Query.DestinationTable != nil
 	startTime := time.Now()
 	response, jobErr := r.server.contentRepo.Query(
 		ctx,
 		tx,
 		r.project.ID,
-		"",
+		datasetId,
 		job.Configuration.Query.Query,
 		job.Configuration.Query.QueryParameters,
 	)
