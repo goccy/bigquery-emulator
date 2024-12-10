@@ -168,6 +168,17 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		zap.String("query", query),
 		zap.Any("values", values),
 	)
+	// We must pass the query parameters to zetasqlite so the analyzer uses the proper typings
+	if err := tx.Conn().Conn.Raw(func(c interface{}) error {
+		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		if !ok {
+			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+		}
+		zetasqliteConn.SetQueryParameters(params)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to setup connection: %w", err)
+	}
 	rows, err := tx.Tx().QueryContext(ctx, query, values...)
 	if err != nil {
 		return nil, err
