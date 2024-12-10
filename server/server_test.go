@@ -211,6 +211,66 @@ func findDatasets(t *testing.T, ctx context.Context, client *bigquery.Client) []
 	return datasets
 }
 
+func TestDataFromJSON(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.JSONSource(filepath.Join("testdata", "data.json"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := client.Query("SELECT * FROM dataset1.table_a")
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := job.Config(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := job.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	gotJob, err := client.JobFromID(ctx, job.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotJob.ID() != job.ID() {
+		t.Fatalf("failed to get job expected ID %s. but got %s", job.ID(), gotJob.ID())
+	}
+
+	if jobs := findJobs(t, ctx, client); len(jobs) != 1 {
+		t.Fatalf("failed to find jobs. expected 1 jobs but found %d jobs", len(jobs))
+	}
+}
+
 func TestJob(t *testing.T) {
 	ctx := context.Background()
 
