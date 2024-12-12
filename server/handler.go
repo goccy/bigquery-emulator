@@ -427,8 +427,10 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		return err
 	}
 	columnToType := map[string]types.Type{}
-	for _, field := range tableContent.Schema.Fields {
-		columnToType[field.Name] = types.Type(field.Type)
+	if tableContent.Schema != nil {
+		for _, field := range tableContent.Schema.Fields {
+			columnToType[field.Name] = types.Type(field.Type)
+		}
 	}
 
 	sourceFormat := load.SourceFormat
