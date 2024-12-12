@@ -1292,6 +1292,9 @@ func (h *jobsInsertHandler) exportToGCSWithObject(ctx context.Context, response 
 		}
 	}()
 	switch extract.DestinationFormat {
+	case "": // default format is CSV
+		extract.DestinationFormat = "CSV"
+		fallthrough
 	case "CSV":
 		if len(response.Rows) == 0 {
 			if _, err := writer.Write(nil); err != nil {
