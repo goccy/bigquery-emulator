@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 
 	"github.com/goccy/go-json"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -18,7 +19,17 @@ type Table struct {
 }
 
 func (t *Table) Update(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
-	return t.repo.UpdateTable(ctx, tx, t)
+	mergedMetadata := map[string]interface{}{}
+	maps.Copy(mergedMetadata, t.metadata)
+	for key, value := range metadata {
+		mergedMetadata[key] = value
+	}
+
+	err := t.repo.UpdateTable(ctx, tx, t, mergedMetadata)
+	if err == nil {
+		t.metadata = mergedMetadata
+	}
+	return err
 }
 
 func (t *Table) Insert(ctx context.Context, tx *sql.Tx) error {
