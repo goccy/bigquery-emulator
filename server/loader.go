@@ -7,16 +7,16 @@ import (
 	"github.com/goccy/bigquery-emulator/types"
 )
 
-func (s *Server) addProjects(ctx context.Context, projects []*types.Project) error {
+func (s *Server) addProjects(ctx context.Context, projects []*types.Project, reload bool) error {
 	for _, project := range projects {
-		if err := s.addProject(ctx, project); err != nil {
+		if err := s.addProject(ctx, project, reload); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Server) addProject(ctx context.Context, project *types.Project) error {
+func (s *Server) addProject(ctx context.Context, project *types.Project, reload bool) error {
 	conn, err := s.connMgr.Connection(ctx, project.ID, "")
 	if err != nil {
 		return err
@@ -40,6 +40,22 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 		return err
 	}
 	if found != nil {
+		if !reload {
+			return nil
+		}
+
+		for _, dataset := range found.Datasets() {
+			for _, table := range dataset.Tables() {
+				if err := table.Delete(ctx, tx.Tx()); err != nil {
+					return err
+				}
+			}
+
+			if err := dataset.Delete(ctx, tx.Tx()); err != nil {
+				return err
+			}
+		}
+
 		if err := s.metaRepo.UpdateProject(ctx, tx.Tx(), p); err != nil {
 			return err
 		}
