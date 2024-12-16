@@ -464,15 +464,23 @@ func NewTable(id string, columns []*Column, data Data) *Table {
 func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 	columns := make([]*Column, 0, len(t.Schema.Fields))
 	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
+	nameToFieldMapLowerCase := map[string]*bigqueryv2.TableFieldSchema{}
 	for _, field := range t.Schema.Fields {
 		nameToFieldMap[field.Name] = field
+		nameToFieldMapLowerCase[strings.ToLower(field.Name)] = field
 		columns = append(columns, NewColumnWithSchema(field))
 	}
 	newData := Data{}
 	for _, row := range data {
 		rowData := map[string]interface{}{}
 		for k, v := range row {
-			field, exists := nameToFieldMap[k]
+			var field *bigqueryv2.TableFieldSchema
+			var exists bool
+
+			if field, exists = nameToFieldMap[k]; !exists {
+				field, exists = nameToFieldMapLowerCase[strings.ToLower(k)]
+			}
+
 			if !exists {
 				continue
 			}
