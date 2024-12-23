@@ -117,7 +117,7 @@ func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *b
 		return fmt.Errorf("ViewDefinition is nil")
 	}
 	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
-	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewDefinition.Query)
+	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, strings.TrimRight(viewDefinition.Query, ";\n \t"))
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create view %s: %w", query, err)
 	}
