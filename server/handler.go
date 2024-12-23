@@ -681,6 +681,10 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			errDuplicate(err.Error())
+			return
+		}
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
@@ -724,6 +728,9 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			return nil, errDuplicate(err.Error())
+		}
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
