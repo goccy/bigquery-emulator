@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strings"
 
@@ -400,13 +401,23 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		for _, column := range columns {
 			if value, found := data[column.Name]; found {
 				isTimestampColumn := column.Type == types.TIMESTAMP
+				isBigNumeric := column.Type == types.BIGNUMERIC
 				inputString, isInputString := value.(string)
+				inputBytes, isInputBytes := value.([]uint8)
 
 				if isInputString && isTimestampColumn {
 					parsedTimestamp, err := zetasqlite.TimeFromTimestampValue(inputString)
 					// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
 					if err == nil {
 						values = append(values, parsedTimestamp)
+						continue
+					}
+				}
+
+				if isBigNumeric && isInputBytes {
+					parsedString, err := BigNumericFromBytes(inputBytes)
+					if err == nil {
+						values = append(values, parsedString)
 						continue
 					}
 				}
@@ -423,6 +434,34 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	}
 
 	return nil
+}
+
+func BigNumericFromBytes(v []uint8) (string, error) {
+	if len(v) == 0 {
+		return "", fmt.Errorf("invalid input: empty byte array")
+	}
+	bytes := make([]byte, len(v))
+	for i := 0; i < len(v); i++ {
+		bytes[i] = v[len(v)-1-i]
+	}
+	negative := bytes[0]&0x80 != 0
+	n := new(big.Int)
+	if negative {
+		for i := 0; i < len(bytes); i++ {
+			bytes[i] = ^bytes[i]
+		}
+		n.SetBytes(bytes)
+		n.Add(n, big.NewInt(1))
+		n.Neg(n)
+	} else {
+		n.SetBytes(bytes)
+	}
+	scaleFactor := new(big.Rat)
+	scaleFactor.SetString("100000000000000000000000000000000000000")
+	result := new(big.Rat).Quo(new(big.Rat).SetInt(n), scaleFactor).FloatString(10)
+	result = strings.TrimRight(result, "0")
+	result = strings.TrimRight(result, ".")
+	return result, nil
 }
 
 func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tableIDs []string) error {
