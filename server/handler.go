@@ -1436,6 +1436,11 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 		destinationTable := destinationDataset.Table(dstTable.TableId)
 		destinationTableExists := destinationTable != nil
 		if !destinationTableExists {
+
+			if job.Configuration.Copy.CreateDisposition == "CREATE_NEVER" {
+				return nil, errNotFound(fmt.Sprintf("createDisposition is set to 'CREATE_NEVER' and the table %s does not exist", dstTable.TableId))
+			}
+
 			_, err := createTableMetadata(ctx, tx, r.server, r.project, destinationDataset, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
 
 			if err != nil {

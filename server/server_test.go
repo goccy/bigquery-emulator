@@ -2802,4 +2802,52 @@ func TestCopyTable(t *testing.T) {
 			t.Fatalf("5 rows are expected to be copied, but got %d", len(response))
 		}
 	})
+	t.Run("fail if createDisposition is set to CREATE_NEVER and the destination table is not found", func(t *testing.T) {
+		ctx := context.Background()
+
+		const (
+			projectName = "test"
+			dataset     = "dataset1"
+			srcTable    = "table_a"
+			dstTable    = "copied"
+		)
+
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.SetProject(projectName); err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+			t.Fatal(err)
+		}
+
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Stop(ctx)
+		}()
+
+		client, err := bigquery.NewClient(
+			ctx,
+			projectName,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		src := client.Dataset(dataset).Table(srcTable)
+		dst := client.Dataset(dataset).Table(dstTable)
+		copier := dst.CopierFrom(src)
+		copier.CreateDisposition = bigquery.CreateNever
+		_, err = copier.Run(ctx)
+		if err == nil {
+			t.Fatal("The job must be failed")
+		}
+
+	})
 }
