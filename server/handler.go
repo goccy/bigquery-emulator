@@ -1382,26 +1382,39 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 
 	defer tx.RollbackIfNotCommitted()
 
-	srcTables := job.Configuration.Copy.SourceTables
-	if len(srcTables) == 0 {
-		return nil, fmt.Errorf("source tables is not specified")
+	var srcTables []*bigqueryv2.TableReference
+	if table := job.Configuration.Copy.SourceTable; table != nil {
+		srcTables = append(srcTables, table)
+	} else if tables := job.Configuration.Copy.SourceTables; len(tables) > 0 {
+		srcTables = append(srcTables, tables...)
 	}
+	if len(srcTables) == 0 {
+		return nil, fmt.Errorf("source table is not specified")
+	}
+
 	dstTable := job.Configuration.Copy.DestinationTable
 	if dstTable == nil {
 		return nil, fmt.Errorf("destination table is not specified")
 	}
-	srcTable := srcTables[0] // TODO multiple source tables
 
+	var responses []*internaltypes.QueryResponse
+	var jobErr error
 	startTime := time.Now()
-
-	response, jobErr := r.server.contentRepo.Query(
-		ctx,
-		tx,
-		r.project.ID,
-		srcTable.DatasetId,
-		fmt.Sprintf("SELECT * FROM %s", srcTable.TableId),
-		nil,
-	)
+	for _, table := range srcTables {
+		response, err := r.server.contentRepo.Query(
+			ctx,
+			tx,
+			r.project.ID,
+			table.DatasetId,
+			fmt.Sprintf("SELECT * FROM %s", table.TableId),
+			nil,
+		)
+		if err != nil {
+			jobErr = err
+			break
+		}
+		responses = append(responses, response)
+	}
 	endTime := time.Now()
 
 	if job.JobReference.JobId == "" {
@@ -1410,7 +1423,8 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 	if jobErr == nil {
 		// insert results to destination table
 		tableRef := dstTable
-		tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+		// if jobErr == nil, at least one response is available
+		tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, responses[0])
 		if err != nil {
 			return nil, err
 		}
@@ -1433,9 +1447,17 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 				return nil, fmt.Errorf("failed to create table: %w", serverErr)
 			}
 		}
-		if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
-			return nil, fmt.Errorf("failed to add table data: %w", err)
+
+		for _, response := range responses {
+			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+				return nil, fmt.Errorf("failed to add table data: %w", err)
+			}
 		}
+
 	}
 
 	job.Kind = "bigquery#job"
@@ -1457,8 +1479,8 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 	}
 	job.Status = status
 	var totalBytes int64
-	if response != nil {
-		totalBytes = response.TotalBytes
+	for _, response := range responses {
+		totalBytes += response.TotalBytes
 	}
 	job.Statistics = &bigqueryv2.JobStatistics{
 		Query: &bigqueryv2.JobStatistics2{
@@ -1480,7 +1502,7 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 			r.project.ID,
 			job.JobReference.JobId,
 			job,
-			response,
+			responses[0],
 			jobErr,
 		),
 	); err != nil {
@@ -1490,9 +1512,11 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit job: %w", err)
 		}
-		if response != nil && response.ChangedCatalog.Changed() {
-			if err := syncCatalog(ctx, r.server, response.ChangedCatalog); err != nil {
-				return nil, err
+		for _, response := range responses {
+			if response.ChangedCatalog.Changed() {
+				if err := syncCatalog(ctx, r.server, response.ChangedCatalog); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
