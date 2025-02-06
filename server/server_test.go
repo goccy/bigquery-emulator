@@ -2653,3 +2653,79 @@ func TestInformationSchema(t *testing.T) {
 	})
 
 }
+
+func TestCopyTable(t *testing.T) {
+	t.Run("copy from same dataset", func(t *testing.T) {
+		ctx := context.Background()
+
+		const (
+			projectName = "test"
+			dataset     = "dataset1"
+			srcTable    = "table_a"
+			dstTable    = "table_a_copied"
+		)
+
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.SetProject(projectName); err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+			t.Fatal(err)
+		}
+
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Stop(ctx)
+		}()
+
+		client, err := bigquery.NewClient(
+			ctx,
+			projectName,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		src := client.Dataset(dataset).Table(srcTable)
+		dst := client.Dataset(dataset).Table(dstTable)
+		job, err := dst.CopierFrom(src).Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = status.Err(); err != nil {
+			t.Fatal(err)
+		}
+		it, err := client.Query("SELECT * FROM test.dataset1.table_a_copied").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var row []bigquery.Value
+		var response [][]bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+			response = append(response, row)
+		}
+		if len(response) != 2 {
+			t.Fatalf("2 rows are expected to be copied, but got %d", len(response))
+		}
+	})
+
+}

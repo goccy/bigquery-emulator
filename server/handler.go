@@ -1369,6 +1369,137 @@ func (h *jobsInsertHandler) exportToGCSWithObject(ctx context.Context, response 
 	return nil
 }
 
+func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+	job := r.job
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	defer tx.RollbackIfNotCommitted()
+
+	srcTables := job.Configuration.Copy.SourceTables
+	if len(srcTables) == 0 {
+		return nil, fmt.Errorf("source tables is not specified")
+	}
+	dstTable := job.Configuration.Copy.DestinationTable
+	if dstTable == nil {
+		return nil, fmt.Errorf("destination table is not specified")
+	}
+	srcTable := srcTables[0] // TODO multiple source tables
+
+	startTime := time.Now()
+
+	response, jobErr := r.server.contentRepo.Query(
+		ctx,
+		tx,
+		r.project.ID,
+		srcTable.DatasetId,
+		fmt.Sprintf("SELECT * FROM %s", srcTable.TableId),
+		nil,
+	)
+	endTime := time.Now()
+
+	if job.JobReference.JobId == "" {
+		job.JobReference.JobId = randomID() // generate job id
+	}
+	if jobErr == nil {
+		// insert results to destination table
+		tableRef := dstTable
+		tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+		if err != nil {
+			return nil, err
+		}
+		destinationDataset := r.project.Dataset(dstTable.DatasetId)
+
+		if destinationDataset == nil {
+			return nil, fmt.Errorf("failed to find destination dataset: %s", tableRef.DatasetId)
+		}
+		destinationTable := destinationDataset.Table(dstTable.TableId)
+		destinationTableExists := destinationTable != nil
+		if !destinationTableExists {
+			_, err := createTableMetadata(ctx, tx, r.server, r.project, destinationDataset, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to create table: %w", err)
+			}
+			serverErr := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
+
+			if serverErr != nil {
+				return nil, fmt.Errorf("failed to create table: %w", serverErr)
+			}
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+			return nil, fmt.Errorf("failed to add table data: %w", err)
+		}
+	}
+
+	job.Kind = "bigquery#job"
+	job.Configuration.JobType = "QUERY"
+	job.Configuration.Query = &bigqueryv2.JobConfigurationQuery{}
+	job.Configuration.Query.Priority = "INTERACTIVE"
+	job.SelfLink = fmt.Sprintf(
+		"http://%s/bigquery/v2/projects/%s/jobs/%s",
+		r.server.httpServer.Addr,
+		r.project.ID,
+		job.JobReference.JobId,
+	)
+
+	status := &bigqueryv2.JobStatus{State: "DONE"}
+	if jobErr != nil {
+		internalErr := errJobInternalError(jobErr.Error())
+		status.ErrorResult = internalErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
+	}
+	job.Status = status
+	var totalBytes int64
+	if response != nil {
+		totalBytes = response.TotalBytes
+	}
+	job.Statistics = &bigqueryv2.JobStatistics{
+		Query: &bigqueryv2.JobStatistics2{
+			CacheHit:            false,
+			StatementType:       "SELECT",
+			TotalBytesBilled:    totalBytes,
+			TotalBytesProcessed: totalBytes,
+		},
+		CreationTime:        startTime.Unix(),
+		StartTime:           startTime.Unix(),
+		EndTime:             endTime.Unix(),
+		TotalBytesProcessed: totalBytes,
+	}
+	if err := r.project.AddJob(
+		ctx,
+		tx.Tx(),
+		metadata.NewJob(
+			r.server.metaRepo,
+			r.project.ID,
+			job.JobReference.JobId,
+			job,
+			response,
+			jobErr,
+		),
+	); err != nil {
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if !job.Configuration.DryRun {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit job: %w", err)
+		}
+		if response != nil && response.ChangedCatalog.Changed() {
+			if err := syncCatalog(ctx, r.server, response.ChangedCatalog); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return job, nil
+}
+
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	job := r.job
 	if job.Configuration == nil {
@@ -1386,6 +1517,12 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			job, err := h.exportToGCS(ctx, r)
 			if err != nil {
 				return nil, fmt.Errorf("failed to export to gcs: %w", err)
+			}
+			return job, nil
+		} else if job.Configuration.Copy != nil {
+			job, err := h.copyTable(ctx, r)
+			if err != nil {
+				return nil, fmt.Errorf("failed to copy table: %w", err)
 			}
 			return job, nil
 		}
