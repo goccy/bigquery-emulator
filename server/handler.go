@@ -1435,10 +1435,30 @@ func (h *jobsInsertHandler) copyTable(ctx context.Context, r *jobsInsertRequest)
 		}
 		destinationTable := destinationDataset.Table(dstTable.TableId)
 		destinationTableExists := destinationTable != nil
+
+		// The default value of writeDisposition is WRITE_EMPTY.
+		if job.Configuration.Copy.WriteDisposition == "" {
+			job.Configuration.Copy.WriteDisposition = "WRITE_EMPTY"
+		}
+		if destinationTableExists && job.Configuration.Copy.WriteDisposition == "WRITE_EMPTY" {
+			return nil, errDuplicate(fmt.Sprintf("writeDisposition is set to 'WRITE_EMPTY' but the table %s already exists", dstTable.TableId))
+		}
+
+		if destinationTableExists && job.Configuration.Copy.WriteDisposition == "WRITE_TRUNCATE" {
+			// Delete the current destination table and its metadata
+			if err := destinationDataset.DeleteTable(ctx, tx.Tx(), tableRef.TableId); err != nil {
+				return nil, fmt.Errorf("failed to delete table metadata: %w", err)
+			}
+			if err := r.server.contentRepo.DeleteTables(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, []string{tableRef.TableId}); err != nil {
+				return nil, fmt.Errorf("failed to delete table: %w", err)
+			}
+			destinationTableExists = false
+		}
+
 		if !destinationTableExists {
 
 			if job.Configuration.Copy.CreateDisposition == "CREATE_NEVER" {
-				return nil, errNotFound(fmt.Sprintf("createDisposition is set to 'CREATE_NEVER' and the table %s does not exist", dstTable.TableId))
+				return nil, errNotFound(fmt.Sprintf("createDisposition is set to 'CREATE_NEVER' but the table %s does not exist", dstTable.TableId))
 			}
 
 			_, err := createTableMetadata(ctx, tx, r.server, r.project, destinationDataset, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))

@@ -2850,4 +2850,225 @@ func TestCopyTable(t *testing.T) {
 		}
 
 	})
+
+	t.Run("fail if writeDisposition is set to WRITE_EMPTY and the destination table already exists", func(t *testing.T) {
+		ctx := context.Background()
+
+		const (
+			projectName = "test"
+			dataset     = "dataset1"
+			srcTable    = "table_a"
+			dstTable    = "table_c"
+		)
+
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.SetProject(projectName); err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+			t.Fatal(err)
+		}
+
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Stop(ctx)
+		}()
+
+		client, err := bigquery.NewClient(
+			ctx,
+			projectName,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		src := client.Dataset(dataset).Table(srcTable)
+		dst := client.Dataset(dataset).Table(dstTable)
+		copier := dst.CopierFrom(src)
+		copier.WriteDisposition = bigquery.WriteEmpty
+
+		_, err = copier.Run(ctx)
+		if err == nil {
+			t.Fatal("The job must be failed")
+		}
+
+		it, err := client.Query("SELECT * FROM test.dataset1.table_c").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var row []bigquery.Value
+		var response [][]bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+			response = append(response, row)
+		}
+		// assert table_c is not modified
+		if len(response) != 3 {
+			t.Fatalf("the table must contain 3 rows, but got %d", len(response))
+		}
+	})
+
+	t.Run("the data is appended to the destination table if writeDisposition is set to WRITE_APPEND", func(t *testing.T) {
+		ctx := context.Background()
+
+		const (
+			projectName = "test"
+			dataset     = "dataset1"
+			srcTable    = "table_a"
+			dstTable    = "table_c"
+		)
+
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.SetProject(projectName); err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+			t.Fatal(err)
+		}
+
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Stop(ctx)
+		}()
+
+		client, err := bigquery.NewClient(
+			ctx,
+			projectName,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		src := client.Dataset(dataset).Table(srcTable)
+		dst := client.Dataset(dataset).Table(dstTable)
+		copier := dst.CopierFrom(src)
+		copier.WriteDisposition = bigquery.WriteAppend
+		job, err := copier.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = status.Err(); err != nil {
+			t.Fatal(err)
+		}
+		it, err := client.Query("SELECT * FROM test.dataset1.table_c").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var row []bigquery.Value
+		var response [][]bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+			response = append(response, row)
+		}
+		if len(response) != 5 {
+			t.Fatalf("The table must contain 5 (2+3) rows, but got %d", len(response))
+		}
+	})
+
+	t.Run("overwrite the data and the schema of the destination table if writeDisposition is set to WRITE_TRUNCATE", func(t *testing.T) {
+		ctx := context.Background()
+
+		const (
+			projectName = "test"
+			dataset     = "dataset1"
+			srcTable    = "table_a"
+			dstTable    = "table_b"
+		)
+
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.SetProject(projectName); err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+			t.Fatal(err)
+		}
+
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Stop(ctx)
+		}()
+
+		client, err := bigquery.NewClient(
+			ctx,
+			projectName,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		src := client.Dataset(dataset).Table(srcTable)
+		dst := client.Dataset(dataset).Table(dstTable)
+		copier := dst.CopierFrom(src)
+		copier.WriteDisposition = bigquery.WriteTruncate
+		job, err := copier.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = status.Err(); err != nil {
+			t.Fatal(err)
+		}
+		it, err := client.Query("SELECT * FROM test.dataset1.table_b").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var row []bigquery.Value
+		var response [][]bigquery.Value
+		for {
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			t.Log("row = ", row)
+			response = append(response, row)
+		}
+		if len(response) != 2 {
+			t.Fatalf("The table must contain 2 rows, but got %d", len(response))
+		}
+	})
 }
