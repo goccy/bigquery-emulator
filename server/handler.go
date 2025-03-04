@@ -263,11 +263,18 @@ func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
-	addr := server.httpServer.Addr
-	if !strings.HasPrefix(addr, "http") {
-		addr = "http://" + addr
-	}
-	addr = strings.TrimRight(addr, "/")
+
+	// We need to return a fully-qualified URL for the client to use as an
+	// upload endpoint. We can't get this from our server bind address, as
+	// it's usually 0.0.0.0 (IPADDR_ANY) which is not something that can be
+	// connected to. Instead, use the Host header to figure out where the
+	// client thinks it's connecting to and use that. This also handles the
+	// case where we're behind a NAT (e.g. in a container), as we don't
+	// otherwise know what our external name is.
+	//
+	// See https://github.com/goccy/bigquery-emulator/issues/160
+	addr := fmt.Sprintf("http://%s", r.Host)
+
 	w.Header().Add(
 		"Location",
 		fmt.Sprintf(
