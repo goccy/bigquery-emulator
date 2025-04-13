@@ -22,12 +22,14 @@ ENV CXX=clang++
 ENV CGO_CPPFLAGS="-fPIC"
 ENV CGO_CXXFLAGS="-fPIC"
 ARG TARGETPLATFORM
+ARG VERSION
+ARG REVISION
 
 RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
         export STATIC_LINK_FLAGS="-extldflags -static"; \
     fi \
     && go build -o /go/bin/bigquery-emulator \
-    -ldflags "-s -w -linkmode=external $STATIC_LINK_FLAGS" \
+    -ldflags "-s -w -X main.version=${VERSION} -X main.revision=${REVISION} -linkmode=external $STATIC_LINK_FLAGS" \
     ./cmd/bigquery-emulator
 
 
