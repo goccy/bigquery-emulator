@@ -524,7 +524,6 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 		status.rows = append(status.rows, data...)
 	}
 	return s.sendResult(stream, streamName, offset+int64(len(rows)))
-
 }
 
 func (s *storageWriteServer) sendResult(stream storagepb.BigQueryWrite_AppendRowsServer, streamName string, offset int64) error {
@@ -598,7 +597,37 @@ func (s *storageWriteServer) decodeProtoReflectValue(f protoreflect.FieldDescrip
 		}
 		return ret, nil
 	}
+
+	// The BigQuery SDK sends dynamic, well known types with underscore separators.
+	// They're also prefixed with a scope, so we have to check the suffix.
+	//
+	// BigQuery supports timestamps being int64 and [timestamppb.Timestamp]:
+	// https://cloud.google.com/bigquery/docs/supported-data-types
+	var fullName string
+	if f.Message() != nil {
+		fullName = string(f.Message().FullName())
+	}
+	if strings.HasSuffix(fullName, "google_protobuf_Timestamp") || strings.HasSuffix(fullName, "google.protobuf.Timestamp") {
+		return decodeTimestamp(v.Message().Interface())
+	}
 	return s.decodeProtoReflectValueFromKind(f.Kind(), v)
+}
+
+// decodeTimestamp unwraps a [timestamppb.Timestamp] wire-compatible message into the
+// underlying [time.Time]
+//
+// The message may be a [dynamicpb.Message] sent to us via the storage write API, so we
+// need a round-trip encode/decode for conversion.
+func decodeTimestamp(msg proto.Message) (interface{}, error) {
+	b, err := proto.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("encoding timestamppb.Timestamp: %w", err)
+	}
+	ts := new(timestamppb.Timestamp)
+	if err := proto.Unmarshal(b, ts); err != nil {
+		return nil, fmt.Errorf("decoding timestamppb.Timestamp: %w", err)
+	}
+	return ts.AsTime(), nil
 }
 
 func (s *storageWriteServer) decodeProtoReflectValueFromKind(kind protoreflect.Kind, v protoreflect.Value) (interface{}, error) {

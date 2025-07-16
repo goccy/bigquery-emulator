@@ -31,7 +31,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/goccy/bigquery-emulator/types"
 )
@@ -315,7 +322,6 @@ func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *st
 			undecoded := rows.GetAvroRows().GetSerializedBinaryRows()
 			for len(undecoded) > 0 {
 				datum, remainingBytes, err := codec.NativeFromBinary(undecoded)
-
 				if err != nil {
 					if err == io.EOF {
 						break
@@ -720,4 +726,154 @@ func generateExampleMessages(numMessages int) ([][]byte, error) {
 		msgs[i] = b
 	}
 	return msgs, nil
+}
+
+func TestStorageWriteDynamicDescriptor(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test"
+		tableID   = "sample"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						tableID,
+						[]*types.Column{
+							types.NewColumn("timestamp", types.TIMESTAMP),
+							types.NewColumn("msg", types.STRING),
+						},
+						nil,
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := managedwriter.NewClient(ctx, projectID, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	fullTableName := managedwriter.TableParentFromParts(
+		projectID,
+		datasetID,
+		tableID,
+	)
+
+	msgDesc, protoDesc := dynamicProtoDescriptors(t)
+	stream, err := client.NewManagedStream(
+		ctx,
+		managedwriter.WithDestinationTable(fullTableName),
+		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithSchemaDescriptor(protoDesc),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// [timestamppb.Timestamp] supports decoding from RFC3339 timestamps
+	msg := dynamicpb.NewMessage(msgDesc)
+	if err := protojson.Unmarshal(
+		[]byte(`{"timestamp": "2025-07-16T18:18:07-04:00", "msg": "hello"}`),
+		msg,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	row, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := stream.AppendRows(ctx, [][]byte{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.GetResult(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dynamicProtoDescriptors creates a protobuf at runtime, returning the message and
+// type descriptors.
+//
+// This is specifically needed to verify sending [timestamppb.Timestamp] values to the
+// storage write API for feature parity with BigQuery.
+func dynamicProtoDescriptors(t *testing.T) (protoreflect.MessageDescriptor, *descriptorpb.DescriptorProto) {
+	t.Helper()
+
+	scope := "test"
+	dp := &descriptorpb.DescriptorProto{
+		Name: proto.String(scope),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String("timestamp"),
+				Number:   proto.Int32(1),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String(".google.protobuf.Timestamp"),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum(),
+			},
+			{
+				Name:   proto.String("msg"),
+				Number: proto.Int32(2),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum(),
+			},
+		},
+	}
+	fdp := &descriptorpb.FileDescriptorProto{
+		MessageType: []*descriptorpb.DescriptorProto{dp},
+		Name:        proto.String(scope + ".proto"),
+		Syntax:      proto.String("proto2"),
+		Dependency: []string{
+			"google/protobuf/wrappers.proto",
+			"google/protobuf/timestamp.proto",
+		},
+	}
+
+	fdpList := []*descriptorpb.FileDescriptorProto{
+		fdp,
+		protodesc.ToFileDescriptorProto(wrapperspb.File_google_protobuf_wrappers_proto),
+		protodesc.ToFileDescriptorProto(timestamppb.File_google_protobuf_timestamp_proto),
+	}
+	fds := &descriptorpb.FileDescriptorSet{File: fdpList}
+
+	files, err := protodesc.NewFiles(fds)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := files.FindDescriptorByName(protoreflect.FullName(scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messageDescriptor := found.(protoreflect.MessageDescriptor)
+	protoDescriptor, err := adapt.NormalizeDescriptor(messageDescriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messageDescriptor, protoDescriptor
 }
