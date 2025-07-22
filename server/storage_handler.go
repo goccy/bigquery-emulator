@@ -614,7 +614,7 @@ func (s *storageWriteServer) decodeProtoReflectValue(f protoreflect.FieldDescrip
 }
 
 // decodeTimestamp unwraps a [timestamppb.Timestamp] wire-compatible message into the
-// underlying [time.Time]
+// underlying timestamp as microseconds.
 //
 // The message may be a [dynamicpb.Message] sent to us via the storage write API, so we
 // need a round-trip encode/decode for conversion.
@@ -627,7 +627,7 @@ func decodeTimestamp(msg proto.Message) (interface{}, error) {
 	if err := proto.Unmarshal(b, ts); err != nil {
 		return nil, fmt.Errorf("decoding timestamppb.Timestamp: %w", err)
 	}
-	return ts.AsTime(), nil
+	return ts.UnixNano() / 1000, nil
 }
 
 func (s *storageWriteServer) decodeProtoReflectValueFromKind(kind protoreflect.Kind, v protoreflect.Value) (interface{}, error) {
