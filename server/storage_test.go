@@ -877,3 +877,84 @@ func dynamicProtoDescriptors(t *testing.T) (protoreflect.MessageDescriptor, *des
 	}
 	return messageDescriptor, protoDescriptor
 }
+
+// TestNestedTimestamp ensures that rows with record columns that contain timestamps
+// are appropriately formatted to be handled by the Google SDK
+func TestNestedTimestamp(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test"
+		tableID   = "sample"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						tableID,
+						[]*types.Column{
+							types.NewColumn("timestamp", types.TIMESTAMP),
+							types.NewColumn(
+								"nested",
+								types.RECORD,
+								types.ColumnFields(
+									types.NewColumn("timestamp", types.TIMESTAMP),
+								),
+							),
+						},
+						nil,
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetID).Table(tableID)
+
+	type Nested struct {
+		Timestamp time.Time `bigquery:"timestamp"`
+	}
+	type Row struct {
+		Timestamp time.Time `bigquery:"timestamp"`
+		Nested    Nested    `bigquery:"nested"`
+	}
+
+	t1 := time.Now()
+	row := Row{Timestamp: t1, Nested: Nested{Timestamp: t1}}
+	if err := table.Inserter().Put(ctx, &row); err != nil {
+		t.Fatal(err)
+	}
+
+	it := table.Read(ctx)
+
+	var row2 Row
+	if err := it.Next(&row2); err != nil {
+		t.Fatal(err)
+	}
+}

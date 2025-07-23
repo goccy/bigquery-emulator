@@ -627,7 +627,7 @@ func decodeTimestamp(msg proto.Message) (interface{}, error) {
 	if err := proto.Unmarshal(b, ts); err != nil {
 		return nil, fmt.Errorf("decoding timestamppb.Timestamp: %w", err)
 	}
-	return ts.UnixNano() / 1000, nil
+	return ts.AsTime().UnixNano() / 1000, nil
 }
 
 func (s *storageWriteServer) decodeProtoReflectValueFromKind(kind protoreflect.Kind, v protoreflect.Value) (interface{}, error) {
