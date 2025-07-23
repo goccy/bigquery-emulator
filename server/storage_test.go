@@ -946,15 +946,26 @@ func TestNestedTimestamp(t *testing.T) {
 	}
 
 	t1 := time.Now()
-	row := Row{Timestamp: t1, Nested: Nested{Timestamp: t1}}
-	if err := table.Inserter().Put(ctx, &row); err != nil {
+	expected := Row{Timestamp: t1, Nested: Nested{Timestamp: t1}}
+	if err := table.Inserter().Put(ctx, &expected); err != nil {
 		t.Fatal(err)
 	}
 
 	it := table.Read(ctx)
 
-	var row2 Row
-	if err := it.Next(&row2); err != nil {
+	var got Row
+	if err := it.Next(&got); err != nil {
 		t.Fatal(err)
+	}
+
+	if !expected.Timestamp.Equal(got.Timestamp) {
+		t.Fatalf("expected timestamp %q, got %q", expected.Timestamp, got.Timestamp)
+	}
+	if !expected.Nested.Timestamp.Equal(got.Nested.Timestamp) {
+		t.Fatalf(
+			"expected nested.timestamp %q, got %q",
+			expected.Nested.Timestamp,
+			got.Nested.Timestamp,
+		)
 	}
 }
