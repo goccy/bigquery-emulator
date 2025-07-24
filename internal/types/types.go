@@ -2,7 +2,6 @@ package types
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
@@ -212,8 +211,13 @@ func formatCell(schema *bigqueryv2.TableFieldSchema, cell *TableCell) *TableCell
 		}
 		return cell
 	case "TIMESTAMP":
-		t, _ := zetasqlite.TimeFromTimestampValue(cell.V.(string))
-		microsec := t.UnixNano() / int64(time.Microsecond)
+		s, ok := cell.V.(string)
+		if !ok {
+			return cell
+		}
+		t, _ := zetasqlite.TimeFromTimestampValue(s)
+
+		microsec := t.UnixMicro()
 		return &TableCell{
 			V: fmt.Sprint(microsec),
 		}
