@@ -84,7 +84,7 @@ func New(storage Storage) (*Server, error) {
 	r.Handle(uploadAPIEndpoint, &uploadContentHandler{}).Methods("PUT")
 	r.PathPrefix("/").Handler(&defaultHandler{})
 	r.Use(sequentialAccessMiddleware())
-	// r.Use(recoveryMiddleware(server))
+	r.Use(recoveryMiddleware(server))
 	r.Use(loggerMiddleware(server))
 	r.Use(accessLogMiddleware())
 	r.Use(decompressMiddleware())
