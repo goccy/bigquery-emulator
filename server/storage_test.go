@@ -735,84 +735,122 @@ func TestStorageWriteDynamicDescriptor(t *testing.T) {
 		tableID   = "sample"
 	)
 
-	ctx := context.Background()
-	bqServer, err := server.New(server.TempStorage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bqServer.Load(
-		server.StructSource(
-			types.NewProject(
-				projectID,
-				types.NewDataset(
-					datasetID,
-					types.NewTable(
-						tableID,
-						[]*types.Column{
-							types.NewColumn("timestamp", types.TIMESTAMP),
-							types.NewColumn("msg", types.STRING),
-						},
-						nil,
+	// Ensure that the zero value and populated timestamps round-trip the way we expect
+	testTimestamps := []time.Time{{}, time.Now()}
+	for _, expected := range testTimestamps {
+		ctx := context.Background()
+		bqServer, err := server.New(server.TempStorage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bqServer.Load(
+			server.StructSource(
+				types.NewProject(
+					projectID,
+					types.NewDataset(
+						datasetID,
+						types.NewTable(
+							tableID,
+							[]*types.Column{
+								types.NewColumn("timestamp", types.TIMESTAMP),
+								types.NewColumn("msg", types.STRING),
+							},
+							nil,
+						),
 					),
 				),
 			),
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	testServer := bqServer.TestServer()
-	defer func() {
-		testServer.Close()
-		bqServer.Close()
-	}()
-	opts, err := testServer.GRPCClientOptions(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+		); err != nil {
+			t.Fatal(err)
+		}
+		testServer := bqServer.TestServer()
+		defer func() {
+			testServer.Close()
+			bqServer.Close()
+		}()
+		opts, err := testServer.GRPCClientOptions(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	client, err := managedwriter.NewClient(ctx, projectID, opts...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
+		client, err := managedwriter.NewClient(ctx, projectID, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
 
-	fullTableName := managedwriter.TableParentFromParts(
-		projectID,
-		datasetID,
-		tableID,
-	)
+		fullTableName := managedwriter.TableParentFromParts(
+			projectID,
+			datasetID,
+			tableID,
+		)
 
-	msgDesc, protoDesc := dynamicProtoDescriptors(t)
-	stream, err := client.NewManagedStream(
-		ctx,
-		managedwriter.WithDestinationTable(fullTableName),
-		managedwriter.WithType(managedwriter.DefaultStream),
-		managedwriter.WithSchemaDescriptor(protoDesc),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+		msgDesc, protoDesc := dynamicProtoDescriptors(t)
+		stream, err := client.NewManagedStream(
+			ctx,
+			managedwriter.WithDestinationTable(fullTableName),
+			managedwriter.WithType(managedwriter.DefaultStream),
+			managedwriter.WithSchemaDescriptor(protoDesc),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	// [timestamppb.Timestamp] supports decoding from RFC3339 timestamps
-	msg := dynamicpb.NewMessage(msgDesc)
-	if err := protojson.Unmarshal(
-		[]byte(`{"timestamp": "2025-07-16T18:18:07-04:00", "msg": "hello"}`),
-		msg,
-	); err != nil {
-		t.Fatal(err)
-	}
+		bqc, err := bigquery.NewClient(
+			ctx,
+			projectID,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = bqc.Close()
+		})
 
-	row, err := proto.Marshal(msg)
-	if err != nil {
-		t.Fatal(err)
-	}
+		payload := fmt.Appendf(nil,
+			`{"timestamp": "%s", "msg": "hello"}`,
+			expected.Format(time.RFC3339Nano),
+		)
+		msg := dynamicpb.NewMessage(msgDesc)
+		if err := protojson.Unmarshal(payload, msg); err != nil {
+			t.Fatal(err)
+		}
 
-	res, err := stream.AppendRows(ctx, [][]byte{row})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := res.GetResult(ctx); err != nil {
-		t.Fatal(err)
+		row, err := proto.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := stream.AppendRows(ctx, [][]byte{row})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := res.GetResult(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		// Ensure the value retrieved is the value written
+		table := bqc.Dataset(datasetID).Table(tableID)
+		it := table.Read(ctx)
+
+		got := map[string]bigquery.Value{}
+		if err := it.Next(&got); err != nil {
+			t.Fatal(err)
+		}
+
+		ts, ok := got["timestamp"]
+		if !ok {
+			t.Fatalf("expected 'timestamp' in map, got %+v", got)
+		}
+		gotTime, ok := ts.(time.Time)
+		if !ok {
+			t.Fatalf("expected 'time.Time', got %T", ts)
+		}
+		if !gotTime.Equal(expected) {
+			t.Fatalf("expected %v, got %v", expected, gotTime)
+		}
 	}
 }
 
@@ -907,6 +945,7 @@ func TestNestedTimestamp(t *testing.T) {
 								types.RECORD,
 								types.ColumnFields(
 									types.NewColumn("timestamp", types.TIMESTAMP),
+									types.NewColumn("id", types.STRING),
 								),
 							),
 						},
@@ -939,14 +978,14 @@ func TestNestedTimestamp(t *testing.T) {
 
 	type Nested struct {
 		Timestamp time.Time `bigquery:"timestamp"`
+		ID        string    `bigquery:"id"`
 	}
 	type Row struct {
 		Timestamp time.Time `bigquery:"timestamp"`
 		Nested    Nested    `bigquery:"nested"`
 	}
 
-	t1 := time.Now()
-	expected := Row{Timestamp: t1, Nested: Nested{Timestamp: t1}}
+	expected := Row{Timestamp: time.Now(), Nested: Nested{Timestamp: time.Time{}, ID: "123"}}
 	if err := table.Inserter().Put(ctx, &expected); err != nil {
 		t.Fatal(err)
 	}
@@ -966,6 +1005,13 @@ func TestNestedTimestamp(t *testing.T) {
 			"expected nested.timestamp %q, got %q",
 			expected.Nested.Timestamp,
 			got.Nested.Timestamp,
+		)
+	}
+	if expected.Nested.ID != got.Nested.ID {
+		t.Fatalf(
+			"expected nested.id %q, got %q",
+			expected.Nested.ID,
+			got.Nested.ID,
 		)
 	}
 }
