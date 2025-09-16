@@ -86,10 +86,11 @@ const (
 )
 
 type Column struct {
-	Name   string    `yaml:"name" validate:"required"`
-	Type   Type      `yaml:"type" validate:"type"`
-	Mode   Mode      `yaml:"mode" validate:"mode"`
-	Fields []*Column `yaml:"fields"`
+	Name                   string    `yaml:"name" validate:"required"`
+	Type                   Type      `yaml:"type" validate:"type"`
+	Mode                   Mode      `yaml:"mode" validate:"mode"`
+	Fields                 []*Column `yaml:"fields"`
+	DefaultValueExpression string    `yaml:"defaultValueExpression,omitempty"`
 }
 
 func (c *Column) FormatType() string {
@@ -118,9 +119,10 @@ func (c *Column) TableFieldSchema() *bigqueryv2.TableFieldSchema {
 func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
 	if len(c.Fields) == 0 {
 		return &bigqueryv2.TableFieldSchema{
-			Name: c.Name,
-			Type: string(c.Type.FieldType()),
-			Mode: string(c.Mode),
+			Name:                   c.Name,
+			Type:                   string(c.Type.FieldType()),
+			Mode:                   string(c.Mode),
+			DefaultValueExpression: c.DefaultValueExpression,
 		}
 	}
 	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(c.Fields))
@@ -128,10 +130,11 @@ func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
 		fields = append(fields, tableFieldSchemaFromColumn(field))
 	}
 	return &bigqueryv2.TableFieldSchema{
-		Name:   c.Name,
-		Type:   string(c.Type.FieldType()),
-		Fields: fields,
-		Mode:   string(c.Mode),
+		Name:                   c.Name,
+		Type:                   string(c.Type.FieldType()),
+		Fields:                 fields,
+		Mode:                   string(c.Mode),
+		DefaultValueExpression: c.DefaultValueExpression,
 	}
 }
 
@@ -519,10 +522,11 @@ func NewColumnWithSchema(s *bigqueryv2.TableFieldSchema) *Column {
 		fields = append(fields, NewColumnWithSchema(field))
 	}
 	return &Column{
-		Name:   s.Name,
-		Type:   Type(s.Type),
-		Mode:   Mode(s.Mode),
-		Fields: fields,
+		Name:                   s.Name,
+		Type:                   Type(s.Type),
+		Mode:                   Mode(s.Mode),
+		Fields:                 fields,
+		DefaultValueExpression: s.DefaultValueExpression,
 	}
 }
 
