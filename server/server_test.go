@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -281,6 +282,127 @@ func TestJob(t *testing.T) {
 	}
 	if jobs := findJobs(t, ctx, client); len(jobs) != 1 {
 		t.Fatalf("failed to find jobs. expected 1 jobs but found %d jobs", len(jobs))
+	}
+}
+
+type JSONTableSaver struct {
+	JsonColumn map[string]bigquery.Value
+}
+
+// Save implements the bigquery.ValueSaver interface to serialize the "json_column" field as JSON string.
+func (s *JSONTableSaver) Save() (row map[string]bigquery.Value, insertID string, err error) {
+	attr, err := json.Marshal(s.JsonColumn)
+	if err != nil {
+		return nil, "", err
+	}
+
+	row = map[string]bigquery.Value{
+		"json_column": string(attr),
+	}
+
+	return row, "1", nil
+}
+
+func TestJson(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+
+	project := types.NewProject("test",
+		types.NewDataset("dataset",
+			types.NewTable("table_a", []*types.Column{
+				{Name: "json_column", Type: "JSON", Mode: "REQUIRED"},
+			}, nil,
+			),
+		),
+	)
+
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	saver := &JSONTableSaver{JsonColumn: map[string]bigquery.Value{
+		"a_date":  "2024-01-01",
+		"b_float": 1.2,
+		"c_nested": map[string]bigquery.Value{
+			"test": "struct value",
+		},
+		"d_list": []bigquery.Value{
+			"list item",
+			"list item",
+		},
+	}}
+
+	table := client.Dataset("dataset").Table("table_a")
+	if err := table.Inserter().Put(ctx, saver); err != nil {
+		t.Fatal(err)
+	}
+
+	query := client.Query(`SELECT
+		JSON_VALUE(json_column, "$.a_date") AS a_date,
+		JSON_VALUE(json_column, "$.b_float") AS b_float,
+		JSON_VALUE(json_column, "$.c_nested.test") AS c_nested,
+		JSON_VALUE(json_column, "$.d_list[0]") AS d_list,
+	FROM dataset.table_a`)
+	iter, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rows [][]bigquery.Value
+	for {
+		var row []bigquery.Value
+		if err := iter.Next(&row); err != nil {
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 rows, got [%d]", len(rows))
+	}
+	for _, row := range rows {
+		if row[0] != "2024-01-01" {
+			t.Fatalf(`expected ["2024-01-01"] but got [%s]`, row[0])
+		}
+		if row[1] != "1.2" {
+			t.Fatalf(`expected ["1.2"] but got [%s]`, row[1])
+		}
+		if row[2] != "struct value" {
+			t.Fatalf(`expected ["struct value"] but got [%s]`, row[2])
+		}
+		if row[3] != "list item" {
+			t.Fatalf(`expected ["list item"] but got [%s]`, row[2])
+		}
 	}
 }
 
