@@ -91,7 +91,12 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	}
 	fields := make([]string, 0, len(table.Schema.Fields))
 	for _, field := range table.Schema.Fields {
-		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, r.encodeSchemaField(field)))
+		columnDef := fmt.Sprintf("`%s` %s", field.Name, r.encodeSchemaField(field))
+
+		if field.DefaultValueExpression != "" {
+			columnDef = fmt.Sprintf("%s DEFAULT %s", columnDef, field.DefaultValueExpression)
+		}
+		fields = append(fields, columnDef)
 	}
 	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", tablePath, strings.Join(fields, ","))
