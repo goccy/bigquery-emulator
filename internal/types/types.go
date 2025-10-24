@@ -2,7 +2,6 @@ package types
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
@@ -192,19 +191,37 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 	for _, row := range rows {
 		cells := make([]*TableCell, 0, len(row.F))
 		for colIdx, cell := range row.F {
-			if schema.Fields[colIdx].Type == "TIMESTAMP" && cell.V != nil {
-				t, _ := zetasqlite.TimeFromTimestampValue(cell.V.(string))
-				microsec := t.UnixNano() / int64(time.Microsecond)
-				cells = append(cells, &TableCell{
-					V: fmt.Sprint(microsec),
-				})
-			} else {
-				cells = append(cells, cell)
-			}
+			cells = append(cells, formatCell(schema.Fields[colIdx], cell))
 		}
 		formattedRows = append(formattedRows, &TableRow{
 			F: cells,
 		})
 	}
 	return formattedRows
+}
+
+// formatCell recursively formats timestamp cells as microseconds to match what the
+// client libraries expect
+func formatCell(schema *bigqueryv2.TableFieldSchema, cell *TableCell) *TableCell {
+	switch schema.Type {
+	case "RECORD":
+		tr, _ := cell.V.(TableRow)
+		for i, innerCell := range tr.F {
+			tr.F[i] = formatCell(schema.Fields[i], innerCell)
+		}
+		return cell
+	case "TIMESTAMP":
+		s, ok := cell.V.(string)
+		if !ok {
+			return cell
+		}
+		t, _ := zetasqlite.TimeFromTimestampValue(s)
+
+		microsec := t.UnixMicro()
+		return &TableCell{
+			V: fmt.Sprint(microsec),
+		}
+	default:
+		return cell
+	}
 }
