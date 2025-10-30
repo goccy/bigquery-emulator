@@ -593,6 +593,11 @@ func (h *datasetsDeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset:        dataset,
 		deleteContents: isDeleteContents(r),
 	}); err != nil {
+		if errors.Is(err, metadata.ErrDatasetInUse) {
+			errorResponse(ctx, w, errResourceInUse(err.Error()))
+			return
+		}
+
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
@@ -615,7 +620,7 @@ func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteReq
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.project.DeleteDataset(ctx, tx.Tx(), r.dataset.ID); err != nil {
+	if err := r.project.DeleteDataset(ctx, tx.Tx(), r.dataset.ID, r.deleteContents); err != nil {
 		return fmt.Errorf("failed to delete dataset: %w", err)
 	}
 	if r.deleteContents {
@@ -680,7 +685,13 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		project: project,
 		dataset: &dataset,
 	})
+
 	if err != nil {
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			errorResponse(ctx, w, errDuplicate(err.Error()))
+			return
+		}
+
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
