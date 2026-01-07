@@ -10,10 +10,7 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY cmd ./cmd
-COPY internal ./internal
-COPY server ./server
-COPY types ./types
+COPY . ./
 
 ENV CGO_ENABLED=1
 ENV CC=clang
