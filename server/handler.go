@@ -2742,31 +2742,66 @@ type tablesPatchRequest struct {
 }
 
 func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	encodedTableData, err := json.Marshal(r.newTable)
-	if err != nil {
-		return nil, err
-	}
-	var tableMetadata map[string]interface{}
-	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
-		return nil, err
-	}
-
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
-		return nil, err
+
+	// 1. Apply patch to metadata
+	encodedTableData, err := json.Marshal(r.newTable)
+	if err != nil {
+		return nil, errInternalError(err.Error())
 	}
+	var patchMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &patchMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	if err := r.table.Update(ctx, tx.Tx(), patchMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+
+	// 2. Get updated content
+	table, err := r.table.Content()
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+
+	// 3. If it's a view, re-evaluate schema and update query engine
+	if table.View != nil {
+		// Re-evaluate schema
+		if response, err := r.server.contentRepo.Query(
+			ctx,
+			tx,
+			r.project.ID,
+			r.dataset.ID,
+			fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
+			nil,
+		); err == nil {
+			table.Schema = response.Schema
+			// Update metadata again with new schema
+			encodedTableData, _ := json.Marshal(table)
+			var updatedMetadata map[string]interface{}
+			json.Unmarshal(encodedTableData, &updatedMetadata)
+			if err := r.table.Update(ctx, tx.Tx(), updatedMetadata); err != nil {
+				return nil, errInternalError(err.Error())
+			}
+		}
+
+		// Update view in query engine
+		if err := r.server.contentRepo.UpdateView(ctx, tx, table); err != nil {
+			return nil, errInternalError(err.Error())
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
-	return r.table.Content()
+	return table, nil
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
