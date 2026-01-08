@@ -1391,7 +1391,6 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		}
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
-	fmt.Printf("jobsInsertHandler: projectID=%s, query=%s\n", r.project.ID, job.Configuration.Query.Query)
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -1740,7 +1739,6 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		r.queryRequest.QueryParameters,
 	)
 	if err != nil {
-		fmt.Printf("jobsQueryHandler: query failed: %v\n", err)
 		return nil, err
 	}
 	if !r.queryRequest.DryRun {
