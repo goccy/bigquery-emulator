@@ -25,35 +25,67 @@ type Dataset struct {
 	Routines []*Routine `yaml:"routines"`
 }
 
+type View struct {
+	Query        string `yaml:"query"`
+	UseLegacySql bool   `yaml:"useLegacySql"`
+}
+
 type Table struct {
 	ID       string                 `yaml:"id" validate:"required"`
-	Columns  []*Column              `yaml:"columns" validate:"required"`
+	Columns  []*Column              `yaml:"columns"`
+	View     *View                  `yaml:"view"`
 	Data     Data                   `yaml:"data"`
 	Metadata map[string]interface{} `yaml:"metadata"`
 }
 
 func (t *Table) ToBigqueryV2(projectID, datasetID string) *bigqueryv2.Table {
-	fields := make([]*bigqueryv2.TableFieldSchema, len(t.Columns))
-	for i, col := range t.Columns {
-		fields[i] = col.TableFieldSchema()
+	var table bigqueryv2.Table
+	if t.Metadata != nil {
+		encoded, _ := json.Marshal(t.Metadata)
+		_ = json.Unmarshal(encoded, &table)
 	}
-	now := time.Now().Unix()
-	return &bigqueryv2.Table{
-		Type: "TABLE",
-		Kind: "bigquery#table",
-		Id:   fmt.Sprintf("%s:%s.%s", projectID, datasetID, t.ID),
-		TableReference: &bigqueryv2.TableReference{
+
+	if table.TableReference == nil {
+		table.TableReference = &bigqueryv2.TableReference{
 			ProjectId: projectID,
 			DatasetId: datasetID,
 			TableId:   t.ID,
-		},
-		Schema: &bigqueryv2.TableSchema{
-			Fields: fields,
-		},
-		NumRows:          uint64(len(t.Data)),
-		CreationTime:     now,
-		LastModifiedTime: uint64(now),
+		}
 	}
+	if table.Type == "" {
+		table.Type = "TABLE"
+	}
+	if table.Kind == "" {
+		table.Kind = "bigquery#table"
+	}
+	if table.Id == "" {
+		table.Id = fmt.Sprintf("%s:%s.%s", projectID, datasetID, t.ID)
+	}
+	if table.Schema == nil && len(t.Columns) > 0 {
+		fields := make([]*bigqueryv2.TableFieldSchema, len(t.Columns))
+		for i, col := range t.Columns {
+			fields[i] = col.TableFieldSchema()
+		}
+		table.Schema = &bigqueryv2.TableSchema{
+			Fields: fields,
+		}
+	}
+	if table.View == nil && t.View != nil {
+		table.Type = "VIEW"
+		table.View = &bigqueryv2.ViewDefinition{
+			Query:        t.View.Query,
+			UseLegacySql: t.View.UseLegacySql,
+		}
+	}
+	now := time.Now().Unix()
+	if table.CreationTime == 0 {
+		table.CreationTime = now
+	}
+	if table.LastModifiedTime == 0 {
+		table.LastModifiedTime = uint64(now)
+	}
+	table.NumRows = uint64(len(t.Data))
+	return &table
 }
 
 func (t *Table) SetupMetadata(projectID, datasetID string) {

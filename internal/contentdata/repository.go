@@ -170,6 +170,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	)
 	rows, err := tx.Tx().QueryContext(ctx, query, values...)
 	if err != nil {
+		fmt.Printf("Query failed: %s, error: %v\n", query, err)
 		return nil, err
 	}
 	defer rows.Close()

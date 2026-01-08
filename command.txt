@@ -1,0 +1,5 @@
+# Build the docker image
+make docker/build
+
+# Run the docker container
+docker run -p 9050:9050 -p 9060:9060 bigquery-emulator --project=test

@@ -1391,6 +1391,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		}
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
+	fmt.Printf("jobsInsertHandler: projectID=%s, query=%s\n", r.project.ID, job.Configuration.Query.Query)
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -1720,6 +1721,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if r.queryRequest.DefaultDataset != nil {
 		datasetID = r.queryRequest.DefaultDataset.DatasetId
 	}
+	fmt.Printf("jobsQueryHandler: projectID=%s, datasetID=%s, query=%s\n", r.project.ID, datasetID, r.queryRequest.Query)
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
 	if err != nil {
 		return nil, err
@@ -1733,11 +1735,12 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		ctx,
 		tx,
 		r.project.ID,
-		datasetID,
+		"",
 		r.queryRequest.Query,
 		r.queryRequest.QueryParameters,
 	)
 	if err != nil {
+		fmt.Printf("jobsQueryHandler: query failed: %v\n", err)
 		return nil, err
 	}
 	if !r.queryRequest.DryRun {
@@ -2576,6 +2579,18 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 	table.Type = string(DefaultTableType) // TODO: need to handle other table types
 	if table.View != nil {
 		table.Type = string(ViewTableType)
+		if table.Schema == nil {
+			if response, err := server.contentRepo.Query(
+				ctx,
+				tx,
+				project.ID,
+				dataset.ID,
+				fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
+				nil,
+			); err == nil {
+				table.Schema = response.Schema
+			}
+		}
 	}
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
@@ -2627,7 +2642,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if serverErr != nil {
 		return nil, serverErr
 	}
-	if r.table.Schema != nil {
+	if r.table.Schema != nil && r.table.View == nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			return nil, errInternalError(err.Error())
 		}
@@ -2751,7 +2766,7 @@ func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.newTable, nil
+	return r.table.Content()
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
