@@ -1513,10 +1513,79 @@ func syncCatalog(ctx context.Context, server *Server, cat *zetasqlite.ChangedCat
 			return err
 		}
 	}
+	for _, table := range cat.Table.Updated {
+		if err := updateTableMetadata(ctx, server, table); err != nil {
+			return err
+		}
+	}
 	for _, table := range cat.Table.Deleted {
 		if err := deleteTableMetadata(ctx, server, table); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func updateTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.TableSpec) error {
+	if len(spec.NamePath) != 3 {
+		return fmt.Errorf("unexpected table name path: %v", spec.NamePath)
+	}
+	projectID := spec.NamePath[0]
+	datasetID := spec.NamePath[1]
+	tableID := spec.NamePath[2]
+	project, err := server.metaRepo.FindProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	dataset := project.Dataset(datasetID)
+	if dataset == nil {
+		return fmt.Errorf("dataset %s is not found", datasetID)
+	}
+	existingTable := dataset.Table(tableID)
+	if existingTable == nil {
+		// Table doesn't exist, treat as add
+		return addTableMetadata(ctx, server, spec)
+	}
+	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(spec.Columns))
+	for _, column := range spec.Columns {
+		zetasqlType, err := column.Type.ToZetaSQLType()
+		if err != nil {
+			return err
+		}
+		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(column.Name, zetasqlType))
+	}
+	conn, err := server.connMgr.Connection(ctx, projectID, datasetID)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
+
+	// Update the table metadata
+	table := &bigqueryv2.Table{
+		TableReference: &bigqueryv2.TableReference{
+			ProjectId: projectID,
+			DatasetId: datasetID,
+			TableId:   tableID,
+		},
+		Schema: &bigqueryv2.TableSchema{Fields: fields},
+	}
+	encodedTableData, err := json.Marshal(table)
+	if err != nil {
+		return err
+	}
+	var tableMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+		return err
+	}
+	if err := existingTable.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1553,15 +1622,42 @@ func addTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.Tabl
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
-		TableReference: &bigqueryv2.TableReference{
-			ProjectId: projectID,
-			DatasetId: datasetID,
-			TableId:   tableID,
-		},
-		Schema: &bigqueryv2.TableSchema{Fields: fields},
-	}); err != nil {
-		return err
+
+	// Check if the table/view already exists (for CREATE OR REPLACE scenarios)
+	existingTable := dataset.Table(tableID)
+	if existingTable != nil {
+		// Table already exists, update its metadata instead of creating new
+		table := &bigqueryv2.Table{
+			TableReference: &bigqueryv2.TableReference{
+				ProjectId: projectID,
+				DatasetId: datasetID,
+				TableId:   tableID,
+			},
+			Schema: &bigqueryv2.TableSchema{Fields: fields},
+		}
+		encodedTableData, err := json.Marshal(table)
+		if err != nil {
+			return err
+		}
+		var tableMetadata map[string]interface{}
+		if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+			return err
+		}
+		if err := existingTable.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+			return err
+		}
+	} else {
+		// Table doesn't exist, create new metadata
+		if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
+			TableReference: &bigqueryv2.TableReference{
+				ProjectId: projectID,
+				DatasetId: datasetID,
+				TableId:   tableID,
+			},
+			Schema: &bigqueryv2.TableSchema{Fields: fields},
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
