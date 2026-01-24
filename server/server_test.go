@@ -2545,6 +2545,63 @@ func TestMultipleProject(t *testing.T) {
 	}
 }
 
+func TestListProjects(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(types.NewProject("project1")),
+		server.StructSource(types.NewProject("project2")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	httpClient := &http.Client{}
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/bigquery/v2/projects", testServer.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected status 200, got %d: %s", res.StatusCode, string(body))
+	}
+
+	var projectList bigqueryv2.ProjectList
+	if err := json.NewDecoder(res.Body).Decode(&projectList); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(projectList.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projectList.Projects))
+	}
+
+	for _, p := range projectList.Projects {
+		if p.Id == "" {
+			t.Error("Id should not be empty")
+		}
+		if p.NumericId == 0 {
+			t.Error("NumericId should not be zero")
+		}
+		if p.FriendlyName == "" {
+			t.Error("FriendlyName should not be empty")
+		}
+	}
+}
+
 func TestInformationSchema(t *testing.T) {
 	const (
 		projectID    = "test"

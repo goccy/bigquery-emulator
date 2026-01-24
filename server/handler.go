@@ -1966,9 +1966,11 @@ func (h *projectsListHandler) Handle(ctx context.Context, r *projectsListRequest
 	}
 
 	projectList := []*bigqueryv2.ProjectListProjects{}
-	for _, p := range projects {
+	for i, p := range projects {
 		projectList = append(projectList, &bigqueryv2.ProjectListProjects{
-			Id: p.ID,
+			Id:           p.ID,
+			NumericId:    uint64(i + 1),
+			FriendlyName: p.ID,
 		})
 	}
 	return &bigqueryv2.ProjectList{
