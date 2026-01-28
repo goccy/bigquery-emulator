@@ -818,6 +818,161 @@ func TestView(t *testing.T) {
 	}
 }
 
+func TestDuplicateJob(t *testing.T) {
+	const (
+		projectName = "testProject"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer client.Close()
+
+	query := client.Query("")
+	query.JobID = "test-job-id"
+
+	if _, err := query.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := query.Run(ctx); err != nil {
+		ge := err.(*googleapi.Error)
+		if ge.Code != 409 {
+			t.Fatalf("%+v", ge)
+		}
+	} else {
+		t.Fatalf("There should be error, when dataset name duplicates")
+	}
+}
+
+func TestDuplicateDataset(t *testing.T) {
+	const (
+		projectName = "testProject"
+		datasetName = "testDataset"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	dataset := client.Dataset(datasetName)
+	if err := dataset.Create(ctx, nil); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if err := dataset.Create(ctx, nil); err != nil {
+		ge := err.(*googleapi.Error)
+		if ge.Code != 409 {
+			t.Fatalf("%+v", ge)
+		}
+	} else {
+		t.Fatalf("There should be error, when dataset name duplicates")
+	}
+}
+
+func TestDuplicateDatasetWithMetadata(t *testing.T) {
+	const (
+		projectName = "testProject"
+		datasetName = "testDataset"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	dataset := client.Dataset(datasetName)
+	metaData := &bigquery.DatasetMetadata{
+		Name:        datasetName,
+		Description: "dataset test description",
+		Location:    "Tokyo",
+		Labels:      map[string]string{"aaa": "bbb"},
+	}
+	if err := dataset.Create(ctx, metaData); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if err := dataset.Create(ctx, metaData); err != nil {
+		ge := err.(*googleapi.Error)
+		if ge.Code != 409 {
+			t.Fatalf("%+v", ge)
+		}
+	} else {
+		t.Fatalf("There should be error, when dataset name duplicates")
+	}
+
+}
+
 func TestDuplicateTable(t *testing.T) {
 	const (
 		projectName = "test"
