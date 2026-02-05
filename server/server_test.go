@@ -2450,6 +2450,61 @@ ORDER BY qty DESC;`)
 	if rowCount != 1 {
 		t.Fatal("failed to get result")
 	}
+
+	query = client.Query("SELECT * FROM `test.test_dataset.test_table` WHERE @parameter IS NULL OR 'target text' = @parameter")
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name: "parameter",
+			Value: &bigquery.QueryParameterValue{
+				Type: bigquery.StandardSQLDataType{
+					TypeKind: "STRING",
+				},
+				Value: "test",
+			},
+		},
+	}
+	it, err = query.Read(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err != iterator.Done {
+				t.Fatal(err)
+			}
+			break
+		}
+		if len(row) != 3 {
+			t.Fatalf("failed to get row: %v", row)
+		}
+	}
+
+	query = client.Query("SELECT * FROM UNNEST(@states)")
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "states",
+			Value: []string{"WA", "VA", "WV", "WY"},
+		},
+	}
+	it, err = query.Read(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err != iterator.Done {
+				t.Fatal(err)
+			}
+			break
+		}
+		if len(row) != 1 {
+			t.Fatalf("failed to get row: %v", row)
+		}
+	}
 }
 
 func TestMultipleProject(t *testing.T) {
@@ -2708,5 +2763,4 @@ func TestInformationSchema(t *testing.T) {
 			}
 		}
 	})
-
 }
