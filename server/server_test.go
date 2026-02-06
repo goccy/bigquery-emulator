@@ -2710,3 +2710,118 @@ func TestInformationSchema(t *testing.T) {
 	})
 
 }
+
+func TestQueryWithoutDestinationTable(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := client.Query("SELECT id, name FROM dataset1.table_a WHERE id = 1")
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := job.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := job.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	qConfig, ok := config.(*bigquery.QueryConfig)
+	if !ok {
+		t.Fatal("expected QueryConfig")
+	}
+	if qConfig.Dst == nil {
+		t.Fatal("expected destination table to be set")
+	}
+	if qConfig.Dst.ProjectID != projectName {
+		t.Fatalf("expected project ID %s, got %s", projectName, qConfig.Dst.ProjectID)
+	}
+
+	expectedDatasetID := "ds_" + job.ID()
+	if qConfig.Dst.DatasetID != expectedDatasetID {
+		t.Fatalf("expected dataset ID %s, got %s", expectedDatasetID, qConfig.Dst.DatasetID)
+	}
+	if qConfig.Dst.TableID != job.ID() {
+		t.Fatalf("expected table ID %s, got %s", job.ID(), qConfig.Dst.TableID)
+	}
+
+	dynamicTableQuery := client.Query(fmt.Sprintf("SELECT * FROM `%s.%s.%s`",
+		qConfig.Dst.ProjectID, qConfig.Dst.DatasetID, qConfig.Dst.TableID))
+	it, err := dynamicTableQuery.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rowCount int
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rowCount++
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 row in dynamic destination table, got %d", rowCount)
+	}
+
+	query2 := client.Query("SELECT id FROM dataset1.table_a WHERE id = 2")
+	job2, err := query2.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := job2.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	config2, err := job2.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	qConfig2 := config2.(*bigquery.QueryConfig)
+	if qConfig2.Dst == nil {
+		t.Fatal("expected destination table to be set for second job")
+	}
+	if qConfig.Dst.DatasetID == qConfig2.Dst.DatasetID {
+		t.Fatalf("expected different dataset IDs, both got %s", qConfig.Dst.DatasetID)
+	}
+
+	expectedDatasetID2 := "ds_" + job2.ID()
+	if qConfig2.Dst.DatasetID != expectedDatasetID2 {
+		t.Fatalf("expected dataset ID %s, got %s", expectedDatasetID2, qConfig2.Dst.DatasetID)
+	}
+}
