@@ -129,7 +129,7 @@ func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) strin
 	if field.Type == "RECORD" {
 		types := make([]string, 0, len(field.Fields))
 		for _, f := range field.Fields {
-			types = append(types, fmt.Sprintf("%s %s", f.Name, r.encodeSchemaField(f)))
+			types = append(types, fmt.Sprintf("`%s` %s", f.Name, r.encodeSchemaField(f)))
 		}
 		elem = fmt.Sprintf("STRUCT<%s>", strings.Join(types, ","))
 	} else {
