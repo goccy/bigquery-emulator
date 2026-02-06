@@ -18,6 +18,9 @@ type Table struct {
 }
 
 func (t *Table) Update(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
+	for k, v := range metadata {
+		t.metadata[k] = v
+	}
 	return t.repo.UpdateTable(ctx, tx, t)
 }
 

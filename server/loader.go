@@ -65,6 +65,10 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 }
 
 func (s *Server) addTableData(ctx context.Context, tx *connection.Tx, project *types.Project, dataset *types.Dataset, table *types.Table) error {
+	bqTable := table.ToBigqueryV2(project.ID, dataset.ID)
+	if bqTable.Type == "VIEW" {
+		return s.contentRepo.CreateView(ctx, tx, bqTable)
+	}
 	if err := s.contentRepo.CreateOrReplaceTable(ctx, tx, project.ID, dataset.ID, table); err != nil {
 		return err
 	}

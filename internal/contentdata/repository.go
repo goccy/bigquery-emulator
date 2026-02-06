@@ -124,6 +124,33 @@ func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *b
 	return nil
 }
 
+func (r *Repository) UpdateView(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+	ref := table.TableReference
+	if ref == nil {
+		return fmt.Errorf("TableReference is nil")
+	}
+	viewDefinition := table.View
+	if viewDefinition == nil {
+		return fmt.Errorf("ViewDefinition is nil")
+	}
+	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	dropQuery := fmt.Sprintf("DROP VIEW IF EXISTS `%s` ", tablePath)
+	if _, err := tx.Tx().ExecContext(ctx, dropQuery); err != nil {
+		return fmt.Errorf("failed to drop view %s: %w", dropQuery, err)
+	}
+	createQuery := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewDefinition.Query)
+	if _, err := tx.Tx().ExecContext(ctx, createQuery); err != nil {
+		return fmt.Errorf("failed to create view %s: %w", createQuery, err)
+	}
+	return nil
+}
+
 func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) string {
 	var elem string
 	if field.Type == "RECORD" {

@@ -1,0 +1,122 @@
+# golangci-lint configuration file
+# see: https://github.com/golangci/golangci/wiki/Configuration
+
+run:
+  timeout: 5m
+  skip-dirs:
+    - bin
+
+linters-settings:
+
+  govet:
+    check-shadowing: true
+
+  golint:
+    min-confidence: 0
+
+  goimports:
+    local-prefixes: github.com/goccy/go-zetasqlite
+
+  gocyclo:
+    min-complexity: 10
+
+  maligned:
+    suggest-new: true
+
+  depguard:
+    list-type: blacklist
+    include-go-root: false
+
+
+  misspell:
+    locale: US
+
+  lll:
+    line-length: 120
+
+  nakedret:
+    max-func-lines: 0
+
+  gocritic:
+    disabled-checks:
+      - whyNoLint
+      - wrapperFunc
+      - ifElseChain
+      - unnamedResult
+      - paramTypeCombine
+      - hugeParam
+      - singleCaseSwitch
+      - octalLiteral
+
+    enabled-tags:
+      - performance
+      - style
+      - experimental
+  gci:
+    sections:
+      - "standard"
+      - "default"
+      - "prefix(github.com/goccy/go-zetasqlite)"
+      - "blank"
+      - "dot"
+
+linters:
+  enable:
+    - bodyclose
+    - rowserrcheck
+    - gosec
+    - unconvert
+    - asciicheck
+    - gofmt
+    - goimports
+    - misspell
+    - unparam
+    - dogsled
+    - nakedret
+    - gocritic
+    - godox
+    - whitespace
+    - goprintffuncname
+    - gomodguard
+    - godot
+    - nolintlint
+    - asasalint
+    - bidichk
+    - durationcheck
+    - importas
+    - tagliatelle
+    - tenv
+    - gci
+  disable:
+    - stylecheck
+    - maligned
+    - prealloc
+    - gochecknoglobals
+    - wsl
+    - testpackage
+    - gocognit
+    - depguard
+
+# Configuration of issue rules
+issues:
+  # Excluding configuration per-path, per-linter, per-text and per-source
+  exclude-rules:
+    # Exclude lll issues for long lines with go:generate
+    - linters:
+        - lll
+      source: "^//go:generate "
+
+    # Exclude shadow checking on the variable named err and ctx
+    - text: "shadow: declaration of \"(err|ctx)\""
+      linters:
+        - govet
+
+    # Exclude godox check for TODOs, FIXMEs, and BUGs
+    - text: "Line contains TODO/BUG/FIXME:"
+      linters:
+        - godox
+
+    # Exclude some linters from running on tests files
+    - path: suite_test\.go
+      linters:
+        - typecheck

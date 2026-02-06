@@ -1513,10 +1513,79 @@ func syncCatalog(ctx context.Context, server *Server, cat *zetasqlite.ChangedCat
 			return err
 		}
 	}
+	for _, table := range cat.Table.Updated {
+		if err := updateTableMetadata(ctx, server, table); err != nil {
+			return err
+		}
+	}
 	for _, table := range cat.Table.Deleted {
 		if err := deleteTableMetadata(ctx, server, table); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func updateTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.TableSpec) error {
+	if len(spec.NamePath) != 3 {
+		return fmt.Errorf("unexpected table name path: %v", spec.NamePath)
+	}
+	projectID := spec.NamePath[0]
+	datasetID := spec.NamePath[1]
+	tableID := spec.NamePath[2]
+	project, err := server.metaRepo.FindProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	dataset := project.Dataset(datasetID)
+	if dataset == nil {
+		return fmt.Errorf("dataset %s is not found", datasetID)
+	}
+	existingTable := dataset.Table(tableID)
+	if existingTable == nil {
+		// Table doesn't exist, treat as add
+		return addTableMetadata(ctx, server, spec)
+	}
+	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(spec.Columns))
+	for _, column := range spec.Columns {
+		zetasqlType, err := column.Type.ToZetaSQLType()
+		if err != nil {
+			return err
+		}
+		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(column.Name, zetasqlType))
+	}
+	conn, err := server.connMgr.Connection(ctx, projectID, datasetID)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
+
+	// Update the table metadata
+	table := &bigqueryv2.Table{
+		TableReference: &bigqueryv2.TableReference{
+			ProjectId: projectID,
+			DatasetId: datasetID,
+			TableId:   tableID,
+		},
+		Schema: &bigqueryv2.TableSchema{Fields: fields},
+	}
+	encodedTableData, err := json.Marshal(table)
+	if err != nil {
+		return err
+	}
+	var tableMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+		return err
+	}
+	if err := existingTable.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1553,15 +1622,42 @@ func addTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.Tabl
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
-		TableReference: &bigqueryv2.TableReference{
-			ProjectId: projectID,
-			DatasetId: datasetID,
-			TableId:   tableID,
-		},
-		Schema: &bigqueryv2.TableSchema{Fields: fields},
-	}); err != nil {
-		return err
+
+	// Check if the table/view already exists (for CREATE OR REPLACE scenarios)
+	existingTable := dataset.Table(tableID)
+	if existingTable != nil {
+		// Table already exists, update its metadata instead of creating new
+		table := &bigqueryv2.Table{
+			TableReference: &bigqueryv2.TableReference{
+				ProjectId: projectID,
+				DatasetId: datasetID,
+				TableId:   tableID,
+			},
+			Schema: &bigqueryv2.TableSchema{Fields: fields},
+		}
+		encodedTableData, err := json.Marshal(table)
+		if err != nil {
+			return err
+		}
+		var tableMetadata map[string]interface{}
+		if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+			return err
+		}
+		if err := existingTable.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+			return err
+		}
+	} else {
+		// Table doesn't exist, create new metadata
+		if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
+			TableReference: &bigqueryv2.TableReference{
+				ProjectId: projectID,
+				DatasetId: datasetID,
+				TableId:   tableID,
+			},
+			Schema: &bigqueryv2.TableSchema{Fields: fields},
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -1720,6 +1816,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if r.queryRequest.DefaultDataset != nil {
 		datasetID = r.queryRequest.DefaultDataset.DatasetId
 	}
+	fmt.Printf("jobsQueryHandler: projectID=%s, datasetID=%s, query=%s\n", r.project.ID, datasetID, r.queryRequest.Query)
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
 	if err != nil {
 		return nil, err
@@ -1733,7 +1830,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		ctx,
 		tx,
 		r.project.ID,
-		datasetID,
+		"",
 		r.queryRequest.Query,
 		r.queryRequest.QueryParameters,
 	)
@@ -2578,6 +2675,18 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 	table.Type = string(DefaultTableType) // TODO: need to handle other table types
 	if table.View != nil {
 		table.Type = string(ViewTableType)
+		if table.Schema == nil {
+			if response, err := server.contentRepo.Query(
+				ctx,
+				tx,
+				project.ID,
+				dataset.ID,
+				fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
+				nil,
+			); err == nil {
+				table.Schema = response.Schema
+			}
+		}
 	}
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
@@ -2629,7 +2738,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if serverErr != nil {
 		return nil, serverErr
 	}
-	if r.table.Schema != nil {
+	if r.table.Schema != nil && r.table.View == nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			return nil, errInternalError(err.Error())
 		}
@@ -2729,31 +2838,66 @@ type tablesPatchRequest struct {
 }
 
 func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	encodedTableData, err := json.Marshal(r.newTable)
-	if err != nil {
-		return nil, err
-	}
-	var tableMetadata map[string]interface{}
-	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
-		return nil, err
-	}
-
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
-		return nil, err
+
+	// 1. Apply patch to metadata
+	encodedTableData, err := json.Marshal(r.newTable)
+	if err != nil {
+		return nil, errInternalError(err.Error())
 	}
+	var patchMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &patchMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	if err := r.table.Update(ctx, tx.Tx(), patchMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+
+	// 2. Get updated content
+	table, err := r.table.Content()
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+
+	// 3. If it's a view, re-evaluate schema and update query engine
+	if table.View != nil {
+		// Re-evaluate schema
+		if response, err := r.server.contentRepo.Query(
+			ctx,
+			tx,
+			r.project.ID,
+			r.dataset.ID,
+			fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
+			nil,
+		); err == nil {
+			table.Schema = response.Schema
+			// Update metadata again with new schema
+			encodedTableData, _ := json.Marshal(table)
+			var updatedMetadata map[string]interface{}
+			json.Unmarshal(encodedTableData, &updatedMetadata)
+			if err := r.table.Update(ctx, tx.Tx(), updatedMetadata); err != nil {
+				return nil, errInternalError(err.Error())
+			}
+		}
+
+		// Update view in query engine
+		if err := r.server.contentRepo.UpdateView(ctx, tx, table); err != nil {
+			return nil, errInternalError(err.Error())
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, errInternalError(err.Error())
 	}
-	return r.newTable, nil
+	return table, nil
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
