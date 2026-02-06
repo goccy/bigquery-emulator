@@ -1369,6 +1369,98 @@ func (h *jobsInsertHandler) exportToGCSWithObject(ctx context.Context, response 
 	return nil
 }
 
+func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertRequest, srcTable *bigqueryv2.TableReference, dstTable *bigqueryv2.TableReference) (*bigqueryv2.Job, error) {
+	tmpf, err := os.CreateTemp("", "*.jsonl")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set up temporary file: %w", err)
+	}
+
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	response, err := r.server.contentRepo.Query(
+		ctx,
+		tx,
+		srcTable.ProjectId,
+		srcTable.DatasetId,
+		fmt.Sprintf("SELECT * FROM `%s`", srcTable.TableId),
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute copy query: %w", err)
+	}
+
+	enc := json.NewEncoder(tmpf)
+	for _, row := range response.Rows {
+		rowData, err := row.Data()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get data from table row: %w", err)
+		}
+
+		err = enc.Encode(rowData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode table row as JSON: %w", err)
+		}
+	}
+
+	// Flush the data to the filesystem and rewind our cursor to the beginning
+	// of the file so that all content is readable by the load hanldler
+	if err = tmpf.Sync(); err != nil {
+		return nil, fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	if _, err = tmpf.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to seek to beginning of file: %w", err)
+	}
+
+	// We're not really committing anything here, but unless we close the
+	// transaction, the content DB can remain locked and won't be able to handle
+	// updates in the upload handler below.
+	tx.Commit()
+
+	// Create a load job rather than passing our copy job into the upload
+	// handler. We do this so that we don't have to teach the upload handler
+	// how to handle copy jobs (which it really doesn't have to know about
+	// otherwise)
+	loadJob := &bigqueryv2.Job{
+		Configuration: &bigqueryv2.JobConfiguration{
+			Load: &bigqueryv2.JobConfigurationLoad{
+				CreateDisposition: "CREATE_IF_NEEDED",
+				DestinationTable:  dstTable,
+				Schema:            response.Schema,
+				SourceFormat:      "NEWLINE_DELIMITED_JSON",
+			},
+		},
+	}
+
+	if err = new(uploadContentHandler).Handle(
+		ctx,
+		&uploadContentRequest{
+			server:  r.server,
+			project: r.project,
+			job: metadata.NewJob(
+				r.server.metaRepo,
+				r.project.ID,
+				r.job.JobReference.JobId,
+				loadJob,
+				nil,
+				nil,
+			),
+			reader: tmpf,
+		},
+	); err != nil {
+		return nil, fmt.Errorf("failed to import results from source: %w", err)
+	}
+
+	return r.job, err
+}
+
 func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	job := r.job
 	if job.Configuration == nil {
@@ -1388,7 +1480,27 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 				return nil, fmt.Errorf("failed to export to gcs: %w", err)
 			}
 			return job, nil
+		} else if job.Configuration.Copy != nil {
+			copyConfig := job.Configuration.Copy
+			var sourceTable *bigqueryv2.TableReference
+
+			if copyConfig.SourceTable != nil {
+				sourceTable = copyConfig.SourceTable
+			} else if len(copyConfig.SourceTables) == 0 {
+				return nil, fmt.Errorf("cannot copy without a valid source table")
+			} else if len(copyConfig.SourceTables) == 1 {
+				sourceTable = copyConfig.SourceTables[0]
+			} else if len(copyConfig.SourceTables) > 1 {
+				return nil, fmt.Errorf("copy from multiple source tables not supported")
+			}
+
+			if copyConfig.DestinationTable == nil {
+				return nil, fmt.Errorf("cannot copy without a valid destination table")
+			}
+
+			return h.copyFromBigQuery(ctx, r, sourceTable, copyConfig.DestinationTable)
 		}
+
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
