@@ -315,7 +315,7 @@ func (t Type) FieldType() FieldType {
 	case STRUCT:
 		return FieldRecord
 	case GEOGRAPHY:
-		return FieldRecord
+		return FieldGeography
 	case JSON:
 		return FieldJSON
 	case RECORD:
