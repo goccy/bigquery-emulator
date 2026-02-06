@@ -490,7 +490,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		reader := parquet.NewReader(bytes.NewReader(b))
 		defer reader.Close()
 
-		for _, f := range load.Schema.Fields {
+		for _, f := range tableContent.Schema.Fields {
 			columns = append(columns, &types.Column{
 				Name: f.Name,
 				Type: types.Type(f.Type),
