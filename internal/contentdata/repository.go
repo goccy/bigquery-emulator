@@ -398,23 +398,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		values := make([]interface{}, 0, len(table.Columns))
 
 		for _, column := range columns {
-			if value, found := data[column.Name]; found {
-				isTimestampColumn := column.Type == types.TIMESTAMP
-				inputString, isInputString := value.(string)
-
-				if isInputString && isTimestampColumn {
-					parsedTimestamp, err := zetasqlite.TimeFromTimestampValue(inputString)
-					// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
-					if err == nil {
-						values = append(values, parsedTimestamp)
-						continue
-					}
-				}
-
-				values = append(values, value)
-			} else {
-				values = append(values, nil)
-			}
+			values = append(values, columnValue(data, column))
 		}
 
 		if _, err := stmt.ExecContext(ctx, values...); err != nil {
@@ -423,6 +407,40 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	}
 
 	return nil
+}
+
+func columnValue(data map[string]interface{}, column *types.Column) interface{} {
+	value, found := data[column.Name]
+	if !found {
+		return nil
+	}
+
+	switch column.Type {
+	case types.TIMESTAMP:
+		s, ok := value.(string)
+		if !ok {
+			return value
+		}
+		if t, err := zetasqlite.TimeFromTimestampValue(s); err == nil {
+			return t
+		}
+		// Fallback to the supplied value when it can't be parsed
+		return value
+	case types.RECORD:
+		rows, ok := value.([]map[string]interface{})
+		if !ok {
+			return value
+		}
+
+		for i := range rows {
+			for _, innerCol := range column.Fields {
+				rows[i][innerCol.Name] = columnValue(rows[i], innerCol)
+			}
+		}
+		return rows
+	default:
+		return value
+	}
 }
 
 func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tableIDs []string) error {
