@@ -399,11 +399,155 @@ func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[stri
 	}
 }
 
+func (h *uploadContentHandler) detectSchema(reader io.Reader, sourceFormat string, skipLeadingRows int64) (*bigqueryv2.TableSchema, error) {
+	switch sourceFormat {
+	case "CSV":
+		if seeker, ok := reader.(io.Seeker); ok {
+			originalPos, err := seeker.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get reader position: %w", err)
+			}
+			defer seeker.Seek(originalPos, io.SeekStart)
+		}
+
+		records, err := csv.NewReader(reader).ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read csv: %w", err)
+		}
+		if len(records) == 0 {
+			return nil, fmt.Errorf("failed to find csv header")
+		}
+
+		header := records[0]
+		fields := make([]*bigqueryv2.TableFieldSchema, len(header))
+
+		// Get 10 sample rows - first, last, and 8 evenly spaced rows in between
+		var sampleRows [][]string
+		dataStart := int(skipLeadingRows) + 1
+		dataEnd := len(records)
+
+		if dataStart < dataEnd {
+			// Add first data row
+			sampleRows = append(sampleRows, records[dataStart])
+
+			// Calculate step size for 8 evenly spaced samples
+			numRows := dataEnd - dataStart - 1 // -1 because we don't want to include the last row yet
+			if numRows > 8 {
+				step := numRows / 9 // 9 to create 8 spaces between first and last
+				for i := 1; i <= 8; i++ {
+					idx := dataStart + (i * step)
+					if idx < dataEnd {
+						sampleRows = append(sampleRows, records[idx])
+					}
+				}
+			}
+
+			// Add last row if not already added
+			if dataEnd > dataStart+1 {
+				sampleRows = append(sampleRows, records[dataEnd-1])
+			}
+		}
+
+		// Create schema fields
+		for i, colName := range header {
+			fieldType := h.inferFieldType(sampleRows, i)
+			fields[i] = &bigqueryv2.TableFieldSchema{
+				Name: colName,
+				Type: fieldType,
+				Mode: "NULLABLE",
+			}
+		}
+
+		// Rewind the reader
+		if seeker, ok := reader.(io.Seeker); ok {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("failed to reset reader: %w", err)
+			}
+		}
+
+		return &bigqueryv2.TableSchema{Fields: fields}, nil
+
+	default:
+		return nil, fmt.Errorf("schema detection not implemented for format: %s", sourceFormat)
+	}
+}
+
+func (h *uploadContentHandler) inferFieldType(rows [][]string, colIndex int) string {
+	if len(rows) == 0 {
+		return "STRING"
+	}
+
+	isInteger := true
+	isFloat := true
+	isDate := true
+	isBoolean := true
+
+	for _, row := range rows {
+		if colIndex >= len(row) {
+			continue
+		}
+		val := strings.TrimSpace(row[colIndex])
+		if val == "" {
+			continue // Skip empty values for type inference
+		}
+		if _, err := strconv.ParseInt(val, 10, 64); err != nil {
+			isInteger = false
+		}
+		if _, err := strconv.ParseFloat(val, 64); err != nil {
+			isFloat = false
+		}
+		_, err1 := time.Parse("02/01/2006", val) // UK format
+		_, err2 := time.Parse("2006-01-02", val) // ISO format
+		if err1 != nil && err2 != nil {
+			isDate = false
+		}
+		lower := strings.ToLower(val)
+		if lower != "true" && lower != "false" && lower != "y" && lower != "n" &&
+			lower != "yes" && lower != "no" {
+			isBoolean = false
+		}
+	}
+
+	// Order matters - check most specific types first
+	if isBoolean {
+		return "BOOL"
+	}
+	if isInteger {
+		return "INTEGER"
+	}
+	if isFloat {
+		return "FLOAT"
+	}
+	if isDate {
+		return "DATE"
+	}
+	return "STRING"
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	tableRef := load.DestinationTable
 	dataset := r.project.Dataset(tableRef.DatasetId)
 	table := dataset.Table(tableRef.TableId)
+
+	if table == nil && load.Schema == nil && load.Autodetect {
+		var seekableReader io.Reader
+		if _, ok := r.reader.(io.Seeker); !ok {
+			data, err := io.ReadAll(r.reader)
+			if err != nil {
+				return fmt.Errorf("failed to read data: %w", err)
+			}
+			seekableReader = bytes.NewReader(data)
+			r.reader = seekableReader
+		}
+
+		schema, err := h.detectSchema(r.reader, load.SourceFormat, load.SkipLeadingRows)
+		if err != nil {
+			return fmt.Errorf("failed to detect schema: %w", err)
+		}
+		load.Schema = schema
+	}
+
 	if table == nil {
 		if load.CreateDisposition == "CREATE_NEVER" {
 			return fmt.Errorf("`%s` is not found", tableRef.TableId)
@@ -476,9 +620,43 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 				colData := record[i]
 				if colData == "" {
 					rowData[columns[i].Name] = nil
-				} else {
-					rowData[columns[i].Name] = colData
+					continue
 				}
+
+				// Convert data based on column type
+				var value interface{}
+				var err error
+				switch columns[i].Type {
+				case "INTEGER":
+					value, err = strconv.ParseInt(colData, 10, 64)
+				case "FLOAT":
+					value, err = strconv.ParseFloat(colData, 64)
+				case "BOOL":
+					switch strings.ToLower(colData) {
+					case "true", "y", "yes":
+						value = true
+					case "false", "n", "no":
+						value = false
+					default:
+						err = fmt.Errorf("invalid boolean value: %s", colData)
+					}
+				case "DATE":
+					// Try UK format first, then ISO
+					if t, e := time.Parse("02/01/2006", colData); e == nil {
+						value = t.Format("2006-01-02") // Convert to ISO format for BigQuery
+					} else if _, e := time.Parse("2006-01-02", colData); e == nil {
+						value = colData // Already in ISO format
+					} else {
+						err = fmt.Errorf("failed to parse date '%s': %v", colData, e)
+					}
+				default: // STRING and any other types
+					value = colData
+				}
+
+				if err != nil {
+					return fmt.Errorf("failed to convert value '%s' to type %s: %w", colData, columns[i].Type, err)
+				}
+				rowData[columns[i].Name] = value
 			}
 			data = append(data, rowData)
 		}
@@ -1053,16 +1231,21 @@ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *
 }
 
 const (
-	gcsEmulatorHostEnvName = "STORAGE_EMULATOR_HOST"
-	gcsURIPrefix           = "gs://"
+	gcsEmulatorHostEnvName     = "STORAGE_EMULATOR_HOST"
+	gcsEmulatorDoNotFixEnvName = "STORAGE_EMULATOR_DO_NOT_FIX_URL"
+	gcsURIPrefix               = "gs://"
 )
 
 func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	var opts []option.ClientOption
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		hostPostfix := "/storage/v1/"
+		if os.Getenv(gcsEmulatorDoNotFixEnvName) == "true" {
+			hostPostfix = ""
+		}
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
+			option.WithEndpoint(fmt.Sprintf("%s%s", host, hostPostfix)),
 			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
 		)
