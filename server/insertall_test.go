@@ -66,6 +66,19 @@ func countInsertAllRows(t *testing.T, ctx context.Context, client *bigquery.Clie
 	return row[0].(int64)
 }
 
+func getFirstInsertAllName(t *testing.T, ctx context.Context, client *bigquery.Client) string {
+	t.Helper()
+	it, err := client.Query("SELECT name FROM dataset1.table_insert_all LIMIT 1").Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row []bigquery.Value
+	if err := it.Next(&row); err != nil {
+		t.Fatal(err)
+	}
+	return row[0].(string)
+}
+
 func callInsertAll(
 	t *testing.T,
 	serverURL string,
@@ -198,5 +211,33 @@ func TestInsertAllIgnoreUnknownValues(t *testing.T) {
 	}
 	if got, want := countInsertAllRows(t, ctx, client), int64(1); got != want {
 		t.Fatalf("unexpected row count with ignoreUnknownValues: got %d want %d", got, want)
+	}
+}
+
+func TestInsertAllAcceptsMarkdownAndEscapedStrings(t *testing.T) {
+	ctx, bqServer, testServer, client := setupInsertAllTest(t)
+	defer func() {
+		client.Close()
+		testServer.Close()
+		_ = bqServer.Stop(ctx)
+	}()
+
+	value := "# Festival Update\n\n| Field | Value |\n|---|---|\n| Dates | July 1-3, 2026 |\nPath: C:\\\\festival\\\\lineup\nQuote: 'single' and \"double\"."
+
+	insertRes := callInsertAll(t, testServer.URL, map[string]interface{}{
+		"rows": []map[string]interface{}{
+			{
+				"insertId": "markdown-row",
+				"json": map[string]interface{}{
+					"name": value,
+				},
+			},
+		},
+	})
+	if got := len(insertRes.InsertErrors); got != 0 {
+		t.Fatalf("unexpected insert errors: got %d", got)
+	}
+	if got := getFirstInsertAllName(t, ctx, client); got != value {
+		t.Fatalf("unexpected stored value: got %q want %q", got, value)
 	}
 }
