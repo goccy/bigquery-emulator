@@ -16,7 +16,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -61,11 +60,6 @@ const (
 //go:embed resources/discovery.json
 var bigqueryAPIJSON []byte
 
-var (
-	discoveryAPIOnce     sync.Once
-	discoveryAPIResponse map[string]interface{}
-)
-
 type discoveryHandler struct {
 	server *Server
 }
@@ -74,27 +68,32 @@ func newDiscoveryHandler(server *Server) *discoveryHandler {
 	return &discoveryHandler{server: server}
 }
 
+func newDiscoveryAPIResponse(addr string) (map[string]interface{}, error) {
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+	response := map[string]interface{}{}
+	if err := json.Unmarshal(bigqueryAPIJSON, &response); err != nil {
+		return nil, err
+	}
+	response["mtlsRootUrl"] = addr
+	response["rootUrl"] = addr
+	response["baseUrl"] = addr
+	return response, nil
+}
+
 func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var decodeJSONErr error
-	discoveryAPIOnce.Do(func() {
-		if err := json.Unmarshal(bigqueryAPIJSON, &discoveryAPIResponse); err != nil {
-			decodeJSONErr = err
-			return
-		}
-		addr := h.server.httpServer.Addr
-		if !strings.HasPrefix(addr, "http") {
-			addr = "http://" + addr
-		}
-		discoveryAPIResponse["mtlsRootUrl"] = addr
-		discoveryAPIResponse["rootUrl"] = addr
-		discoveryAPIResponse["baseUrl"] = addr
-	})
-	if decodeJSONErr != nil {
-		errorResponse(ctx, w, errInternalError(decodeJSONErr.Error()))
+	addr := h.server.httpServer.Addr
+	if addr == "" {
+		addr = r.Host
+	}
+	res, err := newDiscoveryAPIResponse(addr)
+	if err != nil {
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
-	encodeResponse(ctx, w, discoveryAPIResponse)
+	encodeResponse(ctx, w, res)
 }
 
 type uploadHandler struct{}
@@ -1028,6 +1027,42 @@ type jobsInsertRequest struct {
 	job     *bigqueryv2.Job
 }
 
+func ensureJobReference(projectID string, job *bigqueryv2.Job) {
+	if job.JobReference == nil {
+		job.JobReference = &bigqueryv2.JobReference{}
+	}
+	if job.JobReference.ProjectId == "" {
+		job.JobReference.ProjectId = projectID
+	}
+	if job.JobReference.JobId == "" {
+		job.JobReference.JobId = randomID()
+	}
+}
+
+func queryErrorToJobStatusError(err error) *ServerError {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return errTimeout(err.Error())
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"syntax error",
+		"parse error",
+		"invalid",
+		"no such",
+		"not found",
+		"unrecognized",
+		"no matching signature",
+		"requires",
+		"expects",
+		"cannot cast",
+	} {
+		if strings.Contains(msg, marker) {
+			return errInvalidQuery(err.Error())
+		}
+	}
+	return errJobInternalError(err.Error())
+}
+
 func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) (*types.Table, error) {
 	columns := []*types.Column{}
 	for _, field := range response.Schema.Fields {
@@ -1374,6 +1409,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	if job.Configuration == nil {
 		return nil, fmt.Errorf("unspecified job configuration")
 	}
+	ensureJobReference(r.project.ID, job)
 	if job.Configuration.Query == nil {
 		if job.Configuration.Load != nil && len(job.Configuration.Load.SourceUris) != 0 {
 			// load from google cloud storage
@@ -1411,9 +1447,6 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.Configuration.Query.QueryParameters,
 	)
 	endTime := time.Now()
-	if job.JobReference.JobId == "" {
-		job.JobReference.JobId = randomID() // generate job id
-	}
 	if jobErr == nil {
 		if hasDestinationTable {
 			// insert results to destination table
@@ -1458,9 +1491,10 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	)
 	status := &bigqueryv2.JobStatus{State: "DONE"}
 	if jobErr != nil {
-		internalErr := errJobInternalError(jobErr.Error())
-		status.ErrorResult = internalErr.ErrorProto()
-		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
+		serverErr := queryErrorToJobStatusError(jobErr)
+		status.ErrorResult = serverErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{serverErr.ErrorProto()}
+		logger.Logger(ctx).Warn("failed to execute query job", zap.Error(jobErr), zap.String("job_id", job.JobReference.JobId))
 	}
 	job.Status = status
 	var totalBytes int64
