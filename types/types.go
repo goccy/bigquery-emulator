@@ -315,7 +315,7 @@ func (t Type) FieldType() FieldType {
 	case STRUCT:
 		return FieldRecord
 	case GEOGRAPHY:
-		return FieldRecord
+		return FieldGeography
 	case JSON:
 		return FieldJSON
 	case RECORD:
@@ -542,7 +542,16 @@ func parseDatetime(v string) (time.Time, error) {
 }
 
 func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	if field == nil {
+		return nil, fmt.Errorf("field schema is nil")
+	}
+	if v == nil {
+		return nil, nil
+	}
 	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return nil, nil
+	}
 	kind := rv.Kind()
 	if Mode(field.Mode) == RepeatedMode {
 		if kind != reflect.Slice && kind != reflect.Array {
@@ -561,6 +570,9 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 		return values, nil
 	}
 	if kind == reflect.Map {
+		if Type(field.Type) != RECORD && len(field.Fields) == 0 {
+			return nil, fmt.Errorf("invalid value type %T for %s column", v, field.Type)
+		}
 		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
 		columnNameToValueMap := map[string]interface{}{}
 		for _, f := range field.Fields {
@@ -572,7 +584,11 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
 			}
 			columnName := key.Interface().(string)
-			value, err := normalizeData(rv.MapIndex(key).Interface(), fieldMap[columnName])
+			childField, exists := fieldMap[columnName]
+			if !exists {
+				return nil, fmt.Errorf("failed to find field schema for %s", columnName)
+			}
+			value, err := normalizeData(rv.MapIndex(key).Interface(), childField)
 			if err != nil {
 				return nil, err
 			}

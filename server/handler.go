@@ -13,10 +13,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -61,11 +59,6 @@ const (
 //go:embed resources/discovery.json
 var bigqueryAPIJSON []byte
 
-var (
-	discoveryAPIOnce     sync.Once
-	discoveryAPIResponse map[string]interface{}
-)
-
 type discoveryHandler struct {
 	server *Server
 }
@@ -74,27 +67,32 @@ func newDiscoveryHandler(server *Server) *discoveryHandler {
 	return &discoveryHandler{server: server}
 }
 
+func newDiscoveryAPIResponse(addr string) (map[string]interface{}, error) {
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+	response := map[string]interface{}{}
+	if err := json.Unmarshal(bigqueryAPIJSON, &response); err != nil {
+		return nil, err
+	}
+	response["mtlsRootUrl"] = addr
+	response["rootUrl"] = addr
+	response["baseUrl"] = addr
+	return response, nil
+}
+
 func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var decodeJSONErr error
-	discoveryAPIOnce.Do(func() {
-		if err := json.Unmarshal(bigqueryAPIJSON, &discoveryAPIResponse); err != nil {
-			decodeJSONErr = err
-			return
-		}
-		addr := h.server.httpServer.Addr
-		if !strings.HasPrefix(addr, "http") {
-			addr = "http://" + addr
-		}
-		discoveryAPIResponse["mtlsRootUrl"] = addr
-		discoveryAPIResponse["rootUrl"] = addr
-		discoveryAPIResponse["baseUrl"] = addr
-	})
-	if decodeJSONErr != nil {
-		errorResponse(ctx, w, errInternalError(decodeJSONErr.Error()))
+	addr := h.server.httpServer.Addr
+	if addr == "" {
+		addr = r.Host
+	}
+	res, err := newDiscoveryAPIResponse(addr)
+	if err != nil {
+		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
-	encodeResponse(ctx, w, discoveryAPIResponse)
+	encodeResponse(ctx, w, res)
 }
 
 type uploadHandler struct{}
@@ -1028,6 +1026,42 @@ type jobsInsertRequest struct {
 	job     *bigqueryv2.Job
 }
 
+func ensureJobReference(projectID string, job *bigqueryv2.Job) {
+	if job.JobReference == nil {
+		job.JobReference = &bigqueryv2.JobReference{}
+	}
+	if job.JobReference.ProjectId == "" {
+		job.JobReference.ProjectId = projectID
+	}
+	if job.JobReference.JobId == "" {
+		job.JobReference.JobId = randomID()
+	}
+}
+
+func queryErrorToJobStatusError(err error) *ServerError {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return errTimeout(err.Error())
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"syntax error",
+		"parse error",
+		"invalid",
+		"no such",
+		"not found",
+		"unrecognized",
+		"no matching signature",
+		"requires",
+		"expects",
+		"cannot cast",
+	} {
+		if strings.Contains(msg, marker) {
+			return errInvalidQuery(err.Error())
+		}
+	}
+	return errJobInternalError(err.Error())
+}
+
 func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) (*types.Table, error) {
 	columns := []*types.Column{}
 	for _, field := range response.Schema.Fields {
@@ -1374,6 +1408,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	if job.Configuration == nil {
 		return nil, fmt.Errorf("unspecified job configuration")
 	}
+	ensureJobReference(r.project.ID, job)
 	if job.Configuration.Query == nil {
 		if job.Configuration.Load != nil && len(job.Configuration.Load.SourceUris) != 0 {
 			// load from google cloud storage
@@ -1411,9 +1446,6 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.Configuration.Query.QueryParameters,
 	)
 	endTime := time.Now()
-	if job.JobReference.JobId == "" {
-		job.JobReference.JobId = randomID() // generate job id
-	}
 	if jobErr == nil {
 		if hasDestinationTable {
 			// insert results to destination table
@@ -1458,9 +1490,10 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	)
 	status := &bigqueryv2.JobStatus{State: "DONE"}
 	if jobErr != nil {
-		internalErr := errJobInternalError(jobErr.Error())
-		status.ErrorResult = internalErr.ErrorProto()
-		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
+		serverErr := queryErrorToJobStatusError(jobErr)
+		status.ErrorResult = serverErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{serverErr.ErrorProto()}
+		logger.Logger(ctx).Warn("failed to execute query job", zap.Error(jobErr), zap.String("job_id", job.JobReference.JobId))
 	}
 	job.Status = status
 	var totalBytes int64
@@ -2275,53 +2308,12 @@ type tabledataInsertAllRequest struct {
 	req     *bigqueryv2.TableDataInsertAllRequest
 }
 
-func normalizeInsertValue(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
-	rv := reflect.ValueOf(v)
-	kind := rv.Kind()
-	if field.Mode == "REPEATED" {
-		if kind != reflect.Slice && kind != reflect.Array {
-			return nil, fmt.Errorf("invalid value type %T for ARRAY column", v)
-		}
-		values := make([]interface{}, 0, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			value, err := normalizeInsertValue(rv.Index(i).Interface(), &bigqueryv2.TableFieldSchema{
-				Fields: field.Fields,
-			})
-			if err != nil {
-				return nil, err
-			}
-			values = append(values, value)
-		}
-		return values, nil
+func insertAllRowError(index int64, err error) *bigqueryv2.TableDataInsertAllResponseInsertErrors {
+	serverErr := errInvalid(err.Error())
+	return &bigqueryv2.TableDataInsertAllResponseInsertErrors{
+		Index:  index,
+		Errors: []*bigqueryv2.ErrorProto{serverErr.ErrorProto()},
 	}
-	if kind == reflect.Map {
-		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
-		for _, f := range field.Fields {
-			fieldMap[f.Name] = f
-		}
-		columnNameToValueMap := map[string]interface{}{}
-		for _, key := range rv.MapKeys() {
-			if key.Kind() != reflect.String {
-				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
-			}
-			columnName := key.Interface().(string)
-			value, err := normalizeInsertValue(rv.MapIndex(key).Interface(), fieldMap[columnName])
-			if err != nil {
-				return nil, err
-			}
-			columnNameToValueMap[columnName] = value
-		}
-		fields := make([]map[string]interface{}, 0, len(fieldMap))
-		for _, f := range field.Fields {
-			value, exists := columnNameToValueMap[f.Name]
-			if !exists {
-				return nil, fmt.Errorf("failed to find value from %s", f.Name)
-			}
-			fields = append(fields, map[string]interface{}{f.Name: value})
-		}
-		return fields, nil
-	}
-	return v, nil
 }
 
 func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInsertAllRequest) (*bigqueryv2.TableDataInsertAllResponse, error) {
@@ -2329,18 +2321,41 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 	if err != nil {
 		return nil, err
 	}
-	data := types.Data{}
-	for _, row := range r.req.Rows {
+
+	nameToField := map[string]*bigqueryv2.TableFieldSchema{}
+	for _, field := range content.Schema.Fields {
+		nameToField[field.Name] = field
+	}
+
+	validRows := types.Data{}
+	insertErrors := []*bigqueryv2.TableDataInsertAllResponseInsertErrors{}
+	for idx, row := range r.req.Rows {
 		rowData := map[string]interface{}{}
+		var rowErr error
 		for k, v := range row.Json {
+			if _, exists := nameToField[k]; !exists {
+				if r.req.IgnoreUnknownValues {
+					continue
+				}
+				rowErr = fmt.Errorf("unknown field: %s", k)
+				break
+			}
 			rowData[k] = v
 		}
-		data = append(data, rowData)
+		if rowErr != nil {
+			insertErrors = append(insertErrors, insertAllRowError(int64(idx), rowErr))
+			continue
+		}
+		tableDef, err := types.NewTableWithSchema(content, types.Data{rowData})
+		if err != nil {
+			insertErrors = append(insertErrors, insertAllRowError(int64(idx), err))
+			continue
+		}
+		if len(tableDef.Data) == 1 {
+			validRows = append(validRows, tableDef.Data[0])
+		}
 	}
-	tableDef, err := types.NewTableWithSchema(content, data)
-	if err != nil {
-		return nil, err
-	}
+
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -2350,13 +2365,28 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
-		return nil, err
+	if len(insertErrors) != 0 && !r.req.SkipInvalidRows {
+		return &bigqueryv2.TableDataInsertAllResponse{
+			Kind:         "bigquery#tableDataInsertAllResponse",
+			InsertErrors: insertErrors,
+		}, nil
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if len(validRows) != 0 {
+		tableDef, err := types.NewTableWithSchema(content, validRows)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
-	return &bigqueryv2.TableDataInsertAllResponse{}, nil
+	return &bigqueryv2.TableDataInsertAllResponse{
+		Kind:         "bigquery#tableDataInsertAllResponse",
+		InsertErrors: insertErrors,
+	}, nil
 }
 
 func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

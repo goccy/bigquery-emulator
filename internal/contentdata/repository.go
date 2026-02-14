@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/goccy/go-zetasqlite"
@@ -170,6 +171,12 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	)
 	rows, err := tx.Tx().QueryContext(ctx, query, values...)
 	if err != nil {
+		logger.Logger(ctx).Warn(
+			"query execution failed",
+			zap.String("query", query),
+			zap.Any("values", values),
+			zap.Error(err),
+		)
 		return nil, err
 	}
 	defer rows.Close()
@@ -289,6 +296,26 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 	}
 	rv := reflect.ValueOf(value)
 	kind := rv.Type().Kind()
+	if kind == reflect.Map {
+		var (
+			cells      []*internaltypes.TableCell
+			totalBytes int64
+		)
+		keys := rv.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface())
+		})
+		for _, key := range keys {
+			cell, err := r.convertValueToCell(rv.MapIndex(key).Interface())
+			if err != nil {
+				return nil, err
+			}
+			cell.Name = fmt.Sprint(key.Interface())
+			totalBytes += cell.Bytes
+			cells = append(cells, cell)
+		}
+		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}, Bytes: totalBytes}, nil
+	}
 	if kind != reflect.Slice && kind != reflect.Array {
 		v := fmt.Sprint(value)
 		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
