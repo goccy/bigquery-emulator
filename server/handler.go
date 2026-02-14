@@ -13,7 +13,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -2309,53 +2308,12 @@ type tabledataInsertAllRequest struct {
 	req     *bigqueryv2.TableDataInsertAllRequest
 }
 
-func normalizeInsertValue(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
-	rv := reflect.ValueOf(v)
-	kind := rv.Kind()
-	if field.Mode == "REPEATED" {
-		if kind != reflect.Slice && kind != reflect.Array {
-			return nil, fmt.Errorf("invalid value type %T for ARRAY column", v)
-		}
-		values := make([]interface{}, 0, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			value, err := normalizeInsertValue(rv.Index(i).Interface(), &bigqueryv2.TableFieldSchema{
-				Fields: field.Fields,
-			})
-			if err != nil {
-				return nil, err
-			}
-			values = append(values, value)
-		}
-		return values, nil
+func insertAllRowError(index int64, err error) *bigqueryv2.TableDataInsertAllResponseInsertErrors {
+	serverErr := errInvalid(err.Error())
+	return &bigqueryv2.TableDataInsertAllResponseInsertErrors{
+		Index:  index,
+		Errors: []*bigqueryv2.ErrorProto{serverErr.ErrorProto()},
 	}
-	if kind == reflect.Map {
-		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
-		for _, f := range field.Fields {
-			fieldMap[f.Name] = f
-		}
-		columnNameToValueMap := map[string]interface{}{}
-		for _, key := range rv.MapKeys() {
-			if key.Kind() != reflect.String {
-				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
-			}
-			columnName := key.Interface().(string)
-			value, err := normalizeInsertValue(rv.MapIndex(key).Interface(), fieldMap[columnName])
-			if err != nil {
-				return nil, err
-			}
-			columnNameToValueMap[columnName] = value
-		}
-		fields := make([]map[string]interface{}, 0, len(fieldMap))
-		for _, f := range field.Fields {
-			value, exists := columnNameToValueMap[f.Name]
-			if !exists {
-				return nil, fmt.Errorf("failed to find value from %s", f.Name)
-			}
-			fields = append(fields, map[string]interface{}{f.Name: value})
-		}
-		return fields, nil
-	}
-	return v, nil
 }
 
 func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInsertAllRequest) (*bigqueryv2.TableDataInsertAllResponse, error) {
@@ -2363,18 +2321,41 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 	if err != nil {
 		return nil, err
 	}
-	data := types.Data{}
-	for _, row := range r.req.Rows {
+
+	nameToField := map[string]*bigqueryv2.TableFieldSchema{}
+	for _, field := range content.Schema.Fields {
+		nameToField[field.Name] = field
+	}
+
+	validRows := types.Data{}
+	insertErrors := []*bigqueryv2.TableDataInsertAllResponseInsertErrors{}
+	for idx, row := range r.req.Rows {
 		rowData := map[string]interface{}{}
+		var rowErr error
 		for k, v := range row.Json {
+			if _, exists := nameToField[k]; !exists {
+				if r.req.IgnoreUnknownValues {
+					continue
+				}
+				rowErr = fmt.Errorf("unknown field: %s", k)
+				break
+			}
 			rowData[k] = v
 		}
-		data = append(data, rowData)
+		if rowErr != nil {
+			insertErrors = append(insertErrors, insertAllRowError(int64(idx), rowErr))
+			continue
+		}
+		tableDef, err := types.NewTableWithSchema(content, types.Data{rowData})
+		if err != nil {
+			insertErrors = append(insertErrors, insertAllRowError(int64(idx), err))
+			continue
+		}
+		if len(tableDef.Data) == 1 {
+			validRows = append(validRows, tableDef.Data[0])
+		}
 	}
-	tableDef, err := types.NewTableWithSchema(content, data)
-	if err != nil {
-		return nil, err
-	}
+
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
@@ -2384,13 +2365,28 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
-		return nil, err
+	if len(insertErrors) != 0 && !r.req.SkipInvalidRows {
+		return &bigqueryv2.TableDataInsertAllResponse{
+			Kind:         "bigquery#tableDataInsertAllResponse",
+			InsertErrors: insertErrors,
+		}, nil
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if len(validRows) != 0 {
+		tableDef, err := types.NewTableWithSchema(content, validRows)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
-	return &bigqueryv2.TableDataInsertAllResponse{}, nil
+	return &bigqueryv2.TableDataInsertAllResponse{
+		Kind:         "bigquery#tableDataInsertAllResponse",
+		InsertErrors: insertErrors,
+	}, nil
 }
 
 func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
