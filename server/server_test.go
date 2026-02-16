@@ -1731,6 +1731,98 @@ func TestLoadJSON(t *testing.T) {
 	}
 }
 
+func TestLoadCSVWithCustomFieldDelimiter(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	schema := bigquery.Schema{
+		{Name: "ID", Type: bigquery.IntegerFieldType},
+		{Name: "Name", Type: bigquery.StringFieldType},
+	}
+
+	// CSV data using semicolon as field delimiter
+	csvData := "ID;Name\n1;Alice\n2;Bob\n3;Charlie\n"
+	source := bigquery.NewReaderSource(bytes.NewBufferString(csvData))
+	source.SourceFormat = bigquery.CSV
+	source.Schema = schema
+	source.FieldDelimiter = ";"
+	source.SkipLeadingRows = 1
+
+	loader := table.LoaderFrom(source)
+	job, err := loader.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Err() != nil {
+		t.Fatal(status.Err())
+	}
+
+	query := client.Query(fmt.Sprintf("SELECT * FROM %s.%s ORDER BY ID", datasetName, tableName))
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type row struct {
+		ID   int
+		Name string
+	}
+	var rows []*row
+	for {
+		var r row
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, &r)
+	}
+	if diff := cmp.Diff([]*row{
+		{ID: 1, Name: "Alice"},
+		{ID: 2, Name: "Bob"},
+		{ID: 3, Name: "Charlie"},
+	}, rows); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
 func TestImportFromGCS(t *testing.T) {
 	const (
 		projectID  = "test"

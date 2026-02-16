@@ -436,7 +436,11 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	data := types.Data{}
 	switch sourceFormat {
 	case "CSV":
-		records, err := csv.NewReader(r.reader).ReadAll()
+		csvReader := csv.NewReader(r.reader)
+		if load.FieldDelimiter != "" {
+			csvReader.Comma = rune(load.FieldDelimiter[0])
+		}
+		records, err := csvReader.ReadAll()
 		if err != nil {
 			return fmt.Errorf("failed to read csv: %w", err)
 		}
