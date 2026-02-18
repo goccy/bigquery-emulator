@@ -200,7 +200,7 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 	return formattedRows
 }
 
-// formatCell recursively formats timestamp cells as microseconds to match what the
+// formatCell formats timestamp cells as microseconds to match what the
 // client libraries expect
 func formatCell(schema *bigqueryv2.TableFieldSchema, cell *TableCell) *TableCell {
 	switch schema.Type {
