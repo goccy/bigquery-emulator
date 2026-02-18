@@ -204,12 +204,6 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 // client libraries expect
 func formatCell(schema *bigqueryv2.TableFieldSchema, cell *TableCell) *TableCell {
 	switch schema.Type {
-	case "RECORD":
-		tr, _ := cell.V.(TableRow)
-		for i, innerCell := range tr.F {
-			tr.F[i] = formatCell(schema.Fields[i], innerCell)
-		}
-		return cell
 	case "TIMESTAMP":
 		s, ok := cell.V.(string)
 		if !ok {

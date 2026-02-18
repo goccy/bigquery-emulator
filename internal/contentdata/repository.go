@@ -426,18 +426,6 @@ func columnValue(data map[string]interface{}, column *types.Column) interface{} 
 		}
 		// Fallback to the supplied value when it can't be parsed
 		return value
-	case types.RECORD:
-		rows, ok := value.([]map[string]interface{})
-		if !ok {
-			return value
-		}
-
-		for i := range rows {
-			for _, innerCol := range column.Fields {
-				rows[i][innerCol.Name] = columnValue(rows[i], innerCol)
-			}
-		}
-		return rows
 	default:
 		return value
 	}
