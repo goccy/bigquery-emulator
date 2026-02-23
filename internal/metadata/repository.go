@@ -552,6 +552,14 @@ func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	); err != nil {
 		return err
 	}
+        if _, err := tx.Exec(
+		"DELETE FROM tables WHERE projectID = @projectID AND datasetId = @id",
+		dataset.ProjectID,
+		dataset.ID,
+	); err != nil {
+		return err
+	}
+
 	return nil
 }
 
