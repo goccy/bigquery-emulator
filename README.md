@@ -75,6 +75,12 @@ $ docker pull ghcr.io/goccy/bigquery-emulator:latest
 
 You can also download the darwin(amd64) and linux(amd64) binaries directly from [releases](https://github.com/goccy/bigquery-emulator/releases)
 
+You can also install bigquery-emulator with [aqua](https://aquaproj.github.io/), which is a declarative CLI Version Manager.
+
+```console
+$ aqua g -i goccy/bigquery-emulator
+```
+
 # How to start the standalone server
 
 If you can install the `bigquery-emulator` CLI, you can start the server using the following options.
