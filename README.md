@@ -98,6 +98,14 @@ Application Options:
 Help Options:
   -h, --help            Show this help message
 ```
+>
+> **For Docker Image:**               
+> All databases will be created in the `work` directory inside the container if it does not already exist. If you want to use a database on your host, use [bind mounts](https://docs.docker.com/storage/bind-mounts/).              
+> **Example**               
+> ```console
+> docker run [image name] --project_id=[random name] --database=database.sqllite
+> ```
+
 
 Start the server by specifying the project name
 
