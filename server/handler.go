@@ -2701,43 +2701,42 @@ func (h *tablesPatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
 	table := tableFromContext(ctx)
-	var newTable bigqueryv2.Table
+	var newTable map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&newTable); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+
+	if _, found := newTable["schema"]; found {
+		errorResponse(ctx, w, errInvalid("schema updates unsupported"))
+		return
+	}
+
 	res, err := h.Handle(ctx, &tablesPatchRequest{
-		server:   server,
-		project:  project,
-		dataset:  dataset,
-		table:    table,
-		newTable: &newTable,
+		server:           server,
+		project:          project,
+		dataset:          dataset,
+		table:            table,
+		newTableMetadata: newTable,
 	})
+
 	if err != nil {
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
 	encodeResponse(ctx, w, res)
+
 }
 
 type tablesPatchRequest struct {
-	server   *Server
-	project  *metadata.Project
-	dataset  *metadata.Dataset
-	table    *metadata.Table
-	newTable *bigqueryv2.Table
+	server           *Server
+	project          *metadata.Project
+	dataset          *metadata.Dataset
+	table            *metadata.Table
+	newTableMetadata map[string]interface{}
 }
 
 func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	encodedTableData, err := json.Marshal(r.newTable)
-	if err != nil {
-		return nil, err
-	}
-	var tableMetadata map[string]interface{}
-	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
-		return nil, err
-	}
-
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
 		return nil, err
@@ -2747,13 +2746,17 @@ func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) 
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+	if err := r.table.Update(ctx, tx.Tx(), r.newTableMetadata); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.newTable, nil
+	table, err := r.table.Content()
+	if err != nil {
+		return nil, err
+	}
+	return table, nil
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
