@@ -2710,3 +2710,197 @@ func TestInformationSchema(t *testing.T) {
 	})
 
 }
+
+func TestPaginatedQueryResults(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						"items",
+						[]*types.Column{
+							types.NewColumn("id", types.INT64),
+							types.NewColumn("name", types.STRING),
+						},
+						types.Data{
+							{"id": 1, "name": "a"},
+							{"id": 2, "name": "b"},
+							{"id": 3, "name": "c"},
+							{"id": 4, "name": "d"},
+							{"id": 5, "name": "e"},
+							{"id": 6, "name": "f"},
+							{"id": 7, "name": "g"},
+							{"id": 8, "name": "h"},
+							{"id": 9, "name": "i"},
+							{"id": 10, "name": "j"},
+						},
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	t.Run("getQueryResults with maxResults", func(t *testing.T) {
+		// Use the raw REST API to test pagination on getQueryResults.
+		// First, run a query via jobs.query to get a jobId.
+		queryReqBody := `{"query": "SELECT id, name FROM dataset1.items ORDER BY id", "useLegacySql": false}`
+		resp, err := http.Post(
+			testServer.URL+"/bigquery/v2/projects/test/queries",
+			"application/json",
+			bytes.NewBufferString(queryReqBody),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var queryResp map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&queryResp); err != nil {
+			t.Fatal(err)
+		}
+		jobRef, ok := queryResp["jobReference"].(map[string]interface{})
+		if !ok {
+			t.Fatal("missing jobReference")
+		}
+		jobID, ok := jobRef["jobId"].(string)
+		if !ok || jobID == "" {
+			t.Fatal("missing jobId")
+		}
+
+		// Now fetch paginated results with maxResults=4
+		var allRows []interface{}
+		pageToken := ""
+		pageCount := 0
+		for {
+			reqURL := fmt.Sprintf(
+				"%s/bigquery/v2/projects/test/queries/%s?maxResults=4",
+				testServer.URL, jobID,
+			)
+			if pageToken != "" {
+				reqURL += "&pageToken=" + url.QueryEscape(pageToken)
+			}
+			resp, err := http.Get(reqURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pageResp map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&pageResp); err != nil {
+				resp.Body.Close()
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+
+			rows, _ := pageResp["rows"].([]interface{})
+			if len(rows) > 4 {
+				t.Fatalf("page %d: expected at most 4 rows, got %d", pageCount, len(rows))
+			}
+			allRows = append(allRows, rows...)
+			pageCount++
+
+			nextToken, _ := pageResp["pageToken"].(string)
+			if nextToken == "" {
+				break
+			}
+			pageToken = nextToken
+		}
+
+		if len(allRows) != 10 {
+			t.Fatalf("expected 10 total rows across all pages, got %d", len(allRows))
+		}
+		if pageCount != 3 {
+			t.Fatalf("expected 3 pages (4+4+2), got %d", pageCount)
+		}
+	})
+
+	t.Run("jobs.query with maxResults", func(t *testing.T) {
+		// Test that jobs.query also respects maxResults in the request body.
+		queryReqBody := `{"query": "SELECT id, name FROM dataset1.items ORDER BY id", "useLegacySql": false, "maxResults": 3}`
+		resp, err := http.Post(
+			testServer.URL+"/bigquery/v2/projects/test/queries",
+			"application/json",
+			bytes.NewBufferString(queryReqBody),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var queryResp map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&queryResp); err != nil {
+			t.Fatal(err)
+		}
+
+		rows, _ := queryResp["rows"].([]interface{})
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows in first page, got %d", len(rows))
+		}
+
+		pageToken, _ := queryResp["pageToken"].(string)
+		if pageToken == "" {
+			t.Fatal("expected non-empty pageToken since there are more results")
+		}
+
+		// Verify totalRows still reflects the full result set
+		totalRows, _ := queryResp["totalRows"].(string)
+		if totalRows != "10" {
+			t.Fatalf("expected totalRows=10, got %s", totalRows)
+		}
+	})
+
+	t.Run("go client pagination", func(t *testing.T) {
+		client, err := bigquery.NewClient(
+			ctx,
+			projectID,
+			option.WithEndpoint(testServer.URL),
+			option.WithoutAuthentication(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		query := client.Query("SELECT id, name FROM dataset1.items ORDER BY id")
+		query.DefaultDatasetID = datasetID
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		it.PageInfo().MaxSize = 4
+
+		var allRows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			allRows = append(allRows, row)
+		}
+
+		if len(allRows) != 10 {
+			t.Fatalf("expected 10 total rows, got %d", len(allRows))
+		}
+	})
+}

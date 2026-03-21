@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -566,6 +567,46 @@ func isFormatOptionsUseInt64Timestamp(r *http.Request) bool {
 	return parseQueryValueAsBool(r, formatOptionsUseInt64TimestampParam)
 }
 
+func encodePageToken(startIndex int64) string {
+	return base64.StdEncoding.EncodeToString([]byte(strconv.FormatInt(startIndex, 10)))
+}
+
+func decodePageToken(token string) (int64, error) {
+	b, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode page token: %w", err)
+	}
+	return strconv.ParseInt(string(b), 10, 64)
+}
+
+func parseQueryValueAsInt64(r *http.Request, key string) (int64, bool) {
+	queryValues := r.URL.Query()
+	values, exists := queryValues[key]
+	if !exists || len(values) != 1 {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func paginateRows(rows []*internaltypes.TableRow, startIndex int64, maxResults int64) (pageRows []*internaltypes.TableRow, nextPageToken string) {
+	total := int64(len(rows))
+	if startIndex >= total {
+		return nil, ""
+	}
+	rows = rows[startIndex:]
+	if maxResults > 0 && int64(len(rows)) > maxResults {
+		pageRows = rows[:maxResults]
+		nextPageToken = encodePageToken(startIndex + maxResults)
+	} else {
+		pageRows = rows
+	}
+	return
+}
+
 func parseQueryValueAsBool(r *http.Request, key string) bool {
 	queryValues := r.URL.Query()
 	values, exists := queryValues[key]
@@ -963,11 +1004,32 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
 	job := jobFromContext(ctx)
+
+	var maxResults int64
+	if v, ok := parseQueryValueAsInt64(r, "maxResults"); ok {
+		maxResults = v
+	}
+
+	var startIndex int64
+	pageToken := r.URL.Query().Get("pageToken")
+	if pageToken != "" {
+		var err error
+		startIndex, err = decodePageToken(pageToken)
+		if err != nil {
+			errorResponse(ctx, w, errInvalid(fmt.Sprintf("invalid pageToken: %s", err.Error())))
+			return
+		}
+	} else if v, ok := parseQueryValueAsInt64(r, "startIndex"); ok {
+		startIndex = v
+	}
+
 	res, err := h.Handle(ctx, &jobsGetQueryResultsRequest{
 		server:            server,
 		project:           project,
 		job:               job,
 		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
+		maxResults:        maxResults,
+		startIndex:        startIndex,
 	})
 	if err != nil {
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
@@ -981,6 +1043,8 @@ type jobsGetQueryResultsRequest struct {
 	project           *metadata.Project
 	job               *metadata.Job
 	useInt64Timestamp bool
+	maxResults        int64
+	startIndex        int64
 }
 
 func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*internaltypes.GetQueryResultsResponse, error) {
@@ -989,6 +1053,7 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 		return nil, err
 	}
 	rows := internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
+	pageRows, nextPageToken := paginateRows(rows, r.startIndex, r.maxResults)
 	return &internaltypes.GetQueryResultsResponse{
 		JobReference: &bigqueryv2.JobReference{
 			ProjectId: r.project.ID,
@@ -997,7 +1062,8 @@ func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQuery
 		Schema:      response.Schema,
 		TotalRows:   response.TotalRows,
 		JobComplete: true,
-		Rows:        rows,
+		Rows:        pageRows,
+		PageToken:   nextPageToken,
 	}, nil
 }
 
@@ -1758,6 +1824,45 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	response.JobReference = &bigqueryv2.JobReference{
 		ProjectId: r.project.ID,
 		JobId:     jobID,
+	}
+
+	// Persist the job so that getQueryResults can retrieve subsequent pages.
+	jobConn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection for job: %w", err)
+	}
+	jobTx, err := jobConn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction for job: %w", err)
+	}
+	defer jobTx.RollbackIfNotCommitted()
+	if err := r.project.AddJob(
+		ctx,
+		jobTx.Tx(),
+		metadata.NewJob(
+			r.server.metaRepo,
+			r.project.ID,
+			jobID,
+			&bigqueryv2.Job{
+				JobReference: response.JobReference,
+				Status:       &bigqueryv2.JobStatus{State: "DONE"},
+			},
+			response,
+			nil,
+		),
+	); err != nil {
+		return nil, fmt.Errorf("failed to add job: %w", err)
+	}
+	if !r.queryRequest.DryRun {
+		if err := jobTx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit job: %w", err)
+		}
+	}
+
+	if maxResults := r.queryRequest.MaxResults; maxResults > 0 {
+		pageRows, nextPageToken := paginateRows(response.Rows, 0, maxResults)
+		response.Rows = pageRows
+		response.PageToken = nextPageToken
 	}
 	return response, nil
 }

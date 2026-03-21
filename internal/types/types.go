@@ -17,6 +17,7 @@ type (
 		Rows         []*TableRow              `json:"rows"`
 		TotalRows    uint64                   `json:"totalRows,string"`
 		JobComplete  bool                     `json:"jobComplete"`
+		PageToken    string                   `json:"pageToken,omitempty"`
 		TotalBytes   uint64                   `json:"-"`
 	}
 
@@ -26,6 +27,7 @@ type (
 		Rows           []*TableRow                `json:"rows"`
 		TotalRows      uint64                     `json:"totalRows,string"`
 		JobComplete    bool                       `json:"jobComplete"`
+		PageToken      string                     `json:"pageToken,omitempty"`
 		TotalBytes     int64                      `json:"-"`
 		ChangedCatalog *zetasqlite.ChangedCatalog `json:"-"`
 	}
