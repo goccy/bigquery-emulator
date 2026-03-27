@@ -785,20 +785,27 @@ According to google documentation (https://pkg.go.dev/cloud.google.com/go/bigque
 every table has a special stream named ‘_default’ to which data can be written. This stream doesn’t need to be created using CreateWriteStream
 
 Here we create the default stream and add it to map in case it not exists yet, the GetWriteStreamRequest given as second
-argument should have Name in this format: projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default
+argument should have Name in one of these formats:
+  - projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default
+  - projects/<projectId>/datasets/<datasetId>/tables/<tableId>/_default
+The Java client library uses the shorter format (without /streams/).
 */
 func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
 	streamId := req.Name
 	suffix := "_default"
-	streams := "/streams/"
 	if !strings.HasSuffix(streamId, suffix) {
-		return nil, fmt.Errorf("unexpected stream id: %s, expected '%s' suffix", streamId, suffix)
+		return nil, fmt.Errorf("unexpected stream id: %s, expected ‘%s’ suffix", streamId, suffix)
 	}
-	index := strings.LastIndex(streamId, streams)
-	if index == -1 {
-		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
+	// Extract the table path by stripping the stream suffix.
+	// Handle both "…/streams/_default" and "…/_default" formats.
+	var streamPart string
+	if index := strings.LastIndex(streamId, "/streams/"); index != -1 {
+		streamPart = streamId[:index]
+	} else if index := strings.LastIndex(streamId, "/_default"); index != -1 {
+		streamPart = streamId[:index]
+	} else {
+		return nil, fmt.Errorf("unexpected stream id format: %s", streamId)
 	}
-	streamPart := streamId[:index]
 	writeStreamReq := &storagepb.CreateWriteStreamRequest{
 		Parent: streamPart,
 		WriteStream: &storagepb.WriteStream{
