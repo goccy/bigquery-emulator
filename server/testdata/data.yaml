@@ -54,3 +54,7 @@ projects:
             - num: 1.2345
               bignum: 1.234567891234
               interval: 1-6 15 0:0:0
+- id: test2
+  datasets:
+    - id: dataset1
+    - id: dataset2

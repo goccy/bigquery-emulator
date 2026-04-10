@@ -18,3 +18,7 @@ projects:
             - id: 2
               name: bob
               createdAt: "2022-10-21T00:00:00"
+- id: test2
+  datasets:
+    - id: dataset1
+    - id: dataset2
