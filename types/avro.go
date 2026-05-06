@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/bigquery-emulator/internal/zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 

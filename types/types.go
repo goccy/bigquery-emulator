@@ -8,7 +8,7 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	"github.com/goccy/go-json"
-	"github.com/goccy/go-zetasql/types"
+	"github.com/glassmonkey/zetasql-wasm/types"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -94,7 +94,7 @@ type Column struct {
 
 func (c *Column) FormatType() string {
 	var typ string
-	if c.Type.ZetaSQLTypeKind() == types.STRUCT {
+	if c.Type.ZetaSQLTypeKind() == types.Struct {
 		formatTypes := make([]string, 0, len(c.Fields))
 		for _, field := range c.Fields {
 			formatTypes = append(formatTypes, fmt.Sprintf("`%s` %s", field.Name, field.FormatType()))
@@ -154,47 +154,47 @@ type Type string
 
 func TypeFromKind(kind int) Type {
 	switch types.TypeKind(kind) {
-	case types.INT32:
+	case types.Int32:
 		return INT64
-	case types.INT64:
+	case types.Int64:
 		return INT64
-	case types.UINT32:
+	case types.Uint32:
 		return INT64
-	case types.UINT64:
+	case types.Uint64:
 		return INT64
-	case types.BOOL:
+	case types.Bool:
 		return BOOL
-	case types.FLOAT:
+	case types.Float:
 		return FLOAT
-	case types.DOUBLE:
+	case types.Double:
 		return FLOAT64
-	case types.STRING:
+	case types.String:
 		return STRING
-	case types.BYTES:
+	case types.Bytes:
 		return BYTES
-	case types.DATE:
+	case types.Date:
 		return DATE
-	case types.TIMESTAMP:
+	case types.Timestamp:
 		return TIMESTAMP
-	case types.ENUM:
+	case types.Enum:
 		return INT64
-	case types.ARRAY:
+	case types.Array:
 		return ARRAY
-	case types.STRUCT:
+	case types.Struct:
 		return STRUCT
-	case types.TIME:
+	case types.Time:
 		return TIME
-	case types.DATETIME:
+	case types.Datetime:
 		return DATETIME
-	case types.GEOGRAPHY:
+	case types.Geography:
 		return GEOGRAPHY
-	case types.NUMERIC:
+	case types.Numeric:
 		return NUMERIC
-	case types.BIG_NUMERIC:
+	case types.BigNumeric:
 		return BIGNUMERIC
-	case types.JSON:
+	case types.Json:
 		return JSON
-	case types.INTERVAL:
+	case types.Interval:
 		return INTERVAL
 	}
 	return ""
@@ -203,63 +203,63 @@ func TypeFromKind(kind int) Type {
 func (t Type) ZetaSQLTypeKind() types.TypeKind {
 	switch t {
 	case INT64:
-		return types.INT64
+		return types.Int64
 	case INT:
-		return types.INT64
+		return types.Int64
 	case SMALLINT:
-		return types.INT64
+		return types.Int64
 	case INTEGER:
-		return types.INT64
+		return types.Int64
 	case BIGINT:
-		return types.INT64
+		return types.Int64
 	case TINYINT:
-		return types.INT64
+		return types.Int64
 	case BYTEINT:
-		return types.INT64
+		return types.Int64
 	case NUMERIC:
-		return types.NUMERIC
+		return types.Numeric
 	case BIGNUMERIC:
-		return types.BIG_NUMERIC
+		return types.BigNumeric
 	case DECIMAL:
-		return types.NUMERIC
+		return types.Numeric
 	case BIGDECIMAL:
-		return types.BIG_NUMERIC
+		return types.BigNumeric
 	case FLOAT:
-		return types.FLOAT
+		return types.Float
 	case FLOAT64:
-		return types.DOUBLE
+		return types.Double
 	case DOUBLE:
-		return types.DOUBLE
+		return types.Double
 	case BOOLEAN:
-		return types.BOOL
+		return types.Bool
 	case BOOL:
-		return types.BOOL
+		return types.Bool
 	case STRING:
-		return types.STRING
+		return types.String
 	case BYTES:
-		return types.BYTES
+		return types.Bytes
 	case DATE:
-		return types.DATE
+		return types.Date
 	case DATETIME:
-		return types.DATETIME
+		return types.Datetime
 	case TIME:
-		return types.TIME
+		return types.Time
 	case TIMESTAMP:
-		return types.TIMESTAMP
+		return types.Timestamp
 	case INTERVAL:
-		return types.INTERVAL
+		return types.Interval
 	case ARRAY:
-		return types.ARRAY
+		return types.Array
 	case STRUCT:
-		return types.STRUCT
+		return types.Struct
 	case GEOGRAPHY:
-		return types.GEOGRAPHY
+		return types.Geography
 	case JSON:
-		return types.JSON
+		return types.Json
 	case RECORD:
-		return types.STRUCT
+		return types.Struct
 	}
-	return types.UNKNOWN
+	return types.TypeKind(0)
 }
 
 func (t Type) FieldType() FieldType {
@@ -328,22 +328,22 @@ func TableFieldSchemaFromZetaSQLType(name string, t types.Type) *bigqueryv2.Tabl
 	kind := t.Kind()
 	typ := string(TypeFromKind(int(kind)).FieldType())
 	switch kind {
-	case types.ARRAY:
+	case types.Array:
 		at := t.AsArray()
-		elem := TableFieldSchemaFromZetaSQLType("", at.ElementType())
+		elem := TableFieldSchemaFromZetaSQLType("", at.ElementType)
 		return &bigqueryv2.TableFieldSchema{
 			Name:   name,
 			Type:   elem.Type,
 			Fields: elem.Fields,
 			Mode:   "REPEATED",
 		}
-	case types.STRUCT:
+	case types.Struct:
 		st := t.AsStruct()
-		fieldNum := st.NumFields()
+		fieldNum := len(st.Fields)
 		fields := make([]*bigqueryv2.TableFieldSchema, 0, fieldNum)
-		for i := 0; i < st.NumFields(); i++ {
-			field := st.Field(i)
-			fields = append(fields, TableFieldSchemaFromZetaSQLType(field.Name(), field.Type()))
+		for i := 0; i < len(st.Fields); i++ {
+			field := st.Fields[i]
+			fields = append(fields, TableFieldSchemaFromZetaSQLType(field.Name, field.Type))
 		}
 		return &bigqueryv2.TableFieldSchema{
 			Name:   name,
