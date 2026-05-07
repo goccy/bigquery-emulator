@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/mattn/go-sqlite3"
@@ -35,7 +36,40 @@ func init() {
 	})
 }
 
+// isPrivateInMemory reports whether `name` opens a SQLite database whose
+// state is connection-local. SQLite recognises several in-memory forms
+// (https://www.sqlite.org/inmemorydb.html); the unshared variants give
+// each connection its own independent DB, so caching the resulting
+// *sql.DB and Catalog across Open calls would let unrelated callers
+// (most painfully, consecutive tests that all use ":memory:") inherit
+// each other's tables. Forms with cache=shared are intentionally
+// cross-connection and stay on the cached path.
+//
+// TODO: the package-global cache itself should move out of the driver
+// layer so callers manage Catalog reuse explicitly. Tracked as a
+// follow-up; this predicate is the targeted fix for the test-
+// independence regression.
+func isPrivateInMemory(name string) bool {
+	if name == ":memory:" {
+		return true
+	}
+	if !strings.HasPrefix(name, "file:") {
+		return false
+	}
+	if !strings.Contains(name, ":memory:") && !strings.Contains(name, "mode=memory") {
+		return false
+	}
+	return !strings.Contains(name, "cache=shared")
+}
+
 func newDBAndCatalog(name string) (*sql.DB, *Catalog, error) {
+	if isPrivateInMemory(name) {
+		db, err := sql.Open("zetasqlite_sqlite3", name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open database by %s: %w", name, err)
+		}
+		return db, NewCatalog(db), nil
+	}
 	nameToValueMapMu.Lock()
 	defer nameToValueMapMu.Unlock()
 	db, exists := nameToDBMap[name]

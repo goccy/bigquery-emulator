@@ -101,7 +101,10 @@ func (c *Column) FormatType() string {
 		}
 		typ = fmt.Sprintf("STRUCT<%s>", strings.Join(formatTypes, ","))
 	} else {
-		typ = c.Type.ZetaSQLTypeKind().String()
+		// Kind.String() returns the proto enum name ("TYPE_INT64",
+		// "TYPE_STRING", ...); ZetaSQL DDL expects the SQL name
+		// ("INT64", "STRING", ...). Strip the proto namespace.
+		typ = strings.TrimPrefix(c.Type.ZetaSQLTypeKind().String(), "TYPE_")
 	}
 	if c.Mode == RepeatedMode {
 		return fmt.Sprintf("ARRAY<%s>", typ)

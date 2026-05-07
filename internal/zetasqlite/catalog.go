@@ -405,6 +405,63 @@ func (c *Catalog) addFunctionSpec(spec *FunctionSpec) error {
 	return nil
 }
 
+// findCanonicalTablePath maps a (possibly truncated) path coming out of
+// the resolved AST back to the full NamePath under which the table was
+// registered. Sub-catalog registration inside addTableSpecRecursive adds
+// the same logical table under multiple shortened names, so a query that
+// resolves through the sub-catalog can leave the resolved Table's
+// FullName as just the leaf — losing the project / dataset segments the
+// formatter needs to reach the actual SQLite table. This lookup recovers
+// them by matching `partial` as a suffix of a registered spec's NamePath
+// and preferring matches whose leading segments overlap with the
+// caller's namePath context.
+func (c *Catalog) findCanonicalTablePath(partial []string, ctxPath []string) []string {
+	if len(partial) == 0 {
+		return nil
+	}
+	var best []string
+	for _, spec := range c.tables {
+		if !hasPathSuffix(spec.NamePath, partial) {
+			continue
+		}
+		// Prefer specs whose leading segments are consistent with the
+		// caller's namePath context so two datasets with the same leaf
+		// don't collide.
+		if len(ctxPath) > 0 && !hasPathPrefix(spec.NamePath, ctxPath) {
+			continue
+		}
+		if len(spec.NamePath) > len(best) {
+			best = spec.NamePath
+		}
+	}
+	return best
+}
+
+func hasPathSuffix(path, suffix []string) bool {
+	if len(path) < len(suffix) {
+		return false
+	}
+	off := len(path) - len(suffix)
+	for i, seg := range suffix {
+		if path[off+i] != seg {
+			return false
+		}
+	}
+	return true
+}
+
+func hasPathPrefix(path, prefix []string) bool {
+	if len(path) < len(prefix) {
+		return false
+	}
+	for i, seg := range prefix {
+		if path[i] != seg {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Catalog) addTableSpec(spec *TableSpec) error {
 	tableName := spec.TableName()
 	if _, exists := c.tableMap[tableName]; exists {

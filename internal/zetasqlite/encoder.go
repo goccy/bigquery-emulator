@@ -136,21 +136,60 @@ func LiteralFromValue(v Value) (string, error) {
 	return fmt.Sprintf("%q", base64.StdEncoding.EncodeToString(b)), nil
 }
 
-// TODO(zetasql-wasm-migration): LiteralFromZetaSQLValue / ValueFromZetaSQLValue
-// used to consume a go-zetasql runtime types.Value (with rich accessors like
-// IsNull(), SQLLiteral(), ToUnixMicros(), JSONString()). zetasql-wasm exposes
-// only the typed *types.LiteralValue (a Type + Go value pair) and has no
-// runtime evaluator. The conversion from the wrapped value to the fork's
-// Value type needs a dedicated pass; until then these entry points return
-// an error so the rest of the package compiles.
+// LiteralFromZetaSQLValue formats a zetasql-wasm LiteralValue as a SQLite
+// SQL literal in the fork's storage convention: scalar numerics/booleans
+// are emitted directly, everything else (strings, bytes, arrays, structs,
+// dates, timestamps) is round-tripped through valueLayoutFromValue and
+// stored as a base64-encoded JSON blob that the SQLite-side custom
+// functions decode at read time. NULL (Value == nil) becomes "null".
 func LiteralFromZetaSQLValue(v *types.LiteralValue) (string, error) {
-	_ = v
-	return "", fmt.Errorf("LiteralFromZetaSQLValue: zetasql-wasm runtime value bridge not yet implemented")
+	val, err := ValueFromZetaSQLValue(v)
+	if err != nil {
+		return "", err
+	}
+	return LiteralFromValue(val)
 }
 
+// ValueFromZetaSQLValue lifts a wrapped LiteralValue into the fork's Value
+// hierarchy. ARRAY / STRUCT values are reconstructed by recursing into
+// their element LiteralValues; field names for STRUCT are read off the
+// surrounding StructType. Returns nil for SQL NULL (proto oneof unset) and
+// for kinds the wrap layer cannot model yet (LiteralValue.Value == nil).
 func ValueFromZetaSQLValue(v *types.LiteralValue) (Value, error) {
-	_ = v
-	return nil, fmt.Errorf("ValueFromZetaSQLValue: zetasql-wasm runtime value bridge not yet implemented")
+	if v == nil || v.Value == nil {
+		return nil, nil
+	}
+	switch elts := v.Value.(type) {
+	case types.ArrayValue:
+		arr := &ArrayValue{}
+		for _, e := range elts {
+			inner, err := ValueFromZetaSQLValue(e)
+			if err != nil {
+				return nil, err
+			}
+			arr.values = append(arr.values, inner)
+		}
+		return arr, nil
+	case types.StructValue:
+		st := v.Type.AsStruct()
+		if st == nil || len(st.Fields) != len(elts) {
+			return nil, fmt.Errorf("struct value/type field count mismatch")
+		}
+		s := &StructValue{m: map[string]Value{}}
+		for i, e := range elts {
+			inner, err := ValueFromZetaSQLValue(e)
+			if err != nil {
+				return nil, err
+			}
+			name := st.Fields[i].Name
+			s.keys = append(s.keys, name)
+			s.values = append(s.values, inner)
+			s.m[name] = inner
+		}
+		return s, nil
+	default:
+		return ValueFromGoValue(v.Value)
+	}
 }
 
 func intValueFromLiteral(lit string) (IntValue, error) {
@@ -460,6 +499,62 @@ func ValueFromGoValue(v interface{}) (Value, error) {
 		return nil, nil
 	}
 	return valueFromGoReflectValue(reflect.ValueOf(v))
+}
+
+// inferZetaSQLType returns the ZetaSQL Type that corresponds to v's Go type.
+// This is used to register query-parameter types with the analyzer before
+// the SQL is parsed, so that parameter references like @ids resolve.
+//
+// Untyped nil (and typed nil pointers) cannot be inferred — the caller has
+// to resolve the type some other way (e.g. from the surrounding SQL or the
+// declared parameter type) before passing the value in.
+func inferZetaSQLType(v interface{}) (types.Type, error) {
+	if v == nil {
+		return nil, fmt.Errorf("cannot infer zetasql type from untyped nil")
+	}
+	return inferZetaSQLTypeFromReflect(reflect.ValueOf(v))
+}
+
+func inferZetaSQLTypeFromReflect(v reflect.Value) (types.Type, error) {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return types.Int64Type(), nil
+	case reflect.Float32, reflect.Float64:
+		return types.DoubleType(), nil
+	case reflect.Bool:
+		return types.BoolType(), nil
+	case reflect.String:
+		return types.StringType(), nil
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return types.BytesType(), nil
+		}
+		// Element type is taken from the static type, not a sample element,
+		// so empty slices still produce a well-typed ARRAY<...>.
+		elemSample := reflect.New(v.Type().Elem()).Elem()
+		elem, err := inferZetaSQLTypeFromReflect(elemSample)
+		if err != nil {
+			return nil, fmt.Errorf("failed to infer array element type: %w", err)
+		}
+		return types.NewArrayType(elem)
+	case reflect.Ptr:
+		if v.IsNil() {
+			// Nil-typed pointers fall back to the pointee's static type.
+			return inferZetaSQLTypeFromReflect(reflect.New(v.Type().Elem()).Elem())
+		}
+		return inferZetaSQLTypeFromReflect(v.Elem())
+	case reflect.Interface:
+		if v.IsNil() {
+			return nil, fmt.Errorf("cannot infer zetasql type from nil interface")
+		}
+		return inferZetaSQLTypeFromReflect(reflect.ValueOf(v.Interface()))
+	case reflect.Struct:
+		if _, ok := v.Interface().(time.Time); ok {
+			return types.TimestampType(), nil
+		}
+	}
+	return nil, fmt.Errorf("cannot infer zetasql type from go value of kind %s", v.Kind())
 }
 
 func valueFromGoReflectValue(v reflect.Value) (Value, error) {

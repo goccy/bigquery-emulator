@@ -20,18 +20,39 @@ func New(node ast.Node) Formatter {
 	return newNode(node)
 }
 
-func getTableName(ctx context.Context, n ast.Node) (string, error) {
-	nodeMap := nodeMapFromContext(ctx)
-	found := nodeMap.FindNodeFromResolvedNode(n)
-	if len(found) == 0 {
-		return "", fmt.Errorf("failed to find path node from table node %T", n)
+// getTableName returns the SQLite-side table name for a resolved
+// TableScanNode. The resolved Table reference already carries the path the
+// analyzer settled on (FullName like "dataset.t" or just "t"); we split it
+// on "." and pass the components through namePath.format to produce the
+// "_"-joined identifier this fork uses for SQLite tables. This bypasses the
+// resolved->parsed reverse lookup, which zetasql-wasm does not expose yet.
+func getTableName(ctx context.Context, scan *ast.TableScanNode) (string, error) {
+	if scan == nil {
+		return "", fmt.Errorf("nil TableScanNode")
 	}
-	path, err := getPathFromNode(found[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to find path: %w", err)
+	table := scan.Table()
+	if table == nil {
+		return "", fmt.Errorf("TableScanNode has no Table reference")
+	}
+	name := table.GetFullName()
+	if name == "" {
+		name = table.GetName()
+	}
+	if name == "" {
+		return "", fmt.Errorf("TableScanNode has no name")
 	}
 	namePath := namePathFromContext(ctx)
-	return namePath.format(path), nil
+	partial := strings.Split(name, ".")
+	// The resolved Table can carry a truncated path (e.g. just "table_a")
+	// when the analyzer matched it via a sub-catalog. Recover the full
+	// registered path by consulting the catalog before falling back to
+	// the namePath-merge heuristic.
+	if a := analyzerFromContext(ctx); a != nil && a.catalog != nil {
+		if canonical := a.catalog.findCanonicalTablePath(partial, namePath.Path()); canonical != nil {
+			return formatPath(canonical), nil
+		}
+	}
+	return namePath.format(partial), nil
 }
 
 func getFuncName(ctx context.Context, n ast.Node) (string, error) {
@@ -140,6 +161,12 @@ func getFuncNameAndArgs(ctx context.Context, node ast.BaseFunctionCall, isWindow
 		args = append(args, arg)
 	}
 	funcName := node.Function().Name
+	// zetasql-wasm's wrap surfaces builtin function names with a "ZetaSQL:"
+	// namespace prefix (e.g. "ZetaSQL:add", "ZetaSQL:$in_array"). The
+	// emulator's function registry keys are bare, fork-internal names
+	// ("add", "in_array"), so strip the namespace before dispatch and let
+	// the existing "$"-operator path handle the residual operator marker.
+	funcName = strings.TrimPrefix(funcName, "ZetaSQL:")
 	funcName = strings.Replace(funcName, ".", "_", -1)
 
 	_, existsCurrentTimeFunc := currentTimeFuncMap[funcName]

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/bigquery-emulator/internal/zetasqlite"
@@ -152,7 +153,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
-		value, err := r.queryParameterValueToGoValue(param.ParameterValue)
+		value, err := r.queryParameterValueToGoValue(param.ParameterValue, param.ParameterType)
 		if err != nil {
 			return nil, err
 		}
@@ -255,22 +256,28 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	}, nil
 }
 
-func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue) (interface{}, error) {
+// queryParameterValueToGoValue converts a BigQuery REST query parameter
+// payload into the Go value the SQLite driver layer wants. The REST API
+// always serialises scalar values as JSON strings (e.g. "1" for INT64),
+// so the declared ParameterType is needed to coerce strings back into
+// the target Go type. ARRAY recurses on its element type so the result
+// is a typed slice (`[]int64`, `[]string`, ...) that the analyzer can
+// type-infer cleanly downstream.
+func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue, paramType *bigqueryv2.QueryParameterType) (interface{}, error) {
 	switch {
 	case len(value.ArrayValues) != 0:
-		arr := make([]interface{}, 0, len(value.ArrayValues))
-		for _, v := range value.ArrayValues {
-			elem, err := r.queryParameterValueToGoValue(v)
-			if err != nil {
-				return nil, err
-			}
-			arr = append(arr, elem)
+		var elemType *bigqueryv2.QueryParameterType
+		if paramType != nil {
+			elemType = paramType.ArrayType
 		}
-		return arr, nil
+		return r.arrayValueToTypedSlice(value.ArrayValues, elemType)
 	case len(value.StructValues) != 0:
 		st := make(map[string]interface{}, len(value.StructValues))
 		for k, v := range value.StructValues {
-			elem, err := r.queryParameterValueToGoValue(&v)
+			// STRUCT field types are not yet plumbed through; fall back
+			// to untyped recursion. This is sufficient for cases where
+			// downstream type inference doesn't depend on field types.
+			elem, err := r.queryParameterValueToGoValue(&v, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -278,7 +285,121 @@ func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParamet
 		}
 		return st, nil
 	}
-	return value.Value, nil
+	return coerceScalarParameterValue(value.Value, paramType)
+}
+
+// arrayValueToTypedSlice coerces every element to elemType and packs the
+// result into a slice whose element type matches elemType, so the analyzer
+// sees ARRAY<elemType> rather than the type-erased []interface{} that
+// JSON decoding leaves behind.
+func (r *Repository) arrayValueToTypedSlice(elems []*bigqueryv2.QueryParameterValue, elemType *bigqueryv2.QueryParameterType) (interface{}, error) {
+	if elemType == nil {
+		// Element type unknown — fall back to []interface{}; downstream
+		// type inference will likely reject this, but the failure mode
+		// is at least visible.
+		out := make([]interface{}, 0, len(elems))
+		for _, e := range elems {
+			v, err := r.queryParameterValueToGoValue(e, nil)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	}
+	switch elemType.Type {
+	case "INT64", "INTEGER":
+		out := make([]int64, 0, len(elems))
+		for _, e := range elems {
+			v, err := coerceInt64(e.Value)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	case "FLOAT64", "FLOAT":
+		out := make([]float64, 0, len(elems))
+		for _, e := range elems {
+			v, err := coerceFloat64(e.Value)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	case "BOOL", "BOOLEAN":
+		out := make([]bool, 0, len(elems))
+		for _, e := range elems {
+			v, err := coerceBool(e.Value)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	case "STRING":
+		out := make([]string, 0, len(elems))
+		for _, e := range elems {
+			out = append(out, e.Value)
+		}
+		return out, nil
+	}
+	// Unknown element type — fall back to untyped slice with element-wise
+	// recursion. Caller-side may still succeed for types whose analyzer
+	// signature is permissive.
+	out := make([]interface{}, 0, len(elems))
+	for _, e := range elems {
+		v, err := r.queryParameterValueToGoValue(e, elemType)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// coerceScalarParameterValue converts the JSON-string value the REST API
+// hands us into the Go-typed scalar that matches the declared parameter
+// type. When paramType is nil or unknown, the original string is returned
+// (preserving the pre-type-aware behavior for callers that pass NULL).
+func coerceScalarParameterValue(raw string, paramType *bigqueryv2.QueryParameterType) (interface{}, error) {
+	if paramType == nil {
+		return raw, nil
+	}
+	switch paramType.Type {
+	case "INT64", "INTEGER":
+		return coerceInt64(raw)
+	case "FLOAT64", "FLOAT":
+		return coerceFloat64(raw)
+	case "BOOL", "BOOLEAN":
+		return coerceBool(raw)
+	}
+	return raw, nil
+}
+
+func coerceInt64(s string) (int64, error) {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parameter int64: %w", err)
+	}
+	return v, nil
+}
+
+func coerceFloat64(s string) (float64, error) {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parameter float64: %w", err)
+	}
+	return v, nil
+}
+
+func coerceBool(s string) (bool, error) {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return false, fmt.Errorf("parameter bool: %w", err)
+	}
+	return v, nil
 }
 
 // zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.

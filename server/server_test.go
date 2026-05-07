@@ -412,6 +412,75 @@ func TestQuery(t *testing.T) {
 	}
 }
 
+// TestNamedQueryParameterInUnnest is the front-door regression test for the
+// boot blocker reported after the zetasql-wasm v0.5.0 migration: named
+// query parameters were rejected at the analyzer stage ("Query parameter
+// 'X' not found"), which fired during server boot via the metadata layer's
+// findProjects (`WHERE id IN UNNEST(@ids)`) and prevented the server from
+// reaching Listen.
+//
+// The query mirrors the bug-report shape (`WHERE id IN UNNEST(@ids)`) and
+// runs through the BigQuery REST API, so a re-introduction surfaces here
+// at the same caller layer the user actually sees.
+func TestNamedQueryParameterInUnnest(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.YAMLSource(filepath.Join("testdata", "data.yaml")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(
+		ctx, "test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Act
+	query := client.Query("SELECT name FROM dataset1.table_a WHERE id IN UNNEST(@ids) ORDER BY id")
+	query.Parameters = []bigquery.QueryParameter{
+		{Name: "ids", Value: []int64{1, 2}},
+	}
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	var got [][]bigquery.Value
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatalf("Next: %v", err)
+		}
+		got = append(got, row)
+	}
+
+	// Assert
+	want := [][]bigquery.Value{
+		{"alice"},
+		{"bob"},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
 func TestQueryWithDestination(t *testing.T) {
 	ctx := context.Background()
 
