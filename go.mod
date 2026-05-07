@@ -1,10 +1,8 @@
 module github.com/goccy/bigquery-emulator
 
-go 1.25.4
+go 1.26.2
 
 replace github.com/glassmonkey/zetasql-wasm => /Users/glassmonkey/src/github.com/glassmonkey/zetasql-wasm
-
-replace github.com/glassmonkey/zetasql-wasm/wasm => /Users/glassmonkey/src/github.com/glassmonkey/zetasql-wasm/wasm
 
 require (
 	cloud.google.com/go/bigquery v1.60.0
@@ -15,8 +13,7 @@ require (
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/dop251/goja v0.0.0-20221118162653-d4bf6fde1b86
 	github.com/fsouza/fake-gcs-server v1.43.0
-	github.com/glassmonkey/zetasql-wasm v0.0.0-00010101000000-000000000000
-	github.com/glassmonkey/zetasql-wasm/wasm v0.0.0
+	github.com/glassmonkey/zetasql-wasm v0.5.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-json v0.10.2
 	github.com/goccy/go-yaml v1.11.0
@@ -70,7 +67,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/leodido/go-urn v1.2.1 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
 	github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3 // indirect
@@ -94,7 +91,7 @@ require (
 	golang.org/x/crypto v0.21.0 // indirect
 	golang.org/x/mod v0.13.0 // indirect
 	golang.org/x/oauth2 v0.18.0 // indirect
-	golang.org/x/sys v0.21.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.14.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect

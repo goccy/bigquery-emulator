@@ -14,7 +14,6 @@ import (
 
 	ast "github.com/glassmonkey/zetasql-wasm/resolved_ast"
 	"github.com/glassmonkey/zetasql-wasm/types"
-	"github.com/glassmonkey/zetasql-wasm/wasm/generated"
 	"github.com/goccy/go-json"
 )
 
@@ -140,16 +139,16 @@ func LiteralFromValue(v Value) (string, error) {
 // TODO(zetasql-wasm-migration): LiteralFromZetaSQLValue / ValueFromZetaSQLValue
 // used to consume a go-zetasql runtime types.Value (with rich accessors like
 // IsNull(), SQLLiteral(), ToUnixMicros(), JSONString()). zetasql-wasm exposes
-// only the parsed proto *generated.ValueWithTypeProto and has no runtime
-// evaluator. The conversion from the proto value to the fork's Value type
-// needs a dedicated pass; until then these entry points return an error so
-// the rest of the package compiles.
-func LiteralFromZetaSQLValue(v *generated.ValueWithTypeProto) (string, error) {
+// only the typed *types.LiteralValue (a Type + Go value pair) and has no
+// runtime evaluator. The conversion from the wrapped value to the fork's
+// Value type needs a dedicated pass; until then these entry points return
+// an error so the rest of the package compiles.
+func LiteralFromZetaSQLValue(v *types.LiteralValue) (string, error) {
 	_ = v
 	return "", fmt.Errorf("LiteralFromZetaSQLValue: zetasql-wasm runtime value bridge not yet implemented")
 }
 
-func ValueFromZetaSQLValue(v *generated.ValueWithTypeProto) (Value, error) {
+func ValueFromZetaSQLValue(v *types.LiteralValue) (Value, error) {
 	_ = v
 	return nil, fmt.Errorf("ValueFromZetaSQLValue: zetasql-wasm runtime value bridge not yet implemented")
 }
@@ -294,12 +293,12 @@ func intervalValueFromLiteral(lit string) (*IntervalValue, error) {
 
 // TODO(zetasql-wasm-migration): array/struct value decoders are part of the
 // runtime-value bridge and stubbed alongside ValueFromZetaSQLValue.
-func arrayValueFromLiteral(v *generated.ValueWithTypeProto) (*ArrayValue, error) {
+func arrayValueFromLiteral(v *types.LiteralValue) (*ArrayValue, error) {
 	_ = v
 	return nil, fmt.Errorf("arrayValueFromLiteral: zetasql-wasm runtime value bridge not yet implemented")
 }
 
-func structValueFromLiteral(v *generated.ValueWithTypeProto) (*StructValue, error) {
+func structValueFromLiteral(v *types.LiteralValue) (*StructValue, error) {
 	_ = v
 	return nil, fmt.Errorf("structValueFromLiteral: zetasql-wasm runtime value bridge not yet implemented")
 }

@@ -9,7 +9,6 @@ import (
 
 	ast "github.com/glassmonkey/zetasql-wasm/resolved_ast"
 	"github.com/glassmonkey/zetasql-wasm/types"
-	"github.com/glassmonkey/zetasql-wasm/wasm/generated"
 	"github.com/goccy/go-json"
 )
 
@@ -345,14 +344,10 @@ func newTypeFromFunctionArgumentType(t *types.FunctionArgumentType) *Type {
 func newFunctionSpec(ctx context.Context, namePath *NamePath, stmt *ast.CreateFunctionStmtNode) (*FunctionSpec, error) {
 	args := []*NameWithType{}
 	signature := stmt.Signature()
-	for _, arg := range signature.GetArgument() {
-		argType, err := newTypeFromArgumentTypeProto(arg)
-		if err != nil {
-			return nil, err
-		}
+	for _, arg := range signature.Arguments {
 		args = append(args, &NameWithType{
-			Name: arg.GetOptions().GetArgumentName(),
-			Type: argType,
+			Name: argumentName(arg),
+			Type: newTypeFromArgumentType(arg),
 		})
 	}
 
@@ -423,61 +418,50 @@ func newFunctionSpec(ctx context.Context, namePath *NamePath, stmt *ast.CreateFu
 	}, nil
 }
 
-// newTypeFromArgumentTypeProto rebuilds the fork's *Type from a
-// *generated.FunctionArgumentTypeProto, treating templated kinds as the
-// wrapped SignatureArgumentKind and fixed kinds as the resolved Type.
-func newTypeFromArgumentTypeProto(arg *generated.FunctionArgumentTypeProto) (*Type, error) {
-	if arg.GetKind() != generated.SignatureArgumentKind_ARG_TYPE_FIXED {
-		return &Type{SignatureKind: types.SignatureArgumentKind(arg.GetKind())}, nil
+// newTypeFromArgumentType rebuilds the fork's *Type from a wrapped
+// FunctionArgumentType, treating templated kinds as the wrapped
+// SignatureArgumentKind and fixed kinds as the resolved Type.
+func newTypeFromArgumentType(arg *types.FunctionArgumentType) *Type {
+	if arg.Kind != types.ArgTypeFixed {
+		return &Type{SignatureKind: arg.Kind}
 	}
-	t, err := types.TypeFromProto(arg.GetType())
-	if err != nil {
-		return nil, err
-	}
-	return newType(t), nil
+	return newType(arg.Type)
 }
 
-// newTypeFromArgumentTypeProtoByRealType is the proto-aware twin of the old
-// newTypeFromFunctionArgumentTypeByRealType. For templated arguments it
-// reflects the realised type's shape (array vs scalar) into the templated
-// SignatureArgumentKind; for fixed arguments it just unwraps the proto type.
-func newTypeFromArgumentTypeProtoByRealType(arg *generated.FunctionArgumentTypeProto, realProto *generated.TypeProto) (*Type, error) {
-	if arg.GetKind() != generated.SignatureArgumentKind_ARG_TYPE_FIXED {
-		realType, err := types.TypeFromProto(realProto)
-		if err != nil {
-			return nil, err
-		}
+// newTypeFromArgumentTypeByRealType reflects the realised type's shape
+// (array vs scalar) into the templated SignatureArgumentKind; for fixed
+// arguments it just unwraps the wrapped argument type.
+func newTypeFromArgumentTypeByRealType(arg *types.FunctionArgumentType, realType types.Type) *Type {
+	if arg.Kind != types.ArgTypeFixed {
 		if realType != nil && realType.IsArray() {
-			return &Type{SignatureKind: types.ArgArrayTypeAny1}, nil
+			return &Type{SignatureKind: types.ArgArrayTypeAny1}
 		}
-		return &Type{SignatureKind: types.ArgTypeAny1}, nil
+		return &Type{SignatureKind: types.ArgTypeAny1}
 	}
-	t, err := types.TypeFromProto(arg.GetType())
-	if err != nil {
-		return nil, err
+	return newType(arg.Type)
+}
+
+// argumentName returns the declared parameter name for a function argument,
+// or "" when no Options block is attached.
+func argumentName(arg *types.FunctionArgumentType) string {
+	if arg.Options == nil {
+		return ""
 	}
-	return newType(t), nil
+	return arg.Options.ArgumentName
 }
 
 func newTemplatedFunctionSpec(ctx context.Context, namePath *NamePath, stmt *ast.CreateFunctionStmtNode, realStmts []*ast.CreateFunctionStmtNode) (*FunctionSpec, error) {
 	signature := stmt.Signature()
-	arguments := signature.GetArgument()
+	arguments := signature.Arguments
 	realStmt := realStmts[0]
 	realSignature := realStmt.Signature()
-	realArguments := realSignature.GetArgument()
-	realReturnType, err := types.TypeFromProto(realSignature.GetReturnType().GetType())
-	if err != nil {
-		return nil, err
-	}
-	resultType := newType(realReturnType)
+	realArguments := realSignature.Arguments
+	resultType := newType(realSignature.ReturnType.Type)
 	resultTypeName := resultType.FormatType()
 
 	allSameResultType := true
 	for _, stmt := range realStmts {
-		t, err := types.TypeFromProto(stmt.Signature().GetReturnType().GetType())
-		if err != nil {
-			return nil, err
-		}
+		t := stmt.Signature().ReturnType.Type
 		if newType(t).FormatType() != resultTypeName {
 			allSameResultType = false
 			break
@@ -487,27 +471,16 @@ func newTemplatedFunctionSpec(ctx context.Context, namePath *NamePath, stmt *ast
 	if allSameResultType {
 		retType = resultType
 	} else {
-		rt, err := newTypeFromArgumentTypeProtoByRealType(
-			signature.GetReturnType(),
-			realSignature.GetReturnType().GetType(),
+		retType = newTypeFromArgumentTypeByRealType(
+			signature.ReturnType,
+			realSignature.ReturnType.Type,
 		)
-		if err != nil {
-			return nil, err
-		}
-		retType = rt
 	}
 	args := []*NameWithType{}
 	for i := 0; i < len(arguments); i++ {
-		argType, err := newTypeFromArgumentTypeProtoByRealType(
-			arguments[i],
-			realArguments[i].GetType(),
-		)
-		if err != nil {
-			return nil, err
-		}
 		args = append(args, &NameWithType{
-			Name: arguments[i].GetOptions().GetArgumentName(),
-			Type: argType,
+			Name: argumentName(arguments[i]),
+			Type: newTypeFromArgumentTypeByRealType(arguments[i], realArguments[i].Type),
 		})
 	}
 	funcExpr := stmt.FunctionExpression()
@@ -563,7 +536,7 @@ func newColumnsFromOutputColumns(def []*ast.OutputColumnNode) ([]*ColumnSpec, er
 	columns := []*ColumnSpec{}
 	for _, columnNode := range def {
 		column := columnNode.Column()
-		colType, err := types.TypeFromProto(column.GetType())
+		colType, err := types.TypeFromProto(column.Type)
 		if err != nil {
 			return nil, err
 		}
@@ -603,8 +576,8 @@ func newTableAsViewSpec(namePath *NamePath, query string, stmt *ast.CreateViewSt
 	var outputColumns []string
 	for _, column := range stmt.OutputColumnList() {
 		colName := column.Name()
-		refColumnName := column.Column().GetName()
-		colID := column.Column().GetColumnId()
+		refColumnName := column.Column().Name
+		colID := column.Column().ID
 		outputColumns = append(
 			outputColumns,
 			fmt.Sprintf("`%s#%d` AS `%s`", refColumnName, colID, colName),
@@ -631,8 +604,8 @@ func newTableAsSelectSpec(namePath *NamePath, query string, stmt *ast.CreateTabl
 	var outputColumns []string
 	for _, column := range stmt.OutputColumnList() {
 		colName := column.Name()
-		refColumnName := column.Column().GetName()
-		colID := column.Column().GetColumnId()
+		refColumnName := column.Column().Name
+		colID := column.Column().ID
 		outputColumns = append(
 			outputColumns,
 			fmt.Sprintf("`%s#%d` AS `%s`", refColumnName, colID, colName),
