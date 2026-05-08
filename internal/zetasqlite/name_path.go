@@ -10,13 +10,6 @@ type NamePath struct {
 	maxNum int
 }
 
-// Path returns the namePath segments (project / dataset prefix) used
-// to disambiguate partially-qualified references. Read-only view of the
-// internal slice; callers must not mutate it.
-func (p *NamePath) Path() []string {
-	return p.path
-}
-
 func (p *NamePath) isInformationSchema(path []string) bool {
 	if len(path) == 0 {
 		return false

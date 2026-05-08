@@ -18,8 +18,7 @@ type Analyzer struct {
 	isExplainMode   bool
 	catalog         *Catalog
 	opt             *zetasql.AnalyzerOptions
-	analyzer        *zetasql.Analyzer
-	parser          *zetasql.Parser
+	engine          *zetasql.Engine
 }
 
 func NewAnalyzer(ctx context.Context, catalog *Catalog) (*Analyzer, error) {
@@ -27,32 +26,24 @@ func NewAnalyzer(ctx context.Context, catalog *Catalog) (*Analyzer, error) {
 	if err != nil {
 		return nil, err
 	}
-	wasmAnalyzer, err := zetasql.NewAnalyzer(ctx)
+	engine, err := zetasql.New(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to init zetasql-wasm analyzer: %w", err)
-	}
-	wasmParser, err := zetasql.NewParser(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to init zetasql-wasm parser: %w", err)
+		return nil, fmt.Errorf("failed to init zetasql-wasm engine: %w", err)
 	}
 	return &Analyzer{
 		catalog:  catalog,
 		opt:      opt,
 		namePath: &NamePath{},
-		analyzer: wasmAnalyzer,
-		parser:   wasmParser,
+		engine:   engine,
 	}, nil
 }
 
-// Close releases the embedded WASM runtimes.
+// Close releases the embedded WASM runtime.
 func (a *Analyzer) Close(ctx context.Context) error {
-	if a.parser != nil {
-		_ = a.parser.Close(ctx)
+	if a.engine == nil {
+		return nil
 	}
-	if a.analyzer != nil {
-		return a.analyzer.Close(ctx)
-	}
-	return nil
+	return a.engine.Close(ctx)
 }
 
 func newAnalyzerOptions() (*zetasql.AnalyzerOptions, error) {
@@ -169,7 +160,7 @@ func (a *Analyzer) parseScript(ctx context.Context, query string) ([]parsed_ast.
 	// (e.g. "SELECT 1; SELECT 2;") are reduced to a single parse here.
 	// BeginEndBlock is unpacked, matching the previous behaviour for the
 	// scripted-block case.
-	stmt, err := a.parser.ParseStatement(ctx, query)
+	stmt, err := a.engine.Parse(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse statement: %w", err)
 	}
@@ -243,11 +234,11 @@ func (a *Analyzer) Analyze(ctx context.Context, conn *Conn, query string, args [
 			// of each statement is unavailable, so we pass the original
 			// query when there's only one statement and rely on the
 			// fork's scripted-block fallback otherwise.
-			out, err := a.analyzer.AnalyzeStatement(ctx, query, a.catalog.SimpleCatalog(), a.opt)
+			out, err := a.engine.Analyze(ctx, query, a.catalog.SimpleCatalog(), a.opt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to analyze: %w", err)
 			}
-			stmtNode := out.Statement
+			stmtNode := out.Resolved
 			ctx = a.context(ctx, funcMap, stmtNode, stmt)
 			action, err := a.newStmtAction(ctx, query, args, stmtNode)
 			if err != nil {
@@ -326,21 +317,16 @@ func (a *Analyzer) context(
 	ctx = withTableNameToColumnListMap(ctx, map[string][]*ast.Column{})
 	ctx = withFuncMap(ctx, funcMap)
 	ctx = withAnalyticOrderColumnNames(ctx, &analyticOrderColumnNames{})
-	// TODO(zetasql-wasm-migration): zetasql.NewNodeMap takes only the
-	// resolved statement; the parsed AST counterpart needs a separate
-	// reverse-lookup design (see development-plan.md). Drop the second
-	// argument for now.
-	_ = stmt
-	ctx = withNodeMap(ctx, &nodeMap{resolved: zetasql.NewNodeMap(stmtNode)})
+	ctx = withNodeMap(ctx, &nodeMap{resolved: zetasql.NewNodeMap(stmtNode, stmt)})
 	return ctx
 }
 
 func (a *Analyzer) analyzeTemplatedFunctionWithRuntimeArgument(ctx context.Context, query string) (*FunctionSpec, error) {
-	out, err := a.analyzer.AnalyzeStatement(ctx, query, a.catalog.SimpleCatalog(), a.opt)
+	out, err := a.engine.Analyze(ctx, query, a.catalog.SimpleCatalog(), a.opt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to analyze: %w", err)
 	}
-	node := out.Statement
+	node := out.Resolved
 	stmt, ok := node.(*ast.CreateFunctionStmtNode)
 	if !ok {
 		return nil, fmt.Errorf("unexpected create function query %s", query)
@@ -489,16 +475,16 @@ var inferTypes = []string{
 func (a *Analyzer) inferTemplatedTypeByRealType(ctx context.Context, query string, node *ast.CreateFunctionStmtNode) ([]*ast.CreateFunctionStmtNode, error) {
 	var stmts []*ast.CreateFunctionStmtNode
 	for _, typ := range inferTypes {
-		if out, err := a.analyzer.AnalyzeStatement(ctx, a.buildScalarTypeFuncFromTemplatedFunc(node, typ), a.catalog.SimpleCatalog(), a.opt); err == nil {
-			stmts = append(stmts, out.Statement.(*ast.CreateFunctionStmtNode))
+		if out, err := a.engine.Analyze(ctx, a.buildScalarTypeFuncFromTemplatedFunc(node, typ), a.catalog.SimpleCatalog(), a.opt); err == nil {
+			stmts = append(stmts, out.Resolved.(*ast.CreateFunctionStmtNode))
 		}
 	}
 	if len(stmts) != 0 {
 		return stmts, nil
 	}
 	for _, typ := range inferTypes {
-		if out, err := a.analyzer.AnalyzeStatement(ctx, a.buildArrayTypeFuncFromTemplatedFunc(node, typ), a.catalog.SimpleCatalog(), a.opt); err == nil {
-			stmts = append(stmts, out.Statement.(*ast.CreateFunctionStmtNode))
+		if out, err := a.engine.Analyze(ctx, a.buildArrayTypeFuncFromTemplatedFunc(node, typ), a.catalog.SimpleCatalog(), a.opt); err == nil {
+			stmts = append(stmts, out.Resolved.(*ast.CreateFunctionStmtNode))
 		}
 	}
 	if len(stmts) != 0 {

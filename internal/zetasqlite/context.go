@@ -50,26 +50,22 @@ func withNamePath(ctx context.Context, namePath *NamePath) context.Context {
 	return context.WithValue(ctx, namePathKey{}, namePath)
 }
 
-// nodeMap is a fork-side wrapper over zetasql-wasm's parse-location-indexed
-// NodeMap that adds the resolved->parsed reverse lookup go-zetasqlite
-// formatters depend on (e.g. to recover the original table/function path
-// text from a resolved node). The reverse direction is not yet implemented
-// — for now the wrapper delegates the forward direction and stubs the
-// reverse with an empty result.
+// nodeMap is a fork-side wrapper over zetasql-wasm's NodeMap. It exists
+// so the formatter can use the historical FindNodeFromResolvedNode shape
+// (returning a slice of parsed AST nodes) while delegating the actual
+// lookup to zetasql-wasm's FindParsedNodes.
 type nodeMap struct {
 	resolved *zetasql.NodeMap
 }
 
-// FindNodeFromResolvedNode would return the parsed AST nodes whose source
-// range overlaps the given resolved node. zetasql-wasm doesn't expose a
-// parsed-side NodeMap yet, so this returns nil. Callers must tolerate an
-// empty slice (the formatter currently surfaces it as an error).
-//
-// TODO(zetasql-wasm-migration): once parser-AST location indexing is in
-// place upstream, build the reverse map at NewNodeMap time and consult it
-// here.
-func (m *nodeMap) FindNodeFromResolvedNode(_ resolved_ast.Node) []parsed_ast.Node {
-	return nil
+// FindNodeFromResolvedNode returns the parsed AST nodes whose source
+// range overlaps the given resolved node, by delegating to zetasql-wasm's
+// FindParsedNodes (added in v0.7.0).
+func (m *nodeMap) FindNodeFromResolvedNode(n resolved_ast.Node) []parsed_ast.Node {
+	if m == nil || m.resolved == nil {
+		return nil
+	}
+	return m.resolved.FindParsedNodes(n)
 }
 
 func withNodeMap(ctx context.Context, m *nodeMap) context.Context {

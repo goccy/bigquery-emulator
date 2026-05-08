@@ -21,38 +21,23 @@ func New(node ast.Node) Formatter {
 }
 
 // getTableName returns the SQLite-side table name for a resolved
-// TableScanNode. The resolved Table reference already carries the path the
-// analyzer settled on (FullName like "dataset.t" or just "t"); we split it
-// on "." and pass the components through namePath.format to produce the
-// "_"-joined identifier this fork uses for SQLite tables. This bypasses the
-// resolved->parsed reverse lookup, which zetasql-wasm does not expose yet.
+// TableScanNode by recovering the user-typed path from the parsed AST
+// (via FindParsedNodes, added in zetasql-wasm v0.7.0) and merging it
+// with the current namePath context. Reading the path from the parsed
+// side preserves the segments the user actually wrote, regardless of
+// which sub-catalog level the analyzer matched against.
 func getTableName(ctx context.Context, scan *ast.TableScanNode) (string, error) {
 	if scan == nil {
 		return "", fmt.Errorf("nil TableScanNode")
 	}
-	table := scan.Table()
-	if table == nil {
-		return "", fmt.Errorf("TableScanNode has no Table reference")
-	}
-	name := table.GetFullName()
-	if name == "" {
-		name = table.GetName()
-	}
-	if name == "" {
-		return "", fmt.Errorf("TableScanNode has no name")
-	}
-	namePath := namePathFromContext(ctx)
-	partial := strings.Split(name, ".")
-	// The resolved Table can carry a truncated path (e.g. just "table_a")
-	// when the analyzer matched it via a sub-catalog. Recover the full
-	// registered path by consulting the catalog before falling back to
-	// the namePath-merge heuristic.
-	if a := analyzerFromContext(ctx); a != nil && a.catalog != nil {
-		if canonical := a.catalog.findCanonicalTablePath(partial, namePath.Path()); canonical != nil {
-			return formatPath(canonical), nil
+	nodeMap := nodeMapFromContext(ctx)
+	for _, parsed := range nodeMap.FindNodeFromResolvedNode(scan) {
+		path, err := getPathFromNode(parsed)
+		if err == nil && len(path) > 0 {
+			return namePathFromContext(ctx).format(path), nil
 		}
 	}
-	return namePath.format(partial), nil
+	return "", fmt.Errorf("failed to find path node from table node %T", scan)
 }
 
 func getFuncName(ctx context.Context, n ast.Node) (string, error) {
