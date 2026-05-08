@@ -1553,14 +1553,26 @@ func addTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.Tabl
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
+	table := &bigqueryv2.Table{
 		TableReference: &bigqueryv2.TableReference{
 			ProjectId: projectID,
 			DatasetId: datasetID,
 			TableId:   tableID,
 		},
 		Schema: &bigqueryv2.TableSchema{Fields: fields},
-	}); err != nil {
+	}
+	if len(spec.PartitionBy) > 0 {
+		table.TimePartitioning = &bigqueryv2.TimePartitioning{
+			Type:  "DAY",
+			Field: spec.PartitionBy[0],
+		}
+	}
+	if len(spec.ClusterBy) > 0 {
+		table.Clustering = &bigqueryv2.Clustering{
+			Fields: spec.ClusterBy,
+		}
+	}
+	if _, err := createTableMetadata(ctx, tx, server, project, dataset, table); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
