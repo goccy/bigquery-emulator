@@ -2,8 +2,6 @@ module github.com/goccy/bigquery-emulator
 
 go 1.26.2
 
-replace github.com/glassmonkey/zetasql-wasm => /Users/glassmonkey/src/github.com/glassmonkey/zetasql-wasm
-
 require (
 	cloud.google.com/go/bigquery v1.60.0
 	cloud.google.com/go/storage v1.39.1

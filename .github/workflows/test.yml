@@ -9,94 +9,39 @@ jobs:
     name: Build
     strategy:
       matrix:
-        os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.21.5" ]
+        os: ["ubuntu-latest", "macos-latest"]
     runs-on: ${{ matrix.os }}
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: setup Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v4
-      with:
-        go-version: ${{ matrix.go-version }}
-        cache: true
-    - name: cache for linux
-      uses: actions/cache@v3
-      if: runner.os == 'Linux'
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: cache for macOS
-      uses: actions/cache@v3
-      if: runner.os == 'macOS'
-      with:
-        path: |
-          ~/Library/Caches/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: download modules
-      run: |
-        go mod download
-    - uses: rui314/setup-mold@v1
-    - name: build
-      run: make emulator/build
-      env:
-        CC: clang
-        CXX: clang++
-        VERSION: test
-    - name: show version
-      run: |
-        ./bigquery-emulator --version
-    - name: show linking info
-      if: runner.os == 'Linux'
-      run: |
-        ldd bigquery-emulator || true
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: download modules
+        run: go mod download
+      - name: build
+        run: make emulator/build
+        env:
+          VERSION: test
+      - name: show version
+        run: ./bigquery-emulator --version
   test:
-    needs: build
     name: Test
     strategy:
       matrix:
-        os: [ "ubuntu-latest", "macos-latest" ]
-        go-version: [ "1.21.5" ]
+        os: ["ubuntu-latest", "macos-latest"]
     runs-on: ${{ matrix.os }}
     steps:
-    - name: setup Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v2
-      with:
-        go-version: ${{ matrix.go-version }}
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: cache for linux
-      uses: actions/cache@v3
-      if: runner.os == 'Linux'
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: cache for macOS
-      uses: actions/cache@v3
-      if: runner.os == 'macOS'
-      with:
-        path: |
-          ~/Library/Caches/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: download modules
-      run: |
-        go mod download
-    - name: test
-      run: go test -v ./... -count=1
-      env:
-        CC: clang
-        CXX: clang++
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: download modules
+        run: go mod download
+      - name: test
+        run: go test ./... -count=1 -timeout 600s
