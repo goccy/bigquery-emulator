@@ -11,7 +11,7 @@ require (
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/dop251/goja v0.0.0-20221118162653-d4bf6fde1b86
 	github.com/fsouza/fake-gcs-server v1.43.0
-	github.com/glassmonkey/zetasql-wasm v0.7.0
+	github.com/glassmonkey/zetasql-wasm v0.8.0
 	github.com/go-playground/validator/v10 v10.11.0
 	github.com/goccy/go-json v0.10.2
 	github.com/goccy/go-yaml v1.11.0

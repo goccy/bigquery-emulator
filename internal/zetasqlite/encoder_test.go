@@ -9,12 +9,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestValueFromZetaSQLValue locks in the type-driven dispatch for kinds
-// whose Go representation in *types.LiteralValue does not lift cleanly
-// through reflect-based generic conversion: DATE comes back as int32
-// (days since epoch), TIMESTAMP as *timestamppb.Timestamp. Without this
-// dispatch DATE literals collapse to IntValue and TIMESTAMP literals
-// panic in reflect when the proto's unexported fields are read.
+// TestValueFromZetaSQLValue locks in the lift for kinds whose Go
+// representation in *types.LiteralValue does not pass cleanly through
+// reflect-based generic conversion: DATE (int32 days since epoch) and
+// TIMESTAMP (*timestamppb.Timestamp). The lift goes through
+// zetasql-wasm v0.8.0 typed accessors (AsDateDays / AsTimestamp), so
+// the proto representation never leaks into this package.
 func TestValueFromZetaSQLValue(t *testing.T) {
 	t.Setenv("TZ", "UTC")
 
@@ -22,10 +22,9 @@ func TestValueFromZetaSQLValue(t *testing.T) {
 	tsProto := timestamppb.New(tsTime)
 
 	for _, tc := range []struct {
-		name    string
-		sut     *types.LiteralValue
-		want    Value
-		wantErr bool
+		name string
+		sut  *types.LiteralValue
+		want Value
 	}{
 		{
 			name: "nil literal",
@@ -43,21 +42,9 @@ func TestValueFromZetaSQLValue(t *testing.T) {
 			want: dateValueFromLiteral(18527),
 		},
 		{
-			name: "DATE wrong-type value yields error",
-			sut:  &types.LiteralValue{Type: types.DateType(), Value: int64(18527)},
-			want: nil,
-			wantErr: true,
-		},
-		{
 			name: "TIMESTAMP proto lifted to TimestampValue",
 			sut:  &types.LiteralValue{Type: types.TimestampType(), Value: tsProto},
 			want: TimestampValue(tsTime),
-		},
-		{
-			name: "TIMESTAMP wrong-type value yields error",
-			sut:  &types.LiteralValue{Type: types.TimestampType(), Value: tsTime},
-			want: nil,
-			wantErr: true,
 		},
 		{
 			name: "INT64 falls through to IntValue",
@@ -80,8 +67,8 @@ func TestValueFromZetaSQLValue(t *testing.T) {
 			got, err := ValueFromZetaSQLValue(tc.sut)
 
 			// Assert
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err: got %v, wantErr %v", err, tc.wantErr)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("got %#v, want %#v", got, tc.want)

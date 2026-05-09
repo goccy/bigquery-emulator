@@ -65,9 +65,7 @@ type Catalog struct {
 }
 
 func newSimpleCatalog(name string) *types.SimpleCatalog {
-	catalog := types.NewSimpleCatalog(name)
-	catalog.AddZetaSQLBuiltinFunctions(nil)
-	return catalog
+	return types.NewSimpleCatalog(name)
 }
 
 // findSubCatalog returns the sub-catalog of cat whose name matches (case-

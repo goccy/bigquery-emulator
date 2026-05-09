@@ -15,7 +15,6 @@ import (
 	ast "github.com/glassmonkey/zetasql-wasm/resolved_ast"
 	"github.com/glassmonkey/zetasql-wasm/types"
 	"github.com/goccy/go-json"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func EncodeNamedValues(v []driver.NamedValue, params []*ast.ParameterNode) ([]sql.NamedArg, error) {
@@ -157,30 +156,19 @@ func LiteralFromZetaSQLValue(v *types.LiteralValue) (string, error) {
 // surrounding StructType. Returns nil for SQL NULL (proto oneof unset) and
 // for kinds the wrap layer cannot model yet (LiteralValue.Value == nil).
 //
-// Type.Kind() drives the lift for kinds whose Go representation does not
-// map through reflect-based generic conversion: DATE (int32 days),
-// TIMESTAMP (*timestamppb.Timestamp). Without this dispatch DATE
-// literals collapse to IntValue and TIMESTAMP literals panic in reflect
-// when the proto's unexported fields are read.
+// DATE / TIMESTAMP go through zetasql-wasm v0.8.0 typed accessors that
+// hide the proto representation (int32 days / *timestamppb.Timestamp)
+// behind an ergonomic surface; the previous reflect-based fallback
+// collapsed DATE to IntValue and panicked on TIMESTAMP.
 func ValueFromZetaSQLValue(v *types.LiteralValue) (Value, error) {
 	if v == nil || v.Value == nil {
 		return nil, nil
 	}
-	if v.Type != nil {
-		switch v.Type.Kind() {
-		case types.Date:
-			days, ok := v.Value.(int32)
-			if !ok {
-				return nil, fmt.Errorf("expected int32 for DATE literal, got %T", v.Value)
-			}
-			return dateValueFromLiteral(int64(days)), nil
-		case types.Timestamp:
-			ts, ok := v.Value.(*timestamppb.Timestamp)
-			if !ok {
-				return nil, fmt.Errorf("expected *timestamppb.Timestamp for TIMESTAMP literal, got %T", v.Value)
-			}
-			return TimestampValue(ts.AsTime()), nil
-		}
+	if days, ok := v.AsDateDays(); ok {
+		return dateValueFromLiteral(int64(days)), nil
+	}
+	if ts, ok := v.AsTimestamp(); ok {
+		return TimestampValue(ts), nil
 	}
 	switch elts := v.Value.(type) {
 	case types.ArrayValue:

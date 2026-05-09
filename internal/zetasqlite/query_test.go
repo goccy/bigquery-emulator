@@ -715,7 +715,6 @@ FROM Items`,
 		},
 		{
 			name:  "array_agg with window",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `SELECT x, ARRAY_AGG(x) OVER (ORDER BY ABS(x)) FROM UNNEST([2, 1, -2, 3, -2, 1, 2]) AS x`,
 			expectedRows: [][]interface{}{
 				{int64(1), []interface{}{int64(1), int64(1)}},
@@ -830,7 +829,6 @@ SELECT ARRAY_CONCAT_AGG(x) AS array_concat_agg FROM (
 		},
 		{
 			name:  "count with window",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `SELECT x, COUNT(*) OVER (PARTITION BY MOD(x, 3)), COUNT(DISTINCT x) OVER (PARTITION BY MOD(x, 3)) FROM UNNEST([1, 4, 4, 5]) AS x`,
 			expectedRows: [][]interface{}{
 				{int64(1), int64(3), int64(2)},
@@ -900,7 +898,6 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		},
 		{
 			name:         "max window from date group",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT MAX(x) OVER() AS max FROM UNNEST(['2022-01-01', '2022-02-01', '2022-01-02', '2021-03-01']) AS x`,
 			expectedRows: [][]interface{}{{"2022-02-01"}, {"2022-02-01"}, {"2022-02-01"}, {"2022-02-01"}},
 		},
@@ -916,7 +913,6 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		},
 		{
 			name:         "min window from date group",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT MIN(x) OVER() AS max FROM UNNEST(['2022-01-01', '2022-02-01', '2022-01-02', '2021-03-01']) AS x`,
 			expectedRows: [][]interface{}{{"2021-03-01"}, {"2021-03-01"}, {"2021-03-01"}, {"2021-03-01"}},
 		},
@@ -963,7 +959,6 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		{
 			// TODO: add NULL back to the unnest once ORDER BY does not crash on NULL
 			name:  "string_agg with window",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `SELECT fruit, STRING_AGG(fruit, " & ") OVER (ORDER BY LENGTH(fruit)) FROM UNNEST(["apple", "pear", "banana", "pear"]) AS fruit`,
 			expectedRows: [][]interface{}{
 				{"pear", "pear & pear"},
@@ -984,7 +979,6 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		},
 		{
 			name:  "sum with window",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `SELECT x, SUM(x) OVER (PARTITION BY MOD(x, 3)) FROM UNNEST([1, 2, 3, 4, 5, 4, 3, 2, 1]) AS x`,
 			expectedRows: [][]interface{}{
 				{int64(3), int64(6)},
@@ -1000,7 +994,6 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		},
 		{
 			name:  "sum with window and distinct",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `SELECT x, SUM(DISTINCT x) OVER (PARTITION BY MOD(x, 3)) FROM UNNEST([1, 2, 3, 4, 5, 4, 3, 2, 1]) AS x`,
 			expectedRows: [][]interface{}{
 				{int64(3), int64(3)},
@@ -1031,31 +1024,26 @@ SELECT LOGICAL_OR(x) AS logical_or FROM toks`,
 		},
 		{
 			name:         "approx_quantiles",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT APPROX_QUANTILES(x, 2) FROM UNNEST([1, 1, 1, 4, 5, 6, 7, 8, 9, 10]) AS x`,
 			expectedRows: [][]interface{}{{[]interface{}{int64(1), int64(5), int64(10)}}},
 		},
 		{
 			name:         "approx_quantiles 2",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT APPROX_QUANTILES(x, 100)[OFFSET(90)] FROM UNNEST([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) AS x`,
 			expectedRows: [][]interface{}{{int64(9)}},
 		},
 		{
 			name:         "approx_quantiles with distinct",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT APPROX_QUANTILES(DISTINCT x, 2) FROM UNNEST([1, 1, 1, 4, 5, 6, 7, 8, 9, 10]) AS x`,
 			expectedRows: [][]interface{}{{[]interface{}{int64(1), int64(6), int64(10)}}},
 		},
 		{
 			name:         "approx_quantiles with null",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT APPROX_QUANTILES(x, 2 RESPECT NULLS) FROM UNNEST([NULL, NULL, 1, 1, 1, 4, 5, 6, 7, 8, 9, 10]) AS x`,
 			expectedRows: [][]interface{}{{[]interface{}{nil, int64(4), int64(10)}}},
 		},
 		{
 			name:         "approx_quantiles with respect nulls",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT APPROX_QUANTILES(DISTINCT x, 2 RESPECT NULLS) FROM UNNEST([NULL, NULL, 1, 1, 1, 4, 5, 6, 7, 8, 9, 10]) AS x`,
 			expectedRows: [][]interface{}{{[]interface{}{nil, int64(6), int64(10)}}},
 		},
@@ -1926,7 +1914,6 @@ SELECT * FROM Employees`,
 		},
 		{
 			name: "window rank",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH Employees AS
  (SELECT 'Isabella' as name, 2 as department, DATE(1997, 09, 28) as start_date
@@ -1949,7 +1936,6 @@ FROM Employees`,
 		},
 		{
 			name: "rank with same order",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH Numbers AS
  (SELECT 1 as x
@@ -1975,7 +1961,6 @@ FROM Numbers`,
 		},
 		{
 			name: "window dense_rank",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH Numbers AS
  (SELECT 1 as x
@@ -2033,7 +2018,6 @@ FROM finishers
 		},
 		{
 			name: "percent_rank",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -2064,7 +2048,6 @@ FROM finishers`,
 		},
 		{
 			name: "cume_dist",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -2096,7 +2079,6 @@ FROM finishers`,
 		},
 		{
 			name: "ntile",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -2127,7 +2109,6 @@ FROM finishers`,
 		},
 		{
 			name: "window row_number",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH Numbers AS
  (SELECT 1 as x
@@ -2153,7 +2134,6 @@ FROM Numbers`,
 		},
 		{
 			name: "row_number nest",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH Produce AS
  (SELECT 'kale' as item, 23 as purchases, 'vegetable' as category
@@ -2180,7 +2160,6 @@ WITH Produce AS
 		},
 		{
 			name: "window lag",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -2217,7 +2196,6 @@ FROM finishers`,
 		// Regression test for https://github.com/goccy/go-zetasqlite/issues/160
 		{
 			name: "window partitions are distinct from each other",
-			skipReason: "zetasql-wasm: IS DISTINCT FROM not yet enabled in WASM build (post-v0.7.0 follow-up)",
 			query: `
 WITH inventory AS (
   SELECT 'banana' AS item, 'fruit' AS kind, 2 AS purchases
@@ -2239,7 +2217,6 @@ FROM inventory`,
 		},
 		{
 			name: "lag with option",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH segments AS (
   SELECT "2020-08-01" AS created_at, 10 AS rank UNION ALL
@@ -2252,7 +2229,6 @@ WITH segments AS (
 		},
 		{
 			name: "window lag with offset",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -2288,7 +2264,6 @@ FROM finishers`,
 		},
 		{
 			name: "window lag with offset and default value",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `
 WITH finishers AS
  (SELECT 'Sophia Liu' as name,
@@ -3104,7 +3079,6 @@ SELECT item FROM Produce WHERE Produce.category = 'vegetable' QUALIFY RANK() OVE
 		},
 		{
 			name: "cast string to int64 - leading zeros",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query: `WITH toks AS (
 				SELECT "000800" AS x
 				UNION ALL SELECT "-0900"
@@ -3341,7 +3315,6 @@ SELECT characters, CHARACTER_LENGTH(characters) FROM example`,
 		},
 		{
 			name:         "format date with %t",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT('%t', date '2015-09-01')`,
 			expectedRows: [][]interface{}{{"2015-09-01"}},
 		},
@@ -4088,7 +4061,6 @@ WITH example AS (
 		},
 		{
 			name:         "least greatest date",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT LEAST(DATE '2024-02-27', DATE '2024-02-28'), GREATEST(DATE '2024-02-27', DATE '2024-02-28');`,
 			expectedRows: [][]interface{}{{"2024-02-27", "2024-02-28"}},
 		},
@@ -4228,7 +4200,6 @@ UNPIVOT(sales FOR quarter IN (Q1, Q2, Q3, Q4))
 		},
 		{
 			name:  "base datetime is epoch julian",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT PARSE_DATETIME("%j", "001")`,
 			expectedRows: [][]interface{}{
 				{"1970-01-01T00:00:00"},
@@ -4257,7 +4228,6 @@ UNPIVOT(sales FOR quarter IN (Q1, Q2, Q3, Q4))
 		},
 		{
 			name:  "parse datetime with two digit year before 2000 and julian day",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT PARSE_DATETIME("%y%j%H%M%S", "95033101010")`,
 			expectedRows: [][]interface{}{
 				{"1995-02-02T10:10:10"},
@@ -4272,7 +4242,6 @@ UNPIVOT(sales FOR quarter IN (Q1, Q2, Q3, Q4))
 		},
 		{
 			name:  "parse datetime with two digit year after 2000 and julian day",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT PARSE_DATETIME("%y%j-%H:%M:%S", "22120-10:10:10")`,
 			expectedRows: [][]interface{}{
 				{"2022-04-30T10:10:10"},
@@ -4287,7 +4256,6 @@ UNPIVOT(sales FOR quarter IN (Q1, Q2, Q3, Q4))
 		},
 		{
 			name:  "parse datetime with two digit year after 2000 and julian day leap year",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT PARSE_DATETIME("%y%j %H:%M", "24120 02:04")`,
 			expectedRows: [][]interface{}{
 				{"2024-04-29T02:04:00"},
@@ -4445,31 +4413,26 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "format_date with %x",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_DATE("%x", DATE "2008-12-25")`,
 			expectedRows: [][]interface{}{{"12/25/08"}},
 		},
 		{
 			name:         "format_date with %y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_DATE("%y", DATE "2008-12-25"), FORMAT_DATE("%y", DATE "2012-12-25")`,
 			expectedRows: [][]interface{}{{"08", "12"}},
 		},
 		{
 			name:         "format_date with %b-%d-%Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_DATE("%b-%d-%Y", DATE "2008-12-25")`,
 			expectedRows: [][]interface{}{{"Dec-25-2008"}},
 		},
 		{
 			name:         "format_date with %b %Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_DATE("%b %Y", DATE "2008-12-25")`,
 			expectedRows: [][]interface{}{{"Dec 2008"}},
 		},
 		{
 			name:         "format_date with %E4Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_DATE("%E4Y", DATE "2008-12-25")`,
 			expectedRows: [][]interface{}{{"2008"}},
 		},
@@ -4562,7 +4525,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "parse date with %e - leading space allows multiple digits",
-			skipReason: "zetasql-wasm: window/analytic functions not registered in WASM catalog (post-v0.7.0 follow-up)",
 			query:        `SELECT PARSE_DATE('%e', ' 20');`,
 			expectedRows: [][]interface{}{{"1970-01-20"}},
 		},
@@ -4608,7 +4570,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "unix_date",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT UNIX_DATE(DATE "2008-12-25") AS days_from_epoch`,
 			expectedRows: [][]interface{}{{int64(14238)}},
 		},
@@ -4616,7 +4577,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		// datetime functions
 		{
 			name:  "current_datetime",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT CURRENT_DATETIME()`,
 			expectedRows: [][]interface{}{
 				{now.Format("2006-01-02T15:04:05.999999")},
@@ -4624,7 +4584,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:  "datetime",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT DATETIME(2008, 12, 25, 05, 30, 00), DATETIME(TIMESTAMP "2008-12-25 05:30:00+00", "America/Los_Angeles")`,
 			expectedRows: [][]interface{}{
 				{"2008-12-25T05:30:00", "2008-12-24T21:30:00"},
@@ -4738,13 +4697,11 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "parse datetime",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_DATETIME("%a %b %e %I:%M:%S %Y", "Thu Dec 25 07:30:00 2008")`,
 			expectedRows: [][]interface{}{{"2008-12-25T07:30:00"}},
 		},
 		{
 			name:         "parse datetime with %c",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_DATETIME("%c", "Thu Dec 25 07:30:00 2008")`,
 			expectedRows: [][]interface{}{{"2008-12-25T07:30:00"}},
 		},
@@ -4760,7 +4717,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "parse datetime %F respectfully consuming digits",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_DATETIME("%F", "03-1-1"), PARSE_DATETIME("%F", "003-01-1"), PARSE_DATETIME("%F", "0003-1-11")`,
 			expectedRows: [][]interface{}{{"0003-01-01T00:00:00", "0003-01-01T00:00:00", "0003-01-11T00:00:00"}},
 		},
@@ -4768,7 +4724,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		// time functions
 		{
 			name:  "current_time",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT CURRENT_TIME()`,
 			expectedRows: [][]interface{}{
 				{now.Format("15:04:05.999999")},
@@ -4776,7 +4731,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:  "time",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT TIME(15, 30, 00), TIME(TIMESTAMP "2008-12-25 15:30:00+08", "America/Los_Angeles")`,
 			expectedRows: [][]interface{}{
 				{"15:30:00", "23:30:00"},
@@ -4814,7 +4768,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "parse_time with %R",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_TIME("%R", "14:30")`,
 			expectedRows: [][]interface{}{{"14:30:00"}},
 		},
@@ -4855,13 +4808,11 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "parse time with %I:%M:%S",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_TIME("%I:%M:%S", "07:30:00")`,
 			expectedRows: [][]interface{}{{"07:30:00"}},
 		},
 		{
 			name:         "parse time with %T",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_TIME("%T", "07:30:00")`,
 			expectedRows: [][]interface{}{{"07:30:00"}},
 		},
@@ -4908,7 +4859,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "string",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT STRING(TIMESTAMP "2008-12-25 15:30:00+00", "UTC")`,
 			expectedRows: [][]interface{}{{"2008-12-25 15:30:00+00"}},
 		},
@@ -4935,7 +4885,6 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "timestamp from date",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT TIMESTAMP(DATE "2008-12-25")`,
 			expectedRows: [][]interface{}{{createTimestampFormatFromString("2008-12-25 00:00:00+00")}},
 		},
@@ -4990,49 +4939,41 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "format_timestamp with %c",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%c", TIMESTAMP "2008-12-25 15:30:00+00", "UTC")`,
 			expectedRows: [][]interface{}{{"Thu Dec 25 15:30:00 2008"}},
 		},
 		{
 			name:         "format_timestamp with %b-%d-%Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%b-%d-%Y", TIMESTAMP "2008-12-25 15:30:00+00")`,
 			expectedRows: [][]interface{}{{"Dec-25-2008"}},
 		},
 		{
 			name:         "format_timestamp with %b %Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%b %Y", TIMESTAMP "2008-12-25 15:30:00+00")`,
 			expectedRows: [][]interface{}{{"Dec 2008"}},
 		},
 		{
 			name:         "format_timestamp with %Y-%m-%d %H:%M:%S",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%Y-%m-%d %H:%M:%S", TIMESTAMP "2008-12-25 15:30:21+00", "Asia/Tokyo")`,
 			expectedRows: [][]interface{}{{"2008-12-26 00:30:21"}},
 		},
 		{
 			name:         "format_timestamp with %E3S",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%E3S", TIMESTAMP "2008-12-25 15:30:12.345678+00")`,
 			expectedRows: [][]interface{}{{"12.345"}},
 		},
 		{
 			name:         "format_timestamp with %E*S",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%E*S", TIMESTAMP "2008-12-25 15:30:12.345678+00")`,
 			expectedRows: [][]interface{}{{"12.345678"}},
 		},
 		{
 			name:         "format_timestamp with %E4Y",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%E4Y", TIMESTAMP "2008-12-25 15:30:12.345678+00")`,
 			expectedRows: [][]interface{}{{"2008"}},
 		},
 		{
 			name:         "format_timestamp with %Ez",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT FORMAT_TIMESTAMP("%Ez", TIMESTAMP "2008-12-25 15:30:12.345678+00")`,
 			expectedRows: [][]interface{}{{"+00:00"}},
 		},
@@ -5112,13 +5053,11 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 		},
 		{
 			name:         "unix_seconds",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT UNIX_SECONDS(TIMESTAMP "2008-12-25 15:30:00+00")`,
 			expectedRows: [][]interface{}{{int64(1230219000)}},
 		},
 		{
 			name:         "unix_millis",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT UNIX_MILLIS(TIMESTAMP "2008-12-25 15:30:00+00")`,
 			expectedRows: [][]interface{}{{int64(1230219000000)}},
 		},
@@ -5163,7 +5102,6 @@ SELECT
 		},
 		{
 			name:         "make interval",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT MAKE_INTERVAL(1, 6, 15), MAKE_INTERVAL(hour => 10, second => 20), MAKE_INTERVAL(1, minute => 5, day => 2)`,
 			expectedRows: [][]interface{}{{"1-6 15 0:0:0", "0-0 0 10:0:20", "1-0 2 0:5:0"}},
 		},
@@ -5207,19 +5145,16 @@ SELECT
 		},
 		{
 			name:         "parse_numeric",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_NUMERIC("123.45"), PARSE_NUMERIC("12.34E27"), PARSE_NUMERIC("1.0123456789")`,
 			expectedRows: [][]interface{}{{"123.45", "12340000000000000000000000000", "1.012345679"}},
 		},
 		{
 			name:         "parse_bignumeric",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_BIGNUMERIC("123.45"), PARSE_BIGNUMERIC("123.456E37"), PARSE_BIGNUMERIC("1.123456789012345678901234567890123456789")`,
 			expectedRows: [][]interface{}{{"123.45", "1234560000000000000000000000000000000000", "1.12345678901234567890123456789012345679"}},
 		},
 		{
 			name:         "cast numeric and bignumeric to string",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT cast(PARSE_NUMERIC("123.456") as STRING), cast(PARSE_BIGNUMERIC("123.456") as STRING)`,
 			expectedRows: [][]interface{}{{"123.456", "123.456"}},
 		},
@@ -5305,7 +5240,6 @@ SELECT Add(3, 4);
 		// json
 		{
 			name: "json value subscript operator",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 SELECT json_value.class.students[0]['name'] AS first_student
 FROM
@@ -5319,7 +5253,6 @@ FROM
 		},
 		{
 			name:         "json_extract",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_EXTRACT(JSON '{"class":{"students":[{"id":5},{"id":12}]}}', '$.class')`,
 			expectedRows: [][]interface{}{{`{"students":[{"id":5},{"id":12}]}`}},
 		},
@@ -5374,7 +5307,6 @@ FROM UNNEST([
 		},
 		{
 			name: "json_extract and null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 SELECT
   JSON_EXTRACT('{"a":null}', "$.a"),
@@ -5385,7 +5317,6 @@ SELECT
 		},
 		{
 			name:         "json_query",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_QUERY(JSON '{"class":{"students":[{"id":5},{"id":12}]}}', '$.class')`,
 			expectedRows: [][]interface{}{{`{"students":[{"id":5},{"id":12}]}`}},
 		},
@@ -5440,7 +5371,6 @@ FROM UNNEST([
 		},
 		{
 			name: "json_query and null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 SELECT
   JSON_QUERY('{"a":null}', "$.a"),
@@ -5451,7 +5381,6 @@ SELECT
 		},
 		{
 			name:         "json_extract_scalar with number",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_EXTRACT_SCALAR(JSON '{ "name" : "Jakob", "age" : "6" }', '$.age')`,
 			expectedRows: [][]interface{}{{`6`}},
 		},
@@ -5472,7 +5401,6 @@ SELECT
 		},
 		{
 			name:         "json_value with number",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_VALUE(JSON '{ "name" : "Jakob", "age" : "6" }', '$.age')`,
 			expectedRows: [][]interface{}{{`6`}},
 		},
@@ -5493,13 +5421,11 @@ SELECT
 		},
 		{
 			name:         "json_value with null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_VALUE(JSON 'null'), JSON_VALUE(NULL), JSON_VALUE(JSON '{}', '$.does_not_exist')`,
 			expectedRows: [][]interface{}{{nil, nil, nil}},
 		},
 		{
 			name:  "json_extract_array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_EXTRACT_ARRAY(JSON '{"fruits":["apples","oranges","grapes"]}','$.fruits')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`"apples"`, `"oranges"`, `"grapes"`}},
@@ -5540,7 +5466,6 @@ SELECT
 		},
 		{
 			name:         "json_extract_array with null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_EXTRACT_ARRAY('{"a":"foo"}','$.a'), JSON_EXTRACT_ARRAY('{"a":"foo"}','$.b'), JSON_EXTRACT_ARRAY(JSON 'null', '$')`,
 			expectedRows: [][]interface{}{{nil, nil, nil}},
 		},
@@ -5551,7 +5476,6 @@ SELECT
 		},
 		{
 			name:  "json_query_array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_QUERY_ARRAY(JSON '{"fruits":["apples","oranges","grapes"]}','$.fruits')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`"apples"`, `"oranges"`, `"grapes"`}},
@@ -5559,7 +5483,6 @@ SELECT
 		},
 		{
 			name:  "json_query_array with integer",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_QUERY_ARRAY('[1,2,3]')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"1", "2", "3"}},
@@ -5567,7 +5490,6 @@ SELECT
 		},
 		{
 			name:  "json_query_array with integer cast",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT ARRAY(SELECT CAST(integer_element AS INT64) FROM UNNEST(JSON_QUERY_ARRAY('[1,2,3]','$')) AS integer_element)`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{int64(1), int64(2), int64(3)}},
@@ -5575,7 +5497,6 @@ SELECT
 		},
 		{
 			name:  "json_query_array format",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_QUERY_ARRAY('["apples","oranges","grapes"]', '$')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`"apples"`, `"oranges"`, `"grapes"`}},
@@ -5583,7 +5504,6 @@ SELECT
 		},
 		{
 			name:  "json_query_array filter",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_QUERY_ARRAY('{"fruit":[{"apples":5,"oranges":10},{"apples":2,"oranges":4}],"vegetables":[{"lettuce":7,"kale": 8}]}', '$.fruit')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`{"apples":5,"oranges":10}`, `{"apples":2,"oranges":4}`}},
@@ -5591,25 +5511,21 @@ SELECT
 		},
 		{
 			name:         "json_query_array with escape",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_QUERY_ARRAY('{"a.b": {"c": ["world"]}}', '$."a.b".c')`,
 			expectedRows: [][]interface{}{{[]interface{}{`"world"`}}},
 		},
 		{
 			name:         "json_query_array with null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_QUERY_ARRAY('{"a":"foo"}','$.a'), JSON_QUERY_ARRAY('{"a":"foo"}','$.b'), JSON_QUERY_ARRAY(JSON 'null', '$')`,
 			expectedRows: [][]interface{}{{nil, nil, nil}},
 		},
 		{
 			name:         "json_query_array with empty array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_QUERY_ARRAY('{"a":"foo","b":[]}','$.b')`,
 			expectedRows: [][]interface{}{{[]interface{}{}}},
 		},
 		{
 			name:  "json_extract_string_array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_EXTRACT_STRING_ARRAY(JSON '{"fruits":["apples","oranges","grapes"]}','$.fruits')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`apples`, `oranges`, `grapes`}},
@@ -5617,7 +5533,6 @@ SELECT
 		},
 		{
 			name:  "json_extract_string_array with root only",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_EXTRACT_STRING_ARRAY('["foo","bar","baz"]','$')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`foo`, `bar`, `baz`}},
@@ -5625,7 +5540,6 @@ SELECT
 		},
 		{
 			name:  "json_extract_string_array with integer cast",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT ARRAY(SELECT CAST(integer_element AS INT64) FROM UNNEST(JSON_EXTRACT_STRING_ARRAY('[1,2,3]','$')) AS integer_element)`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{int64(1), int64(2), int64(3)}},
@@ -5633,7 +5547,6 @@ SELECT
 		},
 		{
 			name:  "json_extract_string_array with escape",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_EXTRACT_STRING_ARRAY('{"a.b": {"c": ["world"]}}', "$['a.b'].c")`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"world"}},
@@ -5641,7 +5554,6 @@ SELECT
 		},
 		{
 			name: "json_extract_string_array with null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 SELECT
   JSON_EXTRACT_STRING_ARRAY('}}','$'),
@@ -5655,13 +5567,11 @@ SELECT
 		},
 		{
 			name:         "json_extract_string_array with empty array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_EXTRACT_STRING_ARRAY('{"a":"foo","b":[]}','$.b')`,
 			expectedRows: [][]interface{}{{[]interface{}{}}},
 		},
 		{
 			name:  "json_value_array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_VALUE_ARRAY(JSON '{"fruits":["apples","oranges","grapes"]}','$.fruits')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`apples`, `oranges`, `grapes`}},
@@ -5669,7 +5579,6 @@ SELECT
 		},
 		{
 			name:  "json_value_array with root only",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_VALUE_ARRAY('["foo","bar","baz"]','$')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{`foo`, `bar`, `baz`}},
@@ -5677,7 +5586,6 @@ SELECT
 		},
 		{
 			name:  "json_value_array with integer cast",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT ARRAY(SELECT CAST(integer_element AS INT64) FROM UNNEST(JSON_VALUE_ARRAY('[1,2,3]','$')) AS integer_element)`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{int64(1), int64(2), int64(3)}},
@@ -5685,7 +5593,6 @@ SELECT
 		},
 		{
 			name:  "json_value_array with escape",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `SELECT JSON_VALUE_ARRAY('{"a.b": {"c": ["world"]}}', '$."a.b".c')`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"world"}},
@@ -5693,7 +5600,6 @@ SELECT
 		},
 		{
 			name: "json_value_array with null",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 SELECT
   JSON_VALUE_ARRAY('}}','$'),
@@ -5707,20 +5613,17 @@ SELECT
 		},
 		{
 			name:         "json_value_array with empty array",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT JSON_VALUE_ARRAY('{"a":"foo","b":[]}','$.b')`,
 			expectedRows: [][]interface{}{{[]interface{}{}}},
 		},
 		{
 			name:         "parse_json",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT PARSE_JSON('{"coordinates":[10,20],"id":1}')`,
 			expectedRows: [][]interface{}{{`{"coordinates":[10,20],"id":1}`}},
 		},
 
 		{
 			name: "to_json",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query: `
 With CoordinatesTable AS (
     (SELECT 1 AS id, [10,20] AS coordinates) UNION ALL
@@ -5735,7 +5638,6 @@ SELECT TO_JSON(t) AS json_objects FROM CoordinatesTable AS t`,
 		},
 		{
 			name:         "to_json with struct",
-			skipReason: "emulator/zetasql-wasm: post-wasm-migration regression awaiting per-case triage (follow-up)",
 			query:        `SELECT TO_JSON(STRUCT("foo" AS a, TO_JSON(STRUCT("bar" AS c)) AS b))`,
 			expectedRows: [][]interface{}{{`{"a":"foo","b":{"c":"bar"}}`}},
 		},
