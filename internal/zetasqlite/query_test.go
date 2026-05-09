@@ -636,7 +636,6 @@ FROM Items`,
 		// },
 		{
 			name:         "date operator",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
 			query:        `SELECT DATE "2020-09-22" + 1 AS day_later, DATE "2020-09-22" - 7 AS week_ago`,
 			expectedRows: [][]interface{}{{"2020-09-23", "2020-09-15"}},
 		},
@@ -2553,7 +2552,6 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', '2016-10-08') AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"2016-10-05", "2016-10-06", "2016-10-07", "2016-10-08"}},
@@ -2561,7 +2559,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with step",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', '2016-10-09', INTERVAL 2 DAY) AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"2016-10-05", "2016-10-07", "2016-10-09"}},
@@ -2569,7 +2567,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with negative step",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', '2016-10-01', INTERVAL -3 DAY) AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"2016-10-05", "2016-10-02"}},
@@ -2577,7 +2575,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with same value",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', '2016-10-05', INTERVAL 8 DAY) AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"2016-10-05"}},
@@ -2585,7 +2583,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with over step",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', '2016-10-01', INTERVAL 1 DAY) AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{}},
@@ -2593,7 +2591,6 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with null",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-10-05', NULL) AS example`,
 			expectedRows: [][]interface{}{
 				{nil},
@@ -2601,7 +2598,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name:  "generate_date_array function with month",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_DATE_ARRAY('2016-01-01', '2016-12-31', INTERVAL 2 MONTH) AS example`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{"2016-01-01", "2016-03-01", "2016-05-01", "2016-07-01", "2016-09-01", "2016-11-01"}},
@@ -2609,7 +2606,7 @@ SELECT ARRAY_TO_STRING(list, '--', 'MISSING') AS text FROM items`,
 		},
 		{
 			name: "generate_date_array function with variable",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `
 SELECT GENERATE_DATE_ARRAY(date_start, date_end, INTERVAL 1 WEEK) AS date_range
 FROM (
@@ -2627,7 +2624,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY(TIMESTAMP '2016-10-05 00:00:00+00', '2016-10-07 00:00:00+00', INTERVAL 1 DAY) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{
@@ -2641,7 +2638,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function interval 1 second",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY('2016-10-05 00:00:00+00', '2016-10-05 00:00:02+00', INTERVAL 1 SECOND) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{
@@ -2655,7 +2652,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function negative interval",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY('2016-10-06 00:00:00+00', '2016-10-01 00:00:00+00', INTERVAL -2 DAY) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{
@@ -2669,7 +2666,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function same value",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY('2016-10-05 00:00:00+00', '2016-10-05 00:00:00+00', INTERVAL 1 HOUR) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{
@@ -2681,7 +2678,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function over step",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY('2016-10-06 00:00:00+00', '2016-10-05 00:00:00+00', INTERVAL 1 HOUR) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{[]interface{}{}},
@@ -2689,7 +2686,7 @@ FROM (
 		},
 		{
 			name:  "generate_timestamp_array function with null",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `SELECT GENERATE_TIMESTAMP_ARRAY('2016-10-05 00:00:00+00', NULL, INTERVAL 1 HOUR) AS timestamp_array`,
 			expectedRows: [][]interface{}{
 				{nil},
@@ -2697,7 +2694,7 @@ FROM (
 		},
 		{
 			name: "generate_timestamp_array function with variable",
-			skipReason: "emulator: function_array temporal/INT interface conversion panic (follow-up)",
+			skipReason: "zetasql-wasm: INTERVAL date_part is enum kind, not yet wrapped (post-v0.7.0 follow-up)",
 			query: `
 SELECT GENERATE_TIMESTAMP_ARRAY(start_timestamp, end_timestamp, INTERVAL 1 HOUR)
   AS timestamp_array
