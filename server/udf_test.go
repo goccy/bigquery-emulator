@@ -12,7 +12,6 @@ import (
 )
 
 func TestUDF(t *testing.T) {
-	t.Skip("server: not yet triaged after wasm migration (follow-up)")
 	ctx := context.Background()
 
 	const (
