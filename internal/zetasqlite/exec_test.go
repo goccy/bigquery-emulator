@@ -151,7 +151,7 @@ COMMIT TRANSACTION;
 }
 
 func TestNestedStructFieldAccess(t *testing.T) {
-	t.Skip("emulator: inferZetaSQLType does not yet handle Go map (STRUCT parameter) (regression from PR #4, follow-up)")
+	t.Skip("emulator: inferZetaSQLTypeFromReflect does not yet handle reflect.Map (Go map → STRUCT positional parameter); fix is to walk the map at param-bind time and synthesise types.NewStructType (post-v0.8.0 follow-up)")
 	now := time.Now()
 	ctx := context.Background()
 	ctx = WithCurrentTime(ctx, now)
@@ -240,7 +240,7 @@ func TestCreateTempTable(t *testing.T) {
 }
 
 func TestWildcardTable(t *testing.T) {
-	t.Skip("emulator: BigQuery wildcard table (`table_*`) lookup not yet ported to wasm-based catalog (follow-up)")
+	t.Skip("emulator: BigQuery wildcard table (`table_*`) lookup not yet ported to wasm-based catalog; needs Catalog.FindTable to interpret the trailing '*' and union the matching siblings (post-v0.8.0 follow-up)")
 	ctx := context.Background()
 	db, err := sql.Open("zetasqlite", ":memory:")
 	if err != nil {
