@@ -6031,7 +6031,6 @@ SELECT c1 * ? * ? FROM t1;
 		},
 		{
 			name: "create table as select with column list",
-			skipReason: "zetasql-wasm: multi-statement script parsing not yet supported (post-v0.7.0 follow-up)",
 			query: `
 CREATE TABLE table1 (field_a STRING NOT NULL);
 INSERT INTO table1 (field_a) VALUES ("test");

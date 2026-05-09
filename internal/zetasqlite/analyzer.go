@@ -154,25 +154,45 @@ func (a *Analyzer) AddNamePath(path string) error {
 	return a.namePath.addPath(path)
 }
 
-func (a *Analyzer) parseScript(ctx context.Context, query string) ([]parsed_ast.StatementNode, error) {
-	// TODO(zetasql-wasm-migration): zetasql-wasm doesn't yet expose a
-	// ParseNextScriptStatement loop, so multi-top-level scripts
-	// (e.g. "SELECT 1; SELECT 2;") are reduced to a single parse here.
-	// BeginEndBlock is unpacked, matching the previous behaviour for the
-	// scripted-block case.
-	stmt, err := a.engine.Parse(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse statement: %w", err)
+// parsedStmt pairs a parsed statement node with the SQL fragment that
+// produced it, so each statement of a multi-statement script can be
+// re-analysed against its own text rather than the whole script.
+type parsedStmt struct {
+	Root parsed_ast.StatementNode
+	SQL  string
+}
+
+func (a *Analyzer) parseScript(ctx context.Context, query string) ([]parsedStmt, error) {
+	var out []parsedStmt
+	loc := zetasql.NewParseResumeLocation(query)
+	for {
+		prevPos := loc.BytePosition
+		stmt, more, err := a.engine.ParseNext(ctx, loc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse statement: %w", err)
+		}
+		stmtSQL := query[prevPos:loc.BytePosition]
+		switch s := stmt.Root.(type) {
+		case *parsed_ast.BeginEndBlockNode:
+			// BEGIN ... END script block. Unpack into sub-statements
+			// but keep the wrapping SQL for re-analysis since the
+			// sub-statement substring would not parse on its own
+			// (the wrapping block carries declared variables, etc.).
+			for _, sub := range s.StatementListNode().StatementList() {
+				out = append(out, parsedStmt{Root: sub, SQL: stmtSQL})
+			}
+		default:
+			if root, ok := stmt.Root.(parsed_ast.StatementNode); ok {
+				out = append(out, parsedStmt{Root: root, SQL: stmtSQL})
+			} else {
+				return nil, fmt.Errorf("unexpected root node %T", stmt.Root)
+			}
+		}
+		if !more {
+			break
+		}
 	}
-	root := stmt.Root
-	switch s := root.(type) {
-	case *parsed_ast.BeginEndBlockNode:
-		return s.StatementListNode().StatementList(), nil
-	}
-	if root, ok := root.(parsed_ast.StatementNode); ok {
-		return []parsed_ast.StatementNode{root}, nil
-	}
-	return nil, fmt.Errorf("unexpected root node %T", root)
+	return out, nil
 }
 
 func (a *Analyzer) getParameterMode(stmt parsed_ast.StatementNode) (zetasql.ParameterMode, error) {
@@ -216,10 +236,10 @@ func (a *Analyzer) Analyze(ctx context.Context, conn *Conn, query string, args [
 		funcMap[spec.FuncName()] = spec
 	}
 	actionFuncs := make([]StmtActionFunc, 0, len(stmts))
-	for _, stmt := range stmts {
-		stmt := stmt
+	for _, ps := range stmts {
+		ps := ps
 		actionFuncs = append(actionFuncs, func() (StmtAction, error) {
-			mode, err := a.getParameterMode(stmt)
+			mode, err := a.getParameterMode(ps.Root)
 			if err != nil {
 				return nil, err
 			}
@@ -227,20 +247,22 @@ func (a *Analyzer) Analyze(ctx context.Context, conn *Conn, query string, args [
 			if err := a.bindQueryParameters(mode, args); err != nil {
 				return nil, err
 			}
-			// TODO(zetasql-wasm-migration): zetasql-wasm has no
-			// AnalyzeStatementFromParserAST equivalent — re-analyse from
-			// SQL text. Fine for single-statement queries; for scripted
-			// inputs the parseScript split already handed us the SQL form
-			// of each statement is unavailable, so we pass the original
-			// query when there's only one statement and rely on the
-			// fork's scripted-block fallback otherwise.
-			out, err := a.engine.Analyze(ctx, query, a.catalog.SimpleCatalog(), a.opt)
+			// zetasql-wasm v0.8.0 has no AnalyzeStatementFromParserAST
+			// equivalent, so we re-analyse from the SQL fragment
+			// captured by parseScript. parseScript hands us the per-
+			// statement substring so multi-top-level scripts no longer
+			// fail on the second statement.
+			out, err := a.engine.Analyze(ctx, ps.SQL, a.catalog.SimpleCatalog(), a.opt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to analyze: %w", err)
 			}
 			stmtNode := out.Resolved
-			ctx = a.context(ctx, funcMap, stmtNode, stmt)
-			action, err := a.newStmtAction(ctx, query, args, stmtNode)
+			// Use the parsed AST that engine.Analyze returned (out.Parsed)
+			// rather than the one parseScript captured. The resolved →
+			// parsed reverse lookup (NodeMap.FindParsedNodes) only works
+			// when both sides come from the same Analyze call.
+			ctx = a.context(ctx, funcMap, stmtNode, out.Parsed)
+			action, err := a.newStmtAction(ctx, ps.SQL, args, stmtNode)
 			if err != nil {
 				return nil, err
 			}

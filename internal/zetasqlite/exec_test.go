@@ -48,7 +48,6 @@ CREATE TABLE _table_a (
 		},
 		{
 			name: "create table as select",
-			skipReason: "zetasql-wasm: multi-statement script parsing not yet supported (post-v0.7.0 follow-up)",
 			query: `
 CREATE TABLE foo ( id STRING PRIMARY KEY NOT NULL, name STRING );
 CREATE TABLE bar ( id STRING, name STRING, PRIMARY KEY (id, name) );
@@ -59,7 +58,6 @@ CREATE OR REPLACE TABLE new_table_as_select AS (
 		},
 		{
 			name: "recreate table",
-			skipReason: "zetasql-wasm: multi-statement script parsing not yet supported (post-v0.7.0 follow-up)",
 			query: `
 CREATE OR REPLACE TABLE recreate_table ( a string );
 DROP TABLE recreate_table;
@@ -69,7 +67,6 @@ INSERT recreate_table (b) VALUES ('hello');
 		},
 		{
 			name: "insert select",
-			skipReason: "zetasql-wasm: multi-statement script parsing not yet supported (post-v0.7.0 follow-up)",
 			query: `
 CREATE OR REPLACE TABLE TableA(product string, quantity int64);
 INSERT TableA (product, quantity) SELECT 'top load washer', 10;
@@ -90,7 +87,7 @@ DROP VIEW IF EXISTS _view_a
 		},
 		{
 			name: "transaction",
-			skipReason: "zetasql-wasm: multi-statement script parsing not yet supported (post-v0.7.0 follow-up)",
+			skipReason: "emulator: MERGE expression formatter only handles equality conditions; the script's MERGE ... USING ... ON ... WHEN MATCHED clause hits the unsupported branch (post-v0.8.0 follow-up)",
 			query: `
 CREATE OR REPLACE TABLE Inventory
 (
