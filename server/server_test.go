@@ -777,7 +777,6 @@ func TestDirectDDL(t *testing.T) {
 }
 
 func TestView(t *testing.T) {
-	t.Skip("server: TestServer cleanup hangs after view lifecycle path (follow-up)")
 	const (
 		projectName = "test"
 		datasetName = "dataset1"

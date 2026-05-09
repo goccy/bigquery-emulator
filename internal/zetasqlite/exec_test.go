@@ -78,14 +78,12 @@ INSERT INTO TableA (product, quantity) SELECT * FROM UNNEST([('microwave', 20), 
 		},
 		{
 			name: "create view",
-			skipReason: "emulator: VIEW lifecycle name resolution mismatch (follow-up)",
 			query: `
-CREATE VIEW _view_a AS SELECT * FROM TableA
+CREATE VIEW _view_a AS SELECT * FROM _table_a
 `,
 		},
 		{
 			name: "drop view",
-			skipReason: "emulator: VIEW lifecycle name resolution mismatch (follow-up)",
 			query: `
 DROP VIEW IF EXISTS _view_a
 `,
