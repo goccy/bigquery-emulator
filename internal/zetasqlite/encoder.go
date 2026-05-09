@@ -156,10 +156,12 @@ func LiteralFromZetaSQLValue(v *types.LiteralValue) (string, error) {
 // surrounding StructType. Returns nil for SQL NULL (proto oneof unset) and
 // for kinds the wrap layer cannot model yet (LiteralValue.Value == nil).
 //
-// DATE / TIMESTAMP go through zetasql-wasm v0.8.0 typed accessors that
-// hide the proto representation (int32 days / *timestamppb.Timestamp)
-// behind an ergonomic surface; the previous reflect-based fallback
-// collapsed DATE to IntValue and panicked on TIMESTAMP.
+// DATE / TIMESTAMP / ENUM go through zetasql-wasm typed accessors that
+// hide the proto representation (int32 days / *timestamppb.Timestamp /
+// proto enum value) behind an ergonomic surface. ENUM literals are
+// lifted to StringValue carrying the declared name (e.g. "DAY" for
+// DateTimePart) so the date-part bind functions get the form they
+// already expect from .ToString().
 func ValueFromZetaSQLValue(v *types.LiteralValue) (Value, error) {
 	if v == nil || v.Value == nil {
 		return nil, nil
@@ -169,6 +171,9 @@ func ValueFromZetaSQLValue(v *types.LiteralValue) (Value, error) {
 	}
 	if ts, ok := v.AsTimestamp(); ok {
 		return TimestampValue(ts), nil
+	}
+	if name, ok := v.AsEnumName(); ok {
+		return StringValue(name), nil
 	}
 	switch elts := v.Value.(type) {
 	case types.ArrayValue:
