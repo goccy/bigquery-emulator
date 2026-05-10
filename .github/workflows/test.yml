@@ -19,7 +19,15 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Keep both runners. The fork is not fully CGO-free yet
+    # (mattn/go-sqlite3 is CGO-bound), so libc / system-sqlite
+    # differences between Linux and macOS can surface real
+    # portability bugs at link/runtime. macOS-only failures are
+    # caught here rather than after a release.
+    strategy:
+      matrix:
+        os: ["ubuntu-latest", "macos-latest"]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -38,7 +46,10 @@ jobs:
         run: ./bigquery-emulator --version
   test:
     name: Test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: ["ubuntu-latest", "macos-latest"]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
