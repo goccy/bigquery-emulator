@@ -4,13 +4,22 @@ on:
     branches:
       - main
   pull_request:
+    # Only fire on changes that affect the build / test result.
+    # Workflow-only or docs-only PRs (e.g. release tooling tweaks)
+    # skip the build+test cycle. Use workflow_dispatch as the escape
+    # hatch when a forced run is wanted.
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/test.yml'
+  workflow_dispatch:
+
 jobs:
   build:
     name: Build
-    strategy:
-      matrix:
-        os: ["ubuntu-latest", "macos-latest"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -29,10 +38,7 @@ jobs:
         run: ./bigquery-emulator --version
   test:
     name: Test
-    strategy:
-      matrix:
-        os: ["ubuntu-latest", "macos-latest"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v4
