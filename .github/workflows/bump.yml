@@ -2,10 +2,12 @@ name: Bump
 
 # Two jobs, both triggered on PR merge into main:
 #
-#   - bump: fires for non-release PRs (head != "release"). Determines
-#     bump type from PR labels ("major" / "minor" / else patch),
-#     refreshes the long-lived `release` branch on top of main, runs
-#     gobump, and upserts the release PR.
+#   - bump: fires for non-release PRs (head != "release"). Recomputes
+#     the bump amount from every PR merged since the most recent v*
+#     tag, deletes the long-lived `release` branch and re-creates it
+#     fresh from main, applies gobump once, and upserts the release
+#     PR. Each run is fully idempotent: deleting the release branch
+#     and re-running produces the same state.
 #
 #   - tag:  fires only for the release PR's merge (head == "release").
 #     Reads version.go via gobump, tags the merge commit, and pushes
@@ -30,6 +32,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-go@v6
@@ -37,34 +40,43 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Determine bump type from PR labels
+      - name: Compute bump type from PRs merged since last tag
         id: bump_type
         env:
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if echo "$LABELS" | grep -q '"major"'; then
+          prev_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
+          if [ -z "$prev_tag" ]; then
+            since_iso="1970-01-01T00:00:00Z"
+          else
+            since_iso=$(git log -1 --format=%aI "${prev_tag}")
+          fi
+          prs=$(gh pr list \
+            --base main \
+            --state merged \
+            --search "merged:>=${since_iso}" \
+            --json number,labels \
+            --limit 200)
+          if echo "$prs" | jq -e 'any(.[].labels[]; .name == "major")' >/dev/null; then
             echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$LABELS" | grep -q '"minor"'; then
+          elif echo "$prs" | jq -e 'any(.[].labels[]; .name == "minor")' >/dev/null; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
           else
             echo "type=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out release (existing) or main (fresh)
+      - name: Re-create release branch from main
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
-            git fetch origin release:release
-            git checkout release
-            # Rebase onto latest main so the release branch always
-            # carries main + the bump on top.
-            git rebase origin/main
-          else
-            git checkout -b release origin/main
-          fi
+          # Delete origin/release (if exists) before re-creating from
+          # main, so the next push is unambiguously fresh state. The
+          # branch is auto-managed and humans never push to it
+          # directly, so unconditional delete is safe.
+          git push origin --delete release 2>/dev/null || true
+          git checkout -B release main
 
       - name: Bump version
         id: bump
@@ -73,19 +85,19 @@ jobs:
           go tool gobump "${{ steps.bump_type.outputs.type }}" -w .
           echo "version=$(go tool gobump show -r .)" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and force-push release branch
+      - name: Commit and push release branch
         run: |
           set -euo pipefail
           new_tag="v${{ steps.bump.outputs.version }}"
           git add version.go
           if git diff --cached --quiet; then
-            echo "version.go unchanged after rebase + bump; nothing to commit"
+            echo "version.go unchanged after bump; nothing to commit"
             exit 0
           fi
           git commit -m "chore(release): ${new_tag}"
-          # force-with-lease: don't clobber a concurrent run that already
-          # advanced the release branch.
-          git push --force-with-lease origin release
+          # Plain push — branch was just deleted and re-created, so no
+          # remote state to lose.
+          git push origin release
 
       - name: Build PR body
         run: |
@@ -101,7 +113,7 @@ jobs:
           {
             echo "## Release ${new_version}"
             echo
-            echo "Cumulative bump on \`release\`. Latest trigger: \`${{ steps.bump_type.outputs.type }}\` from #${{ github.event.pull_request.number }}."
+            echo "Bump type \`${{ steps.bump_type.outputs.type }}\` derived from labels on PRs merged since \`${prev_ref}\`. Latest trigger: #${{ github.event.pull_request.number }}."
             echo
             echo "### Range"
             echo
