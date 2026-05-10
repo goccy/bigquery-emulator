@@ -1,41 +1,38 @@
+# Builds bigquery-emulator with CGO enabled. zetasql-wasm itself is
+# pure Go (wazero), but the SQLite driver (mattn/go-sqlite3) the fork
+# uses is CGO-bound, so the binary needs gcc + glibc to link. The
+# golang:bookworm builder ships gcc; the final image is
+# distroless/base-debian12 (carries glibc + ca-certs + tzdata).
+ARG GO_VERSION=1.26
 ARG DEBIAN_VERSION=bookworm
 
-FROM golang:${DEBIAN_VERSION} AS cgo_builder
-RUN export DEBIAN_FRONTEND=noninteractive \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends clang
+FROM golang:${GO_VERSION}-${DEBIAN_VERSION} AS builder
 
 WORKDIR /build
-# We copy the depenencies first to leverage Docker cache
+# Copy the dep manifests first to leverage the Docker layer cache for
+# `go mod download`.
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . ./
 
-ENV CGO_ENABLED=1
-ENV CC=clang
-ENV CGO_CFLAGS="-fPIC"
-ENV CXX=clang++
-ENV CGO_CPPFLAGS="-fPIC"
-ENV CGO_CXXFLAGS="-fPIC"
-ARG TARGETPLATFORM
-ARG VERSION
 ARG REVISION
 
-RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-        export STATIC_LINK_FLAGS="-extldflags -static"; \
-    fi \
-    && go build -o /go/bin/bigquery-emulator \
-    -ldflags "-s -w -X main.version=${VERSION} -X main.revision=${REVISION} -linkmode=external $STATIC_LINK_FLAGS" \
+# CGO_ENABLED=1 because the SQLite driver requires it. With buildx +
+# QEMU each platform builds for itself, so we do not set GOOS/GOARCH
+# explicitly — they default to the running platform.
+RUN CGO_ENABLED=1 \
+    go build \
+    -trimpath \
+    -ldflags "-s -w -X main.revision=${REVISION}" \
+    -o /go/bin/bigquery-emulator \
     ./cmd/bigquery-emulator
 
+# distroless/base-debian12 carries glibc, ca-certificates, and tzdata
+# — what the CGO-linked binary needs at runtime, nothing more.
+FROM gcr.io/distroless/base-debian12
 
-# AMD64 would be fine using scratch, as long as we also create an empty
-# /tmp directory and copy over /usr/share/zoneinfo. However, static linking
-# fails with ARM64, so we need to use a base image with the same glibc.
-FROM debian:${DEBIAN_VERSION}
-
-COPY --from=cgo_builder /go/bin/bigquery-emulator /bin/bigquery-emulator
+COPY --from=builder /go/bin/bigquery-emulator /bin/bigquery-emulator
 
 WORKDIR /work
 

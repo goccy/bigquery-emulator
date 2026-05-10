@@ -1,22 +1,78 @@
 name: build and push image
+
+# Triggered by `v*` tag pushes (which only happen via the bump.yml
+# tag job). Two jobs:
+#
+#   smoke       — builds a single-arch image, runs the e2e smoke
+#                 test against it (make e2e), tears down. Gates the
+#                 publish step on a real query round-trip rather
+#                 than just "the image built".
+#
+#   build-image — needs: smoke. Runs only if smoke passes. Builds
+#                 the multi-arch (amd64+arm64) image via QEMU and
+#                 pushes the manifest to ghcr.io. Shares the GHA
+#                 buildx cache with the smoke step so the second
+#                 build mostly hits cache for amd64 and only the
+#                 arm64 layers do real work.
 on:
   push:
     tags:
       - v*
+
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  smoke:
+    name: e2e smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build the image for the runner's native arch (amd64) and
+      # load it into the local docker daemon so docker compose can
+      # use it without rebuilding. cache-to populates the GHA cache
+      # that the build-image job consumes via cache-from below.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: bigquery-emulator:local-test
+          build-args: |
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: bring up emulator
+        run: docker compose -f e2e/compose.yml up -d --no-build
+
+      # `make e2e` depends on `docker/healthcheck`, which polls
+      # :9050 until ready. If the emulator never comes up the gate
+      # fails fast with a clear message.
+      - name: e2e (healthcheck + go test)
+        run: make e2e
+
+      - name: tear down
+        if: always()
+        run: docker compose -f e2e/compose.yml down --volumes
+
   build-image:
-    strategy:
-      matrix:
-        os: [ "ubuntu-latest", "ubuntu-24.04-arm" ]
-    runs-on: ${{ matrix.os }}
+    name: build and push image
+    needs: smoke
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
@@ -24,21 +80,25 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v2
+
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            VERSION=v${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             REVISION=${{ steps.meta.outputs.sha }}

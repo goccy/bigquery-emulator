@@ -1,0 +1,17 @@
+# Image-smoke harness for the top-level Dockerfile.
+# Brings up the emulator from a freshly built image and exposes the
+# usual REST + Storage gRPC ports. Pair with smoke.sh, which builds,
+# runs, polls, and tears down end-to-end.
+services:
+  bigquery-emulator:
+    build:
+      context: ..
+      args:
+        REVISION: ${REVISION:-local-test}
+    image: bigquery-emulator:local-test
+    ports:
+      - "9050:9050"
+      - "9060:9060"
+    command:
+      - "--project=test"
+      - "--log-level=info"
