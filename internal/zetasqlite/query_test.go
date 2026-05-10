@@ -3318,7 +3318,6 @@ SELECT characters, CHARACTER_LENGTH(characters) FROM example`,
 		},
 		{
 			name: "initcap",
-			skipReason: "zetasql-wasm: BigQuery-only function INITCAP not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS
 (
@@ -3339,7 +3338,6 @@ SELECT value, INITCAP(value) AS initcap_value FROM example`,
 		},
 		{
 			name: "initcap with delimiters",
-			skipReason: "zetasql-wasm: BigQuery-only function INITCAP not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS
 (
@@ -3362,7 +3360,6 @@ SELECT value, delimiters, INITCAP(value, delimiters) AS initcap_value FROM examp
 		},
 		{
 			name: "instr",
-			skipReason: "zetasql-wasm: BigQuery-only function INSTR not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS
 (
@@ -3697,7 +3694,6 @@ WITH markdown AS (
 		},
 		{
 			name: "regexp_substr",
-			skipReason: "zetasql-wasm: BigQuery-only function REGEXP_SUBSTR not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS (
   SELECT 'Hello World Helloo' AS value, 'H?ello+' AS regex, 1 AS position, 1 AS occurrence UNION ALL
@@ -3875,7 +3871,6 @@ WITH items AS (
 		},
 		{
 			name: "soundex",
-			skipReason: "zetasql-wasm: BigQuery-only function SOUNDEX not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS (
   SELECT 'Ashcraft' AS value UNION ALL
@@ -3935,7 +3930,6 @@ WITH letters AS (
 		},
 		{
 			name:         "substring",
-			skipReason: "zetasql-wasm: BigQuery-only function SUBSTRING not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT SUBSTRING('apple', 2), SUBSTRING('apple', 2, 2), SUBSTRING('apple', -2), SUBSTRING('apple', 1, 123), SUBSTRING('apple', 123)`,
 			expectedRows: [][]interface{}{{"pple", "pp", "le", "apple", ""}},
 		},
@@ -3983,7 +3977,6 @@ WITH letters AS (
 		},
 		{
 			name: "translate",
-			skipReason: "zetasql-wasm: BigQuery-only function TRANSLATE not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query: `
 WITH example AS (
   SELECT 'This is a cookie' AS expression, 'sco' AS source_characters, 'zku' AS target_characters UNION ALL
@@ -4392,31 +4385,26 @@ SELECT date, EXTRACT(ISOYEAR FROM date), EXTRACT(YEAR FROM date), EXTRACT(MONTH 
 
 		{
 			name:         "last_day",
-			skipReason: "zetasql-wasm: BigQuery-only function LAST_DAY not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT LAST_DAY(DATE '2008-11-25') AS last_day`,
 			expectedRows: [][]interface{}{{"2008-11-30"}},
 		},
 		{
 			name:         "last_day with month",
-			skipReason: "zetasql-wasm: BigQuery-only function LAST_DAY not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT LAST_DAY(DATE '2008-11-25', MONTH) AS last_day`,
 			expectedRows: [][]interface{}{{"2008-11-30"}},
 		},
 		{
 			name:         "last_day with year",
-			skipReason: "zetasql-wasm: BigQuery-only function LAST_DAY not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT LAST_DAY(DATE '2008-11-25', YEAR) AS last_day`,
 			expectedRows: [][]interface{}{{"2008-12-31"}},
 		},
 		{
 			name:         "last_day with week(sunday)",
-			skipReason: "zetasql-wasm: BigQuery-only function LAST_DAY not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT LAST_DAY(DATE '2008-11-10', WEEK(SUNDAY)) AS last_day`,
 			expectedRows: [][]interface{}{{"2008-11-15"}},
 		},
 		{
 			name:         "last_day with week(monday)",
-			skipReason: "zetasql-wasm: BigQuery-only function LAST_DAY not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT LAST_DAY(DATE '2008-11-10', WEEK(MONDAY)) AS last_day`,
 			expectedRows: [][]interface{}{{"2008-11-16"}},
 		},
@@ -5605,25 +5593,23 @@ FROM CoordinatesTable AS t`,
 		},
 		{
 			name:         "json_bool",
-			skipReason: "zetasql-wasm: BigQuery-only function BOOL not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT BOOL(JSON 'true') AS vacancy`,
 			expectedRows: [][]interface{}{{true}},
 		},
 		{
 			name:         "json_int64",
-			skipReason: "zetasql-wasm: BigQuery-only function INT not in standard catalog auto-load (post-v0.9.0 follow-up)",
 			query:        `SELECT INT64(JSON '2005') AS flight_number`,
 			expectedRows: [][]interface{}{{int64(2005)}},
 		},
 		{
 			name:         "json_float64",
-			skipReason: "zetasql-wasm: BigQuery-only function FLOAT not in standard catalog auto-load (post-v0.9.0 follow-up)",
+			skipReason: "emulator: BigQuery FLOAT64(json) has no SQLite-level bind in function_register.go (analyzer accepts via v0.10.0 BigQuery extensions, but exec fails 'no such function: FLOAT64'; post-v0.10.0 follow-up: add bindFloat64)",
 			query:        `SELECT FLOAT64(JSON '9.8') AS velocity`,
 			expectedRows: [][]interface{}{{float64(9.8)}},
 		},
 		{
 			name: "json_type",
-			skipReason: "zetasql-wasm: BigQuery-only function JSON_TYPE not in standard catalog auto-load (post-v0.9.0 follow-up)",
+			skipReason: "emulator: JSON literal lifted to StringValue at bind time (encoder/decoder still treats JSON kind as STRING); JSON_TYPE bind expects JsonValue and rejects with 'failed to convert zetasqlite.StringValue to JSON value' (post-v0.10.0 follow-up)",
 			query: `
 SELECT json_val, JSON_TYPE(json_val) AS type
 FROM
