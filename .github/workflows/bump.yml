@@ -1,0 +1,168 @@
+name: Bump
+
+# Two jobs, both triggered on PR merge into main:
+#
+#   - bump: fires for non-release PRs (head != "release"). Determines
+#     bump type from PR labels ("major" / "minor" / else patch),
+#     refreshes the long-lived `release` branch on top of main, runs
+#     gobump, and upserts the release PR.
+#
+#   - tag:  fires only for the release PR's merge (head == "release").
+#     Reads version.go via gobump, tags the merge commit, and pushes
+#     the tag. The tag push triggers release.yml, which creates the
+#     GitHub Release.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Determine bump type from PR labels
+        id: bump_type
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if echo "$LABELS" | grep -q '"major"'; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"minor"'; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out release (existing) or main (fresh)
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
+            git fetch origin release:release
+            git checkout release
+            # Rebase onto latest main so the release branch always
+            # carries main + the bump on top.
+            git rebase origin/main
+          else
+            git checkout -b release origin/main
+          fi
+
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          go tool gobump "${{ steps.bump_type.outputs.type }}" -w .
+          echo "version=$(go tool gobump show -r .)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and force-push release branch
+        run: |
+          set -euo pipefail
+          new_tag="v${{ steps.bump.outputs.version }}"
+          git add version.go
+          if git diff --cached --quiet; then
+            echo "version.go unchanged after rebase + bump; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(release): ${new_tag}"
+          # force-with-lease: don't clobber a concurrent run that already
+          # advanced the release branch.
+          git push --force-with-lease origin release
+
+      - name: Build PR body
+        run: |
+          set -euo pipefail
+          new_version="v${{ steps.bump.outputs.version }}"
+          prev_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
+          if [ -z "$prev_tag" ]; then
+            prev_ref=$(git rev-list --max-parents=0 origin/main | head -n1)
+          else
+            prev_ref="$prev_tag"
+          fi
+          repo_url="${{ github.server_url }}/${{ github.repository }}"
+          {
+            echo "## Release ${new_version}"
+            echo
+            echo "Cumulative bump on \`release\`. Latest trigger: \`${{ steps.bump_type.outputs.type }}\` from #${{ github.event.pull_request.number }}."
+            echo
+            echo "### Range"
+            echo
+            echo "[\`${prev_ref}...release\`](${repo_url}/compare/${prev_ref}...release)"
+            echo
+            echo "### Commits since previous release"
+            echo
+            git log --no-merges --pretty=format:'- %s (%h)' "${prev_ref}..release"
+            echo
+          } > pr_body.md
+
+      - name: Upsert release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          new_version="v${{ steps.bump.outputs.version }}"
+          existing=$(gh pr list --head release --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" \
+              --title "release: ${new_version}" \
+              --body-file pr_body.md
+          else
+            gh pr create \
+              --title "release: ${new_version}" \
+              --body-file pr_body.md \
+              --base main \
+              --head release \
+              --label release
+          fi
+
+  tag:
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Read version
+        id: version
+        run: echo "tag=v$(go tool gobump show -r .)" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists; skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Release ${tag}"
+          git push origin "${tag}"

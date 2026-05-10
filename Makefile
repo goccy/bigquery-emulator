@@ -7,7 +7,7 @@ REVISION := $(shell git rev-parse --short HEAD)
 # needed.
 emulator/build:
 	go build -o bigquery-emulator \
-		-ldflags='-s -w -X main.version=${VERSION} -X main.revision=${REVISION}' \
+		-ldflags='-s -w -X main.revision=${REVISION}' \
 		./cmd/bigquery-emulator
 
 docker/build:

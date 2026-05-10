@@ -1,65 +1,55 @@
-name: publish
+name: Release
+
+# Triggered exclusively by `v*` tag pushes (which only happen via
+# bump.yml's `tag` job when the release PR is merged). Creates the
+# GitHub Release with auto-generated notes scoped to commits since
+# the previous tag. The trigger is unambiguous: this workflow cannot
+# fire for any other event.
 on:
   push:
     tags:
-      - v*
-jobs:
-  publish:
-    name: Publish for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact_name: bigquery-emulator
-            asset_name: bigquery-emulator-linux-amd64
-            go-version: "1.21.5"
-          - os: macos-latest
-            artifact_name: bigquery-emulator
-            asset_name: bigquery-emulator-darwin-amd64
-            go-version: "1.21.5"
+      - 'v*'
 
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: setup Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v4
-      with:
-        go-version: ${{ matrix.go-version }}
-        cache: true
-    - name: extract version from tags
-      id: meta
-      run: |
-        echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/}
-    - uses: rui314/setup-mold@v1
-    - name: cache for linux
-      uses: actions/cache@v3
-      if: runner.os == 'Linux'
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: cache for macOS
-      uses: actions/cache@v3
-      if: runner.os == 'macOS'
-      with:
-        path: |
-          ~/Library/Caches/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: build
-      run: make emulator/build
-      env:
-        VERSION: ${{ steps.meta.outputs.VERSION }}
-    - name: Upload binaries to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: ${{ matrix.artifact_name }}
-        asset_name: ${{ matrix.asset_name }}
-        tag: ${{ github.ref }}
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Find previous tag
+        id: prev
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # The current tag is at refs/tags/${tag}; find the next-most-
+          # recent v* tag (excluding the current one) for the release-
+          # notes start point.
+          prev_tag=$(git tag --list 'v*' --sort=-v:refname | grep -vF "${tag}" | head -n1 || true)
+          echo "tag=${prev_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          prev="${{ steps.prev.outputs.tag }}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; skipping."
+            exit 0
+          fi
+          if [ -n "${prev}" ]; then
+            gh release create "${tag}" \
+              --title "${tag}" \
+              --generate-notes \
+              --notes-start-tag "${prev}"
+          else
+            gh release create "${tag}" \
+              --title "${tag}" \
+              --generate-notes
+          fi

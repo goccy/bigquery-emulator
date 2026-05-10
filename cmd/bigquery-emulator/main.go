@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	bigqueryemulator "github.com/goccy/bigquery-emulator"
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/jessevdk/go-flags"
@@ -34,8 +35,11 @@ const (
 	exitError exitCode = 1
 )
 
+// revision is injected at build time via -ldflags '-X main.revision=<sha>'.
+// version is sourced from bigqueryemulator.Version (the const that gobump
+// rewrites in /version.go), so `go run ./cmd/bigquery-emulator -version`
+// prints the right number without needing ldflags.
 var (
-	version  string
 	revision string
 )
 
@@ -72,7 +76,7 @@ func parseOpt() ([]string, option, error) {
 
 func runServer(args []string, opt option) error {
 	if opt.Version {
-		fmt.Fprintf(os.Stdout, "version: %s (%s)\n", version, revision)
+		fmt.Fprintf(os.Stdout, "version: %s (%s)\n", bigqueryemulator.Version, revision)
 		return nil
 	}
 	if opt.Project == "" {
