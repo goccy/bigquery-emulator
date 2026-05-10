@@ -1,18 +1,17 @@
 name: Bump
 
-# Two jobs, both triggered on PR merge into main:
+# Single job: fires for non-release PRs (head != "release") and
+# upserts the long-lived release PR. Recomputes the bump amount
+# from every PR merged since the most recent v* tag, deletes the
+# `release` branch on origin and re-creates it fresh from main,
+# applies gobump once, and updates (or opens) the release PR.
+# Each run is idempotent.
 #
-#   - bump: fires for non-release PRs (head != "release"). Recomputes
-#     the bump amount from every PR merged since the most recent v*
-#     tag, deletes the long-lived `release` branch and re-creates it
-#     fresh from main, applies gobump once, and upserts the release
-#     PR. Each run is fully idempotent: deleting the release branch
-#     and re-running produces the same state.
-#
-#   - tag:  fires only for the release PR's merge (head == "release").
-#     Reads version.go via gobump, tags the merge commit, and pushes
-#     the tag. The tag push triggers release.yml, which creates the
-#     GitHub Release.
+# Tagging and the GitHub Release / image publish happen in
+# release.yml, which fires on `version.go` changing on main —
+# i.e. when the release PR merges and main advances to the new
+# version. That trigger sidesteps the GITHUB_TOKEN limitation
+# (Action-pushed tags do not fire `on: push: tags` workflows).
 on:
   pull_request:
     types: [closed]
@@ -145,36 +144,3 @@ jobs:
               --label release
           fi
 
-  tag:
-    if: |
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.head.ref == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Read version
-        id: version
-        run: echo "tag=v$(go tool gobump show -r .)" >> "$GITHUB_OUTPUT"
-
-      - name: Create and push tag
-        run: |
-          set -euo pipefail
-          tag="${{ steps.version.outputs.tag }}"
-          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
-            echo "Tag ${tag} already exists; skipping."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "Release ${tag}"
-          git push origin "${tag}"
