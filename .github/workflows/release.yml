@@ -55,8 +55,27 @@ jobs:
       - name: bring up emulator
         run: docker compose -f e2e/compose.yml up -d --no-build
 
-      - name: e2e (healthcheck + go test)
-        run: make e2e
+      # Poll :9050 directly (Makefile's docker/healthcheck is local-only —
+      # CI needs a wider retry window since a freshly-pulled image plus
+      # cold start on a runner takes longer than 5s). curl -s (no -f) on
+      # purpose: the emulator returns HTTP 500 for `GET /` so any HTTP
+      # response counts as healthy; we only need port reachability.
+      - name: wait for emulator
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -s -m 2 -o /dev/null http://localhost:9050/; then
+              echo "OK: emulator responding on :9050 (attempt ${i})"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: emulator not reachable on :9050 after 30s" >&2
+          docker compose -f e2e/compose.yml logs --tail=100 bigquery-emulator >&2 || true
+          exit 1
+
+      - name: run e2e tests
+        run: go test -tags=e2e -count=1 -v ./e2e/...
 
       - name: tear down
         if: always()
