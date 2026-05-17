@@ -14,3 +14,9 @@
 # Dependency directories (remove the comment below to include it)
 vendor/
 dist
+
+# Locally built emulator binary (produced by `make emulator/build`)
+/bigquery-emulator
+
+# Local output of the e2e conformance suite
+/test/e2e/.out/

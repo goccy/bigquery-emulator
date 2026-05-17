@@ -41,7 +41,7 @@ For example, it has the following features.
 - Templated Argument Function
 - JavaScript UDF
 
-If you want to know the specific features supported, please see [here](https://github.com/goccy/go-zetasqlite#status)
+If you want to know the specific features supported, please see [here](https://github.com/goccy/googlesqlite#status)
 
 # Goals and Sponsors
 
@@ -57,15 +57,8 @@ If Go is installed, you can install the latest version with the following comman
 $ go install github.com/goccy/bigquery-emulator/cmd/bigquery-emulator@latest
 ```
 
-The BigQuery emulator depends on [go-zetasql](https://github.com/goccy/go-zetasql).
-This library takes a very long time to install because it automatically builds the ZetaSQL library during install.
-It may look like it hangs because it does not log anything during the build process, but if the `clang` process is running in the background, it is working fine, so just wait it out.
-Also, for this reason, the following environment variables must be enabled for installation.
-
-```console
-CGO_ENABLED=1
-CXX=clang++
-```
+The SQL backend is pure Go, so installation is an ordinary `go install` with
+no native build step.
 
 You can also download the docker image with the following command
 
@@ -293,13 +286,13 @@ SELECT %s([
 
 # Debugging
 
-If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/goccy/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
+If you have specified a database file when starting `bigquery-emulator`, the file is an ordinary SQLite database and can be inspected with any SQLite tool.
 
 # How it works
 
 ## BigQuery Emulator Architecture Overview
 
-After receiving ZetaSQL Query via REST API from bq or Client SDK for each language, go-zetasqlite parses and analyzes the ZetaSQL Query to output AST. After generating a SQLite query from the AST, go-sqite3 is used to access the SQLite Database.
+After receiving a GoogleSQL query via the REST API from bq or a client SDK, the googlesqlite driver parses and analyzes the query and executes it against an embedded SQLite database.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145011-e35c2df4-5f5d-43ce-b7df-08cd130b5d31.png"></img>
 
@@ -308,7 +301,7 @@ After receiving ZetaSQL Query via REST API from bq or Client SDK for each langua
 ## Type Conversion Flow
 
 BigQuery has a number of types that do not exist in SQLite (e.g. ARRAY and STRUCT).
-In order to handle them in SQLite, go-zetasqlite encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination and stores them in SQLite.
+In order to handle them in SQLite, googlesqlite encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination and stores them in SQLite.
 When using the encoded data, decode the data via a custom function registered with go-sqlite3 before use.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145033-aa032878-7e01-4ec7-9a23-b174b87e1a24.png"></img>

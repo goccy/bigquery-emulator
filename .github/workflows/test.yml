@@ -43,12 +43,9 @@ jobs:
     - name: download modules
       run: |
         go mod download
-    - uses: rui314/setup-mold@v1
     - name: build
       run: make emulator/build
       env:
-        CC: clang
-        CXX: clang++
         VERSION: test
     - name: show version
       run: |
@@ -96,7 +93,6 @@ jobs:
       run: |
         go mod download
     - name: test
-      run: go test -v ./... -count=1
-      env:
-        CC: clang
-        CXX: clang++
+      # test/e2e is the Docker-based conformance suite; it runs in its own
+      # integration workflow, not in the unit test job.
+      run: go test -v -count=1 $(go list ./... | grep -v '/test/e2e')

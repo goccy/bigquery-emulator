@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"github.com/goccy/bigquery-emulator/internal/zsqltypes"
 	"github.com/goccy/go-json"
-	"github.com/goccy/go-zetasql/types"
+	"github.com/goccy/googlesqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -94,14 +95,14 @@ type Column struct {
 
 func (c *Column) FormatType() string {
 	var typ string
-	if c.Type.ZetaSQLTypeKind() == types.STRUCT {
+	if c.Type.TypeKind() == zsqltypes.STRUCT {
 		formatTypes := make([]string, 0, len(c.Fields))
 		for _, field := range c.Fields {
 			formatTypes = append(formatTypes, fmt.Sprintf("`%s` %s", field.Name, field.FormatType()))
 		}
 		typ = fmt.Sprintf("STRUCT<%s>", strings.Join(formatTypes, ","))
 	} else {
-		typ = c.Type.ZetaSQLTypeKind().String()
+		typ = c.Type.TypeKind().String()
 	}
 	if c.Mode == RepeatedMode {
 		return fmt.Sprintf("ARRAY<%s>", typ)
@@ -153,113 +154,113 @@ type Routine struct {
 type Type string
 
 func TypeFromKind(kind int) Type {
-	switch types.TypeKind(kind) {
-	case types.INT32:
+	switch zsqltypes.TypeKind(kind) {
+	case zsqltypes.INT32:
 		return INT64
-	case types.INT64:
+	case zsqltypes.INT64:
 		return INT64
-	case types.UINT32:
+	case zsqltypes.UINT32:
 		return INT64
-	case types.UINT64:
+	case zsqltypes.UINT64:
 		return INT64
-	case types.BOOL:
+	case zsqltypes.BOOL:
 		return BOOL
-	case types.FLOAT:
+	case zsqltypes.FLOAT:
 		return FLOAT
-	case types.DOUBLE:
+	case zsqltypes.DOUBLE:
 		return FLOAT64
-	case types.STRING:
+	case zsqltypes.STRING:
 		return STRING
-	case types.BYTES:
+	case zsqltypes.BYTES:
 		return BYTES
-	case types.DATE:
+	case zsqltypes.DATE:
 		return DATE
-	case types.TIMESTAMP:
+	case zsqltypes.TIMESTAMP:
 		return TIMESTAMP
-	case types.ENUM:
+	case zsqltypes.ENUM:
 		return INT64
-	case types.ARRAY:
+	case zsqltypes.ARRAY:
 		return ARRAY
-	case types.STRUCT:
+	case zsqltypes.STRUCT:
 		return STRUCT
-	case types.TIME:
+	case zsqltypes.TIME:
 		return TIME
-	case types.DATETIME:
+	case zsqltypes.DATETIME:
 		return DATETIME
-	case types.GEOGRAPHY:
+	case zsqltypes.GEOGRAPHY:
 		return GEOGRAPHY
-	case types.NUMERIC:
+	case zsqltypes.NUMERIC:
 		return NUMERIC
-	case types.BIG_NUMERIC:
+	case zsqltypes.BIG_NUMERIC:
 		return BIGNUMERIC
-	case types.JSON:
+	case zsqltypes.JSON:
 		return JSON
-	case types.INTERVAL:
+	case zsqltypes.INTERVAL:
 		return INTERVAL
 	}
 	return ""
 }
 
-func (t Type) ZetaSQLTypeKind() types.TypeKind {
+func (t Type) TypeKind() zsqltypes.TypeKind {
 	switch t {
 	case INT64:
-		return types.INT64
+		return zsqltypes.INT64
 	case INT:
-		return types.INT64
+		return zsqltypes.INT64
 	case SMALLINT:
-		return types.INT64
+		return zsqltypes.INT64
 	case INTEGER:
-		return types.INT64
+		return zsqltypes.INT64
 	case BIGINT:
-		return types.INT64
+		return zsqltypes.INT64
 	case TINYINT:
-		return types.INT64
+		return zsqltypes.INT64
 	case BYTEINT:
-		return types.INT64
+		return zsqltypes.INT64
 	case NUMERIC:
-		return types.NUMERIC
+		return zsqltypes.NUMERIC
 	case BIGNUMERIC:
-		return types.BIG_NUMERIC
+		return zsqltypes.BIG_NUMERIC
 	case DECIMAL:
-		return types.NUMERIC
+		return zsqltypes.NUMERIC
 	case BIGDECIMAL:
-		return types.BIG_NUMERIC
+		return zsqltypes.BIG_NUMERIC
 	case FLOAT:
-		return types.FLOAT
+		return zsqltypes.FLOAT
 	case FLOAT64:
-		return types.DOUBLE
+		return zsqltypes.DOUBLE
 	case DOUBLE:
-		return types.DOUBLE
+		return zsqltypes.DOUBLE
 	case BOOLEAN:
-		return types.BOOL
+		return zsqltypes.BOOL
 	case BOOL:
-		return types.BOOL
+		return zsqltypes.BOOL
 	case STRING:
-		return types.STRING
+		return zsqltypes.STRING
 	case BYTES:
-		return types.BYTES
+		return zsqltypes.BYTES
 	case DATE:
-		return types.DATE
+		return zsqltypes.DATE
 	case DATETIME:
-		return types.DATETIME
+		return zsqltypes.DATETIME
 	case TIME:
-		return types.TIME
+		return zsqltypes.TIME
 	case TIMESTAMP:
-		return types.TIMESTAMP
+		return zsqltypes.TIMESTAMP
 	case INTERVAL:
-		return types.INTERVAL
+		return zsqltypes.INTERVAL
 	case ARRAY:
-		return types.ARRAY
+		return zsqltypes.ARRAY
 	case STRUCT:
-		return types.STRUCT
+		return zsqltypes.STRUCT
 	case GEOGRAPHY:
-		return types.GEOGRAPHY
+		return zsqltypes.GEOGRAPHY
 	case JSON:
-		return types.JSON
+		return zsqltypes.JSON
 	case RECORD:
-		return types.STRUCT
+		return zsqltypes.STRUCT
 	}
-	return types.UNKNOWN
+	return zsqltypes.TYPE_UNKNOWN
 }
 
 func (t Type) FieldType() FieldType {
@@ -311,11 +312,11 @@ func (t Type) FieldType() FieldType {
 	case INTERVAL:
 		return FieldInterval
 	case ARRAY:
-		return FieldRecord
+		return FieldGeography
 	case STRUCT:
 		return FieldRecord
 	case GEOGRAPHY:
-		return FieldRecord
+		return FieldGeography
 	case JSON:
 		return FieldJSON
 	case RECORD:
@@ -324,36 +325,44 @@ func (t Type) FieldType() FieldType {
 	return ""
 }
 
-func TableFieldSchemaFromZetaSQLType(name string, t types.Type) *bigqueryv2.TableFieldSchema {
-	kind := t.Kind()
+// TableFieldSchemaFromColumnType walks a googlesqlite.ColumnType (the
+// driver-level type descriptor) and produces a BigQuery v2 schema. It
+// recurses into ARRAY element types and STRUCT field types so nested
+// schemas round-trip.
+func TableFieldSchemaFromColumnType(name string, t *googlesqlite.ColumnType) *bigqueryv2.TableFieldSchema {
+	if t == nil {
+		return &bigqueryv2.TableFieldSchema{Name: name, Mode: string(NullableMode)}
+	}
+	kind := zsqltypes.TypeKind(t.Kind)
 	typ := string(TypeFromKind(int(kind)).FieldType())
 	switch kind {
-	case types.ARRAY:
-		at := t.AsArray()
-		elem := TableFieldSchemaFromZetaSQLType("", at.ElementType())
+	case zsqltypes.ARRAY:
+		elem := TableFieldSchemaFromColumnType("", t.ElementType)
 		return &bigqueryv2.TableFieldSchema{
 			Name:   name,
 			Type:   elem.Type,
 			Fields: elem.Fields,
-			Mode:   "REPEATED",
+			Mode:   string(RepeatedMode),
 		}
-	case types.STRUCT:
-		st := t.AsStruct()
-		fieldNum := st.NumFields()
-		fields := make([]*bigqueryv2.TableFieldSchema, 0, fieldNum)
-		for i := 0; i < st.NumFields(); i++ {
-			field := st.Field(i)
-			fields = append(fields, TableFieldSchemaFromZetaSQLType(field.Name(), field.Type()))
+	case zsqltypes.STRUCT:
+		fields := make([]*bigqueryv2.TableFieldSchema, 0, len(t.FieldTypes))
+		for _, f := range t.FieldTypes {
+			fields = append(fields, TableFieldSchemaFromColumnType(f.Name, f.Type))
 		}
 		return &bigqueryv2.TableFieldSchema{
 			Name:   name,
 			Type:   typ,
 			Fields: fields,
+			Mode:   string(NullableMode),
 		}
 	}
+	// Query result columns are nullable. The mode must be emitted explicitly:
+	// the BigQuery REST API always populates it, and some clients (e.g.
+	// google-cloud-php) only treat a value as nullable when mode is set.
 	return &bigqueryv2.TableFieldSchema{
 		Name: name,
 		Type: typ,
+		Mode: string(NullableMode),
 	}
 }
 

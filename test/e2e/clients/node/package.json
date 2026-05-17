@@ -1,0 +1,9 @@
+{
+  "name": "bigquery-emulator-e2e-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js BigQuery client conformance runner",
+  "dependencies": {
+    "@google-cloud/bigquery": "^7.9.1"
+  }
+}

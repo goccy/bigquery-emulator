@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/googlesqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -87,7 +87,7 @@ func (t *AVROType) CastValue(v string) (interface{}, error) {
 	case FieldTime:
 		return parseTime(v)
 	case FieldTimestamp:
-		return zetasqlite.TimeFromTimestampValue(v)
+		return googlesqlite.TimeFromTimestampValue(v)
 	}
 	return v, nil
 }

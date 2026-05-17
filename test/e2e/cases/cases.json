@@ -1,0 +1,65 @@
+{
+  "_comment": "Shared, language-neutral query corpus for the multi-client conformance suite. Each runner executes the SAME `sql` and compares the result against `expected` using its own (per-language) comparison code. Canonical value encoding: INT64/FLOAT64 -> JSON number, STRING -> string, BOOL -> bool, NULL -> null, DATE -> 'YYYY-MM-DD', TIMESTAMP -> 'YYYY-MM-DDTHH:MM:SSZ' (UTC), ARRAY -> JSON array, STRUCT -> JSON object.",
+  "cases": [
+    {
+      "name": "scalar_int",
+      "sql": "SELECT 1 AS value",
+      "params": [],
+      "expected": [{ "value": 1 }]
+    },
+    {
+      "name": "scalar_types",
+      "sql": "SELECT 42 AS int_col, 3.5 AS float_col, 'hello' AS str_col, true AS bool_col",
+      "params": [],
+      "expected": [{ "int_col": 42, "float_col": 3.5, "str_col": "hello", "bool_col": true }]
+    },
+    {
+      "name": "null_value",
+      "sql": "SELECT CAST(NULL AS INT64) AS n",
+      "params": [],
+      "expected": [{ "n": null }]
+    },
+    {
+      "name": "array",
+      "sql": "SELECT [1, 2, 3] AS arr",
+      "params": [],
+      "expected": [{ "arr": [1, 2, 3] }]
+    },
+    {
+      "name": "struct",
+      "sql": "SELECT STRUCT(1 AS a, 'x' AS b) AS s",
+      "params": [],
+      "expected": [{ "s": { "a": 1, "b": "x" } }]
+    },
+    {
+      "name": "multi_row",
+      "sql": "SELECT n FROM UNNEST([10, 20, 30]) AS n ORDER BY n",
+      "params": [],
+      "expected": [{ "n": 10 }, { "n": 20 }, { "n": 30 }]
+    },
+    {
+      "name": "aggregate",
+      "sql": "SELECT COUNT(*) AS cnt, SUM(n) AS total FROM UNNEST([1, 2, 3, 4]) AS n",
+      "params": [],
+      "expected": [{ "cnt": 4, "total": 10 }]
+    },
+    {
+      "name": "named_param",
+      "sql": "SELECT @msg AS echoed",
+      "params": [{ "name": "msg", "type": "STRING", "value": "world" }],
+      "expected": [{ "echoed": "world" }]
+    },
+    {
+      "name": "date_value",
+      "sql": "SELECT DATE '2024-03-15' AS d",
+      "params": [],
+      "expected": [{ "d": "2024-03-15" }]
+    },
+    {
+      "name": "timestamp_value",
+      "sql": "SELECT TIMESTAMP '2024-03-15 12:34:56 UTC' AS ts",
+      "params": [],
+      "expected": [{ "ts": "2024-03-15T12:34:56Z" }]
+    }
+  ]
+}

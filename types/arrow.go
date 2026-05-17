@@ -3,11 +3,12 @@ package types
 import (
 	"fmt"
 	"strconv"
-	"time"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apache/arrow-go/v18/arrow/decimal256"
+	"github.com/goccy/googlesqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -90,11 +91,11 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 		}
 		return &arrow.Field{Name: f.Name, Type: arrow.StructOf(fields...)}, nil
 	case FieldNumeric:
-		// TODO: current arrow library doesn't support decimal type.
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
+		// BigQuery NUMERIC has precision 38 and scale 9.
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}}, nil
 	case FieldBignumeric:
-		// TODO: current arrow library doesn't support decimal type.
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
+		// BigQuery BIGNUMERIC has precision 76 and scale 38.
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal256Type{Precision: 76, Scale: 38}}, nil
 	case FieldGeography:
 		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
 	case FieldInterval:
@@ -134,6 +135,28 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 	case *array.StringBuilder:
 		b.Append(v)
 		return nil
+	case *array.Decimal128Builder:
+		dt, ok := b.Type().(*arrow.Decimal128Type)
+		if !ok {
+			return fmt.Errorf("unexpected decimal128 builder type %T", b.Type())
+		}
+		n, err := decimal128.FromString(v, dt.Precision, dt.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(n)
+		return nil
+	case *array.Decimal256Builder:
+		dt, ok := b.Type().(*arrow.Decimal256Type)
+		if !ok {
+			return fmt.Errorf("unexpected decimal256 builder type %T", b.Type())
+		}
+		n, err := decimal256.FromString(v, dt.Precision, dt.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(n)
+		return nil
 	case *array.BinaryBuilder:
 		b.Append([]byte(v))
 		return nil
@@ -142,7 +165,10 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		if err != nil {
 			return err
 		}
-		b.Append(arrow.Date32(int32(t.Sub(time.Unix(0, 0)) / (24 * time.Hour))))
+		// arrow.Date32FromTime computes the day count directly; deriving it
+		// from a time.Duration would overflow int64 nanoseconds for dates far
+		// from the epoch (BigQuery DATE spans 0001-01-01 .. 9999-12-31).
+		b.Append(arrow.Date32FromTime(t))
 		return nil
 	case *array.Time64Builder:
 		t, err := parseTime(v)
@@ -151,7 +177,7 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		}
 		b.Append(arrow.Time64(t.UnixMicro()))
 	case *array.TimestampBuilder:
-		t, err := zetasqlite.TimeFromTimestampValue(v)
+		t, err := googlesqlite.TimeFromTimestampValue(v)
 		if err != nil {
 			return err
 		}

@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/googlesqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 
@@ -17,41 +19,10 @@ import (
 	"github.com/goccy/bigquery-emulator/types"
 )
 
-type Repository struct {
-	db *sql.DB
-}
+type Repository struct{}
 
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{
-		db: db,
-	}
-}
-
-func (r *Repository) getConnection(ctx context.Context, projectID, datasetID string) (*sql.Conn, error) {
-	if projectID == "" {
-		return nil, fmt.Errorf("invalid projectID. projectID is empty")
-	}
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
-	if err := conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
-		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
-		}
-		if datasetID == "" {
-			_ = zetasqliteConn.SetNamePath([]string{projectID})
-		} else {
-			_ = zetasqliteConn.SetNamePath([]string{projectID, datasetID})
-		}
-		const maxNamePath = 3 // projectID and datasetID and tableID
-		zetasqliteConn.SetMaxNamePath(maxNamePath)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("failed to setup connection: %w", err)
-	}
-	return conn, nil
+func NewRepository() *Repository {
+	return &Repository{}
 }
 
 func (r *Repository) tablePath(projectID, datasetID, tableID string) string {
@@ -112,12 +83,19 @@ func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *b
 	if ref == nil {
 		return fmt.Errorf("TableReference is nil")
 	}
-	viewDefinition := table.View
-	if viewDefinition == nil {
-		return fmt.Errorf("ViewDefinition is nil")
+	var viewQuery string
+	switch {
+	case table.View != nil:
+		viewQuery = table.View.Query
+	case table.MaterializedView != nil:
+		// The emulator does not materialize results; a materialized view is
+		// served as an ordinary view.
+		viewQuery = table.MaterializedView.Query
+	default:
+		return fmt.Errorf("view definition is nil")
 	}
 	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
-	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewDefinition.Query)
+	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewQuery)
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create view %s: %w", query, err)
 	}
@@ -133,7 +111,7 @@ func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) strin
 		}
 		elem = fmt.Sprintf("STRUCT<%s>", strings.Join(types, ","))
 	} else {
-		elem = types.Type(field.Type).ZetaSQLTypeKind().String()
+		elem = types.Type(field.Type).TypeKind().String()
 	}
 	if field.Mode == "REPEATED" {
 		return fmt.Sprintf("ARRAY<%s>", elem)
@@ -156,6 +134,16 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		if err != nil {
 			return nil, err
 		}
+		// The BigQuery REST API encodes every scalar parameter as a
+		// JSON string, regardless of its declared type. The accompanying
+		// ParameterType.Type ("INT64", "BOOL", "FLOAT64", ...) is the
+		// only signal of what Go type the analyzer needs. Predecessor
+		// drivers were lenient about implicit STRING -> INT64 coercion;
+		// googlesqlite follows the GoogleSQL spec and refuses, so coerce
+		// here instead.
+		if param.ParameterType != nil {
+			value = coerceScalarParameterValue(value, param.ParameterType.Type)
+		}
 		if param.Name != "" {
 			values = append(values, sql.Named(param.Name, value))
 		} else {
@@ -173,7 +161,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		return nil, err
 	}
 	defer rows.Close()
-	changedCatalog, err := zetasqlite.ChangedCatalogFromRows(rows)
+	changedCatalog, err := googlesqlite.ChangedCatalogFromRows(rows)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get changed catalog: %w", err)
 	}
@@ -190,15 +178,11 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		return nil, fmt.Errorf("failed to get column types: %w", err)
 	}
 	for i := 0; i < len(columnTypes); i++ {
-		typ, err := zetasqlite.UnmarshalDatabaseTypeName(columnTypes[i].DatabaseTypeName())
+		typ, err := googlesqlite.UnmarshalDatabaseTypeName(columnTypes[i].DatabaseTypeName())
 		if err != nil {
 			return nil, fmt.Errorf("failed to get type from database type name: %w", err)
 		}
-		zetasqlType, err := typ.ToZetaSQLType()
-		if err != nil {
-			return nil, err
-		}
-		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(colNames[i], zetasqlType))
+		fields = append(fields, types.TableFieldSchemaFromColumnType(colNames[i], typ))
 	}
 
 	var (
@@ -225,7 +209,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 				// GoogleSQL for BigQuery translates a NULL array into an empty array in the query result
 				v = []interface{}{}
 			}
-			cell, err := r.convertValueToCell(v)
+			cell, err := r.convertValueToCell(v, fields[idx])
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert value to cell: %w", err)
 			}
@@ -255,7 +239,79 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	}, nil
 }
 
+// coerceScalarParameterValue converts the JSON-string representation
+// of a scalar query parameter into the Go type that matches the
+// declared BigQuery parameter type. Returns the original value
+// untouched for non-scalar shapes (already converted by
+// queryParameterValueToGoValue) and for unknown / unhandled type
+// names so the caller can fall back to the analyzer's undeclared
+// inference.
+func coerceScalarParameterValue(value interface{}, paramType string) interface{} {
+	s, ok := value.(string)
+	if !ok {
+		return value
+	}
+	upper := strings.ToUpper(paramType)
+	// An empty scalar value for a numeric or temporal parameter denotes NULL:
+	// those types have no valid empty representation. An empty STRING or BYTES,
+	// by contrast, is a legitimate value and is left untouched. Passing nil
+	// lets the query observe a real NULL instead of a coerced zero value.
+	if s == "" {
+		switch upper {
+		case "INT64", "INTEGER", "INT",
+			"FLOAT64", "FLOAT", "DOUBLE",
+			"BOOL", "BOOLEAN",
+			"NUMERIC", "BIGNUMERIC", "DECIMAL", "BIGDECIMAL",
+			"DATE", "TIME", "DATETIME", "TIMESTAMP":
+			return nil
+		}
+	}
+	switch upper {
+	case "INT64", "INTEGER", "INT":
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n
+		}
+	case "FLOAT64", "FLOAT", "DOUBLE":
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
+		}
+	case "BOOL", "BOOLEAN":
+		if b, err := strconv.ParseBool(s); err == nil {
+			return b
+		}
+	case "TIMESTAMP":
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999Z07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+		} {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t.UTC()
+			}
+		}
+	case "DATETIME":
+		for _, layout := range []string{
+			"2006-01-02T15:04:05.999999999",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+		} {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t
+			}
+		}
+	}
+	return value
+}
+
 func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue) (interface{}, error) {
+	// A nil parameter value denotes an explicit NULL: the handler clears it
+	// when the request JSON carried `null` (or no value) for the parameter.
+	if value == nil {
+		return nil, nil
+	}
 	switch {
 	case len(value.ArrayValues) != 0:
 		arr := make([]interface{}, 0, len(value.ArrayValues))
@@ -281,55 +337,85 @@ func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParamet
 	return value.Value, nil
 }
 
-// zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.
-// we need to convert them to specifically TableRow and TableCell type.
-func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.TableCell, error) {
+// convertValueToCell renders one googlesqlite row value as a
+// TableCell. The shape it sees depends on the column's TableFieldSchema:
+//
+//   - schema.Mode == "REPEATED": value is a Go slice (ARRAY); recurse
+//     into each element with the schema's Mode forced to "NULLABLE"
+//     (the element type is the un-repeated form).
+//   - schema.Type == "RECORD" (and not REPEATED): value is a positional
+//     `[]any` STRUCT from googlesqlite, whose element i corresponds to
+//     schema.Fields[i]. Recurse element-wise and stamp each cell.Name
+//     from the matching field schema.
+//   - everything else: render the scalar via fmt.Sprint.
+//
+// googlesqlite returns STRUCT values as positional `[]any`. Field
+// names live on the column type, not in the row value, so we read
+// them off the BigQuery schema instead. A STRUCT value arrives as a
+// reflect.Slice with reflect.Interface element kind, indistinguishable
+// from ARRAY at the value level; only the column schema tells them apart.
+func (r *Repository) convertValueToCell(value interface{}, schema *bigqueryv2.TableFieldSchema) (*internaltypes.TableCell, error) {
 	if value == nil {
 		return &internaltypes.TableCell{V: nil}, nil
 	}
-	rv := reflect.ValueOf(value)
-	kind := rv.Type().Kind()
-	if kind != reflect.Slice && kind != reflect.Array {
-		v := fmt.Sprint(value)
-		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
-	}
-	elemType := rv.Type().Elem()
-	if elemType.Kind() == reflect.Map {
-		// value is struct type
-		var (
-			cells      []*internaltypes.TableCell
-			totalBytes int64
-		)
+
+	// REPEATED — the value is an ARRAY at this level. Strip the
+	// REPEATED-ness off the schema for the elements and recurse.
+	if schema != nil && schema.Mode == string(types.RepeatedMode) {
+		rv := reflect.ValueOf(value)
+		kind := rv.Type().Kind()
+		if kind != reflect.Slice && kind != reflect.Array {
+			v := fmt.Sprint(value)
+			return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
+		}
+		elemSchema := *schema
+		elemSchema.Mode = string(types.NullableMode)
+		cells := []*internaltypes.TableCell{}
+		var totalBytes int64
 		for i := 0; i < rv.Len(); i++ {
-			fieldV := rv.Index(i)
-			keys := fieldV.MapKeys()
-			if len(keys) != 1 {
-				return nil, fmt.Errorf("unexpected key number of field map value. expected 1 but got %d", len(keys))
-			}
-			cell, err := r.convertValueToCell(fieldV.MapIndex(keys[0]).Interface())
+			cell, err := r.convertValueToCell(rv.Index(i).Interface(), &elemSchema)
 			if err != nil {
 				return nil, err
 			}
-			cell.Name = keys[0].Interface().(string)
+			totalBytes += cell.Bytes
+			cells = append(cells, cell)
+		}
+		return &internaltypes.TableCell{V: cells, Bytes: totalBytes}, nil
+	}
+
+	// RECORD (= STRUCT) at this level. googlesqlite returns a positional
+	// []any whose element i is the value of schema.Fields[i].
+	if schema != nil && schema.Type == string(types.RECORD) {
+		rv := reflect.ValueOf(value)
+		kind := rv.Type().Kind()
+		if kind != reflect.Slice && kind != reflect.Array {
+			v := fmt.Sprint(value)
+			return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
+		}
+		cells := []*internaltypes.TableCell{}
+		var totalBytes int64
+		for i := 0; i < rv.Len(); i++ {
+			var fieldSchema *bigqueryv2.TableFieldSchema
+			if i < len(schema.Fields) {
+				fieldSchema = schema.Fields[i]
+			}
+			cell, err := r.convertValueToCell(rv.Index(i).Interface(), fieldSchema)
+			if err != nil {
+				return nil, err
+			}
+			if fieldSchema != nil {
+				cell.Name = fieldSchema.Name
+			}
 			totalBytes += cell.Bytes
 			cells = append(cells, cell)
 		}
 		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}, Bytes: totalBytes}, nil
 	}
-	// array type
-	var (
-		cells            = []*internaltypes.TableCell{}
-		totalBytes int64 = 0
-	)
-	for i := 0; i < rv.Len(); i++ {
-		cell, err := r.convertValueToCell(rv.Index(i).Interface())
-		if err != nil {
-			return nil, err
-		}
-		totalBytes += cell.Bytes
-		cells = append(cells, cell)
-	}
-	return &internaltypes.TableCell{V: cells, Bytes: totalBytes}, nil
+
+	// Scalar. Render via fmt.Sprint — matches the legacy behaviour
+	// for non-RECORD, non-REPEATED columns.
+	v := fmt.Sprint(value)
+	return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
 }
 
 func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
@@ -403,7 +489,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 				inputString, isInputString := value.(string)
 
 				if isInputString && isTimestampColumn {
-					parsedTimestamp, err := zetasqlite.TimeFromTimestampValue(inputString)
+					parsedTimestamp, err := googlesqlite.TimeFromTimestampValue(inputString)
 					// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
 					if err == nil {
 						values = append(values, parsedTimestamp)
@@ -425,7 +511,14 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	return nil
 }
 
-func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tableIDs []string) error {
+// TableDeletion identifies one table or view to drop. A view must be dropped
+// with DROP VIEW; DROP TABLE does not apply to it.
+type TableDeletion struct {
+	ID     string
+	IsView bool
+}
+
+func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projectID, datasetID string, tables []TableDeletion) error {
 	tx.SetProjectAndDataset(projectID, datasetID)
 	if err := tx.ContentRepoMode(); err != nil {
 		return err
@@ -434,15 +527,66 @@ func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projec
 		_ = tx.MetadataRepoMode()
 	}()
 
-	for _, tableID := range tableIDs {
-		tablePath := r.tablePath(projectID, datasetID, tableID)
+	for _, table := range tables {
+		tablePath := r.tablePath(projectID, datasetID, table.ID)
 		logger.Logger(ctx).Debug("delete table", zap.String("table", tablePath))
-		query := fmt.Sprintf("DROP TABLE `%s`", tablePath)
+		stmt := "DROP TABLE"
+		if table.IsView {
+			stmt = "DROP VIEW"
+		}
+		query := fmt.Sprintf("%s `%s`", stmt, tablePath)
 		if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to delete table %s: %w", query, err)
 		}
 	}
 	return nil
+}
+
+// TruncateTable removes every row from a table, implementing the
+// WRITE_TRUNCATE write disposition.
+func (r *Repository) TruncateTable(ctx context.Context, tx *connection.Tx, projectID, datasetID, tableID string) error {
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+	query := fmt.Sprintf("DELETE FROM `%s` WHERE true", r.tablePath(projectID, datasetID, tableID))
+	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to truncate table %s: %w", query, err)
+	}
+	return nil
+}
+
+// CountTableRows returns the number of rows in a table, used to enforce the
+// WRITE_EMPTY write disposition.
+func (r *Repository) CountTableRows(ctx context.Context, tx *connection.Tx, projectID, datasetID, tableID string) (int64, error) {
+	tx.SetProjectAndDataset(projectID, datasetID)
+	if err := tx.ContentRepoMode(); err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.MetadataRepoMode()
+	}()
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`", r.tablePath(projectID, datasetID, tableID))
+	var count int64
+	if err := tx.Tx().QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count rows of %s: %w", query, err)
+	}
+	return count, nil
+}
+
+// ViewSchema returns the column schema of a view by analyzing its definition.
+// The view must already exist (visible to tx). It mirrors BigQuery, which
+// records a view's resolved schema at creation time.
+func (r *Repository) ViewSchema(ctx context.Context, tx *connection.Tx, projectID, datasetID, viewID string) (*bigqueryv2.TableSchema, error) {
+	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", r.tablePath(projectID, datasetID, viewID))
+	response, err := r.Query(ctx, tx, projectID, datasetID, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	return response.Schema, nil
 }
 
 type RoutineType string
