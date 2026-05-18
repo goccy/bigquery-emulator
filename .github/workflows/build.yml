@@ -15,7 +15,7 @@ jobs:
       id-token: write          # for actions/attest-build-provenance OIDC token
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: docker/metadata-action@v5
         id: meta
