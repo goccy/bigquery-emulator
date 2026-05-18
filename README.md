@@ -16,38 +16,37 @@ BigQuery emulator provides a way to launch a BigQuery server on your local machi
 
 # Status
 
-Although this project is still in **beta** version, many features are already available.
+This project is still in **beta**, but a large part of BigQuery already works from the official client libraries. The multi-client conformance suite ([`test/e2e`](https://github.com/goccy/bigquery-emulator/tree/main/test/e2e)) exercises the official Python, Ruby, PHP, Node.js and Java client libraries plus the `bq` CLI against the emulator over a shared query corpus, and currently passes for every client.
 
-## BigQuery API
+BigQuery is a large product, so rather than scatter caveats across this README, the emulator's coverage is tracked feature by feature in a single MECE (mutually exclusive, collectively exhaustive) matrix:
 
-We've been implemented all the [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
+### 📋 [BigQuery feature support matrix](./docs/feature-support.md)
 
-## Google Cloud Storage linkage
+At a glance, the emulator supports dataset / table / job / tabledata management, GoogleSQL query execution, batch load and extract jobs (including loads from Google Cloud Storage), streaming inserts, the gRPC BigQuery Storage read/write APIs, and logical and materialized views. IAM policy management, row access policies, copy jobs, external tables, table snapshots and BigQuery ML are not implemented yet. See the matrix for the complete, categorized breakdown.
 
-BigQuery emulator supports loading data from Google Cloud Storage and extracting table data. Currently, only CSV and JSON data types can be used for extracting. If you use Google Cloud Storage emulator, please set `STORAGE_EMULATOR_HOST` environment variable.
+## GoogleSQL
 
-## BigQuery Storage API
+Query execution is powered by [googlesqlite](https://github.com/goccy/googlesqlite), which implements almost all of [GoogleSQL](https://cloud.google.com/bigquery/docs/reference/standard-sql/introduction): as of googlesqlite v0.1.0 its spec-driven support matrix reports 523 / 529 GoogleSQL functions and 55 / 59 BigQuery-specific functions implemented — roughly 570 built-in functions — along with 16 / 18 data types. Beyond functions, it also supports:
 
-Supports gRPC-based read/write using [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage).
-Supports both Apache `Avro` and `Arrow` formats.
-
-## Google Standard SQL
-
-BigQuery emulator supports many of the specifications present in [Google Standard SQL](https://cloud.google.com/bigquery/docs/reference/standard-sql/introduction).
-For example, it has the following features.
-
-- 200+ standard functions
-- Wildcard table
-- Templated Argument Function
+- Wildcard tables
+- Templated-argument functions
 - JavaScript UDF
 
-If you want to know the specific features supported, please see [here](https://github.com/goccy/googlesqlite#status)
+For the authoritative, per-function and per-type support matrix, see the [googlesqlite status](https://github.com/goccy/googlesqlite#status).
 
-# Goals and Sponsors
+# Goals
 
-The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( Model API / Connection API / INFORMATION SCHEMA etc.. ) in addition to evaluating Google Standard SQL.
+The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( Model API / Connection API / INFORMATION SCHEMA etc.. ) in addition to evaluating GoogleSQL.
 
-However, this project is a personal project and I develop it on my days off and after work. I work full time and maintain a lot of OSS. Therefore, the time available for this project is also limited. Of course, I will be adding features and fixing bugs on a regular basis to get us closer to our goals, but if you want me to implement the features you want, please consider sponsoring me. Of course, you can use this project for free, but if you sponsor me, that will be my motivation. Especially if you are part of a commercial company and could use this project, I'd be glad if you could consider sponsoring me at the same time.
+# Sponsorship
+
+This is a personal project. It receives no support of any kind from Google — no sponsorship, no contributions, no promotion.
+
+For example, Google has had a request for a BigQuery emulator open on its Issue Tracker ([issue 129248927](https://issuetracker.google.com/issues/129248927)) for seven years without taking any action. Unable to watch that any longer, in 2022 I built `bigquery-emulator` — the only BigQuery emulator in the world — and have maintained it ever since.
+
+I do not use BigQuery in my own job, however. I simply happen to have the skills to build this, noticed how many people are struggling without it, and so I spend my personal time and money on it. I develop it on my days off and after work, while working full time and maintaining a lot of other OSS, so the time available for this project is limited.
+
+Because of that, keeping this project alive needs your help. Emulating BigQuery locally brings many benefits to development and can significantly cut development costs. Could you return a small part of those savings to me? I believe doing so leads to a better future for both me and your company. Especially if you are part of a commercial company and could use this project, I'd be glad if you could consider sponsoring me.
 
 # Install
 
@@ -302,7 +301,7 @@ After receiving a GoogleSQL query via the REST API from bq or a client SDK, the 
 
 BigQuery has a number of types that do not exist in SQLite (e.g. ARRAY and STRUCT).
 In order to handle them in SQLite, googlesqlite encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination and stores them in SQLite.
-When using the encoded data, decode the data via a custom function registered with go-sqlite3 before use.
+When using the encoded data, decode the data via a custom function registered with the SQLite driver before use.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145033-aa032878-7e01-4ec7-9a23-b174b87e1a24.png"></img>
 
