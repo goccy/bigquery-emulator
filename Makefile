@@ -8,8 +8,17 @@ emulator/build:
 		-ldflags='-s -w -X main.version=${VERSION} -X main.revision=${REVISION}' \
 		./cmd/bigquery-emulator
 
+# The Dockerfile cross-compiles via the BuildKit platform args
+# ($BUILDPLATFORM/$TARGETOS/$TARGETARCH), so it requires buildx.
 docker/build:
-	docker build -t bigquery-emulator . --build-arg VERSION=${VERSION}
+	docker buildx build --load -t bigquery-emulator . \
+		--build-arg VERSION=${VERSION} --build-arg REVISION=${REVISION}
+
+# Build the multi-arch image exactly as CI does. Without --push buildx
+# keeps the result in the build cache; add --push to publish a manifest.
+docker/build/multiarch:
+	docker buildx build --platform linux/amd64,linux/arm64 -t bigquery-emulator . \
+		--build-arg VERSION=${VERSION} --build-arg REVISION=${REVISION}
 
 # Run the multi-language client conformance suite (Python/Ruby/PHP/Node.js/bq/Java).
 # Requires a running Docker daemon; skips automatically when none is found.

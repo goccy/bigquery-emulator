@@ -1,4 +1,4 @@
-name: build and push image
+name: image
 on:
   push:
     tags:
@@ -8,15 +8,15 @@ env:
 
 jobs:
   build-image:
-    strategy:
-      matrix:
-        os: [ "ubuntu-latest", "ubuntu-24.04-arm" ]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write          # for actions/attest-build-provenance OIDC token
+      attestations: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
@@ -24,15 +24,26 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v2
+
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A single buildx invocation emits one multi-arch manifest covering
+      # linux/amd64 and linux/arm64. The previous matrix of per-arch
+      # runners pushed both builds to the same tags, so the second run
+      # silently overwrote the first and the published image was never
+      # actually multi-arch. The Dockerfile cross-compiles the pure-Go
+      # binary from the build platform, so neither target needs QEMU.
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -40,5 +51,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            VERSION=v${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-            REVISION=${{ steps.meta.outputs.sha }}
+            VERSION=v${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+
+      # SLSA build-provenance attestation, signed by the GitHub Actions
+      # OIDC issuer and pushed to GHCR alongside the image manifest.
+      # Consumers verify with
+      #   gh attestation verify oci://ghcr.io/goccy/bigquery-emulator@<digest>
+      # The tags share one digest, so a single attestation covers them all.
+      # The attestations API rejects writes from user-owned private repos;
+      # gate on visibility so a private fork's run does not fail here.
+      - name: Attest build provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
