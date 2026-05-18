@@ -352,7 +352,7 @@ type uploadContentRequest struct {
 }
 
 func (h *uploadContentHandler) getCandidateName(col string, columnNames []string) string {
-	var (
+	var ( 
 		foundName  string
 		foundCount int
 	)
@@ -1195,7 +1195,6 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
 		)
@@ -1341,7 +1340,6 @@ func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertReques
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			option.WithoutAuthentication(),
 		)
 	}
