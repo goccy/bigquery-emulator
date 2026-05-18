@@ -25,27 +25,36 @@ func NewRepository() *Repository {
 	return &Repository{}
 }
 
+// escapeIdent escapes a SQL identifier so it can be safely embedded between
+// backticks. BigQuery (and googlesqlite) quote identifiers with backticks, so
+// any backtick contained in the identifier itself is doubled. This prevents a
+// crafted project/dataset/table/column name from terminating the quoted
+// region and injecting arbitrary SQL.
+func escapeIdent(ident string) string {
+	return strings.ReplaceAll(ident, "`", "``")
+}
+
 func (r *Repository) tablePath(projectID, datasetID, tableID string) string {
 	var tablePath []string
 	if projectID != "" {
-		tablePath = append(tablePath, projectID)
+		tablePath = append(tablePath, escapeIdent(projectID))
 	}
 	if datasetID != "" {
-		tablePath = append(tablePath, datasetID)
+		tablePath = append(tablePath, escapeIdent(datasetID))
 	}
-	tablePath = append(tablePath, tableID)
+	tablePath = append(tablePath, escapeIdent(tableID))
 	return strings.Join(tablePath, ".")
 }
 
 func (r *Repository) routinePath(projectID, datasetID, routineID string) string {
 	var routinePath []string
 	if projectID != "" {
-		routinePath = append(routinePath, projectID)
+		routinePath = append(routinePath, escapeIdent(projectID))
 	}
 	if datasetID != "" {
-		routinePath = append(routinePath, datasetID)
+		routinePath = append(routinePath, escapeIdent(datasetID))
 	}
-	routinePath = append(routinePath, routineID)
+	routinePath = append(routinePath, escapeIdent(routineID))
 	return strings.Join(routinePath, ".")
 }
 
@@ -62,7 +71,7 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	}
 	fields := make([]string, 0, len(table.Schema.Fields))
 	for _, field := range table.Schema.Fields {
-		fields = append(fields, fmt.Sprintf("`%s` %s", field.Name, r.encodeSchemaField(field)))
+		fields = append(fields, fmt.Sprintf("`%s` %s", escapeIdent(field.Name), r.encodeSchemaField(field)))
 	}
 	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", tablePath, strings.Join(fields, ","))
@@ -430,7 +439,7 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
 		columns = append(columns,
-			fmt.Sprintf("`%s` %s", column.Name, column.FormatType()),
+			fmt.Sprintf("`%s` %s", escapeIdent(column.Name), column.FormatType()),
 		)
 	}
 	ddl := fmt.Sprintf(
@@ -465,7 +474,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	columnsWithEscape := make([]string, 0, len(columns))
 	for _, col := range columns {
 		placeholders = append(placeholders, "?")
-		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", col.Name))
+		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", escapeIdent(col.Name)))
 	}
 
 	query := fmt.Sprintf(
