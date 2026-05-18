@@ -16,7 +16,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.21.0
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
-	github.com/linkedin/goavro/v2 v2.12.0
+	github.com/linkedin/goavro/v2 v2.15.0
 	github.com/parquet-go/parquet-go v0.23.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	go.uber.org/zap v1.21.0
