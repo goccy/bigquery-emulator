@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -3203,5 +3205,571 @@ func TestConcurrentQueries(t *testing.T) {
 	close(errCh)
 	for err := range errCh {
 		t.Error(err)
+	}
+}
+
+// httpJSON issues a request with an optional body and decodes the JSON
+// response. It is used to exercise REST-level behavior the typed client hides.
+func httpJSON(t *testing.T, method, target, body string, headers map[string]string) (int, map[string]any) {
+	t.Helper()
+	var rdr io.Reader
+	if body != "" {
+		rdr = bytes.NewReader([]byte(body))
+	}
+	req, err := http.NewRequest(method, target, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("%s %s: cannot decode response (status %d): %s", method, target, resp.StatusCode, data)
+		}
+	}
+	return resp.StatusCode, out
+}
+
+// queryRows extracts the cell values of every row in a jobs.query response.
+func queryRows(t *testing.T, body map[string]any) [][]string {
+	t.Helper()
+	rowsRaw, _ := body["rows"].([]any)
+	rows := make([][]string, 0, len(rowsRaw))
+	for _, r := range rowsRaw {
+		fields, _ := r.(map[string]any)["f"].([]any)
+		vals := make([]string, 0, len(fields))
+		for _, f := range fields {
+			v := f.(map[string]any)["v"]
+			if v == nil {
+				vals = append(vals, "<nil>")
+				continue
+			}
+			vals = append(vals, fmt.Sprint(v))
+		}
+		rows = append(rows, vals)
+	}
+	return rows
+}
+
+type valueRow map[string]bigquery.Value
+
+func (r valueRow) Save() (map[string]bigquery.Value, string, error) { return r, "", nil }
+
+// TestPersistedDatabaseRestart covers #237/#397 (re-running the binary against
+// a persisted database must not fail with a UNIQUE constraint violation) and
+// #207 (datasets and their data must survive a restart).
+func TestPersistedDatabaseRestart(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "t1"
+	)
+	ctx := context.Background()
+	dbFile := filepath.Join(t.TempDir(), "emulator.db")
+	storage := server.Storage(fmt.Sprintf("file:%s?cache=shared", dbFile))
+
+	// startRun mirrors what the CLI does on boot: open the database, register
+	// the project, and load the --dataset-equivalent source.
+	startRun := func() (*server.Server, *server.TestServer, *bigquery.Client) {
+		t.Helper()
+		s, err := server.New(storage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetProject(projectID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Load(server.StructSource(types.NewProject(projectID, types.NewDataset(datasetID)))); err != nil {
+			t.Fatalf("loading the persisted project must be idempotent: %+v", err)
+		}
+		ts := s.TestServer()
+		c, err := bigquery.NewClient(ctx, projectID,
+			option.WithEndpoint(ts.URL), option.WithoutAuthentication())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, ts, c
+	}
+
+	// First run: create a table and stream three rows.
+	s1, ts1, c1 := startRun()
+	table := c1.Dataset(datasetID).Table(tableID)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{{Name: "x", Type: bigquery.IntegerFieldType}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Inserter().Put(ctx, []valueRow{{"x": 1}, {"x": 2}, {"x": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	c1.Close()
+	ts1.Close()
+	if err := s1.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run against the same database file.
+	s2, ts2, c2 := startRun()
+	defer func() {
+		c2.Close()
+		ts2.Close()
+		s2.Stop(ctx)
+	}()
+
+	// #207: the dataset is still present in the REST catalog.
+	datasetIter := c2.Datasets(ctx)
+	var datasetIDs []string
+	for {
+		ds, err := datasetIter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		datasetIDs = append(datasetIDs, ds.DatasetID)
+	}
+	if len(datasetIDs) != 1 || datasetIDs[0] != datasetID {
+		t.Fatalf("dataset did not survive restart: got %v", datasetIDs)
+	}
+
+	// The table and its rows survive too.
+	it, err := c2.Query(fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", datasetID, tableID)).Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row []bigquery.Value
+	if err := it.Next(&row); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(row[0]); got != "3" {
+		t.Fatalf("expected 3 rows to survive restart, got %s", got)
+	}
+}
+
+// TestTableNumRows covers #339/#249: tables.get must populate numRows.
+func TestTableNumRows(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "t1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetID).Table(tableID)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{{Name: "x", Type: bigquery.IntegerFieldType}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Inserter().Put(ctx, []valueRow{{"x": 1}, {"x": 2}, {"x": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	md, err := table.Metadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.NumRows != 3 {
+		t.Fatalf("expected numRows=3, got %d", md.NumRows)
+	}
+}
+
+// TestTableUpdateHandlers covers #293/#363 (tables.patch must apply the body
+// and return a full Table resource), #362 (the X-HTTP-Method-Override header
+// must be honored) and #412 (tables.update must be implemented).
+func TestTableUpdateHandlers(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "t1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Dataset(datasetID).Table(tableID).Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{{Name: "x", Type: bigquery.IntegerFieldType}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tableURL := fmt.Sprintf("%s/projects/%s/datasets/%s/tables/%s",
+		testServer.URL, projectID, datasetID, tableID)
+
+	// #293/#363: PATCH applies the body and returns a full Table resource.
+	code, body := httpJSON(t, http.MethodPatch, tableURL, `{"description":"patched"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("patch: expected 200, got %d (%v)", code, body)
+	}
+	for _, key := range []string{"kind", "type", "id", "creationTime"} {
+		if body[key] == nil || body[key] == "" {
+			t.Errorf("patch response is missing %q: %v", key, body)
+		}
+	}
+	if body["description"] != "patched" {
+		t.Errorf("patch did not apply description: %v", body["description"])
+	}
+	// The change is persisted, not merely echoed.
+	if _, got := httpJSON(t, http.MethodGet, tableURL, "", nil); got["description"] != "patched" {
+		t.Errorf("patched description was not persisted: %v", got["description"])
+	}
+
+	// #362: a POST tunneling PATCH via X-HTTP-Method-Override is routed to the
+	// patch handler.
+	code, body = httpJSON(t, http.MethodPost, tableURL, `{"friendlyName":"viaOverride"}`,
+		map[string]string{"X-HTTP-Method-Override": "PATCH"})
+	if code != http.StatusOK {
+		t.Fatalf("method override: expected 200, got %d (%v)", code, body)
+	}
+	if body["friendlyName"] != "viaOverride" {
+		t.Errorf("method override patch did not apply: %v", body["friendlyName"])
+	}
+
+	// #412: tables.update (PUT) replaces the resource instead of returning
+	// "unsupported".
+	put := `{"tableReference":{"projectId":"test","datasetId":"dataset1","tableId":"t1"},` +
+		`"schema":{"fields":[{"name":"x","type":"INTEGER"}]},"friendlyName":"viaPut"}`
+	code, body = httpJSON(t, http.MethodPut, tableURL, put, nil)
+	if code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d (%v)", code, body)
+	}
+	if body["friendlyName"] != "viaPut" {
+		t.Errorf("update did not apply friendlyName: %v", body["friendlyName"])
+	}
+}
+
+// TestJSONColumnInsertAll covers #144: a JSON column must accept both a
+// json-encoded string and a native JSON object through tabledata.insertAll.
+func TestJSONColumnInsertAll(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "jt"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	base := fmt.Sprintf("%s/projects/%s/datasets/%s", testServer.URL, projectID, datasetID)
+
+	if code, body := httpJSON(t, http.MethodPost, base+"/tables",
+		`{"tableReference":{"projectId":"test","datasetId":"dataset1","tableId":"jt"},`+
+			`"schema":{"fields":[{"name":"id","type":"INTEGER"},{"name":"data","type":"JSON"}]}}`,
+		nil); code != http.StatusOK {
+		t.Fatalf("create table: %d (%v)", code, body)
+	}
+	// A json-encoded string value.
+	if code, body := httpJSON(t, http.MethodPost, base+"/tables/jt/insertAll",
+		`{"rows":[{"json":{"id":"1","data":"{\"name\":\"Alice\"}"}}]}`, nil); code != http.StatusOK {
+		t.Fatalf("insert json string: %d (%v)", code, body)
+	}
+	// A native JSON object value (previously panicked).
+	if code, body := httpJSON(t, http.MethodPost, base+"/tables/jt/insertAll",
+		`{"rows":[{"json":{"id":"2","data":{"name":"Bob"}}}]}`, nil); code != http.StatusOK {
+		t.Fatalf("insert json object: %d (%v)", code, body)
+	}
+
+	code, body := httpJSON(t, http.MethodPost,
+		fmt.Sprintf("%s/projects/%s/queries", testServer.URL, projectID),
+		`{"query":"SELECT id, JSON_VALUE(data.name) FROM dataset1.jt ORDER BY id","useLegacySql":false}`,
+		nil)
+	if code != http.StatusOK {
+		t.Fatalf("query: %d (%v)", code, body)
+	}
+	got := queryRows(t, body)
+	want := [][]string{{"1", "Alice"}, {"2", "Bob"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("JSON column round-trip mismatch: got %v want %v", got, want)
+	}
+}
+
+// multipartUpload builds a multipart/related body for the jobs upload endpoint.
+func multipartUpload(jobJSON, data string) (contentType, bodyText string) {
+	const boundary = "BQEMUTESTBOUNDARY"
+	var b strings.Builder
+	b.WriteString("--" + boundary + "\r\nContent-Type: application/json\r\n\r\n")
+	b.WriteString(jobJSON + "\r\n")
+	b.WriteString("--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n")
+	b.WriteString(data + "\r\n")
+	b.WriteString("--" + boundary + "--\r\n")
+	return "multipart/related; boundary=" + boundary, b.String()
+}
+
+// TestUploadWithoutJobReference covers #136: a multipart upload whose metadata
+// omits jobReference (as the Node.js client sends) must not panic.
+func TestUploadWithoutJobReference(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	jobJSON := `{"configuration":{"load":{"sourceFormat":"CSV","autodetect":true,` +
+		`"destinationTable":{"projectId":"test","datasetId":"dataset1","tableId":"uploaded"}}}}`
+	contentType, body := multipartUpload(jobJSON, "x,y\r\n1,a\r\n2,b")
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+		body, map[string]string{"Content-Type": contentType})
+	if code != http.StatusOK {
+		t.Fatalf("upload without jobReference: expected 200, got %d (%v)", code, resp)
+	}
+
+	code, resp = httpJSON(t, http.MethodPost,
+		testServer.URL+"/projects/test/queries",
+		`{"query":"SELECT COUNT(*) FROM dataset1.uploaded","useLegacySql":false}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("query uploaded table: %d (%v)", code, resp)
+	}
+	if rows := queryRows(t, resp); len(rows) != 1 || rows[0][0] != "2" {
+		t.Fatalf("expected 2 uploaded rows, got %v", rows)
+	}
+}
+
+// TestUploadToMissingDataset covers #396: uploading to a non-existent dataset
+// must return a clean error instead of panicking the process.
+func TestUploadToMissingDataset(t *testing.T) {
+	const projectID = "test"
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset("dataset1")),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	jobJSON := `{"configuration":{"load":{"sourceFormat":"CSV","autodetect":true,` +
+		`"destinationTable":{"projectId":"test","datasetId":"missing","tableId":"t"}}}}`
+	contentType, body := multipartUpload(jobJSON, "x\r\n1")
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+		body, map[string]string{"Content-Type": contentType})
+	if code == http.StatusOK {
+		t.Fatalf("upload to a missing dataset should fail, got 200")
+	}
+	if resp["error"] == nil {
+		t.Fatalf("expected a structured error, got %v", resp)
+	}
+
+	// The server must still be responsive (it did not crash).
+	if c, _ := httpJSON(t, http.MethodGet,
+		testServer.URL+"/projects/test/datasets", "", nil); c != http.StatusOK {
+		t.Fatalf("server is not responsive after a failed upload: %d", c)
+	}
+}
+
+// TestExternalTable covers #392: an external table must be registered with the
+// query engine so that it can be queried after creation.
+func TestExternalTable(t *testing.T) {
+	const (
+		projectID  = "test"
+		datasetID  = "dataset1"
+		tableID    = "ext1"
+		bucketName = "ext-bucket"
+		objectName = "people.csv"
+		publicHost = "127.0.0.1"
+	)
+	ctx := context.Background()
+
+	storageServer, err := fakestorage.NewServerWithOptions(fakestorage.Options{
+		InitialObjects: []fakestorage.Object{
+			{
+				ObjectAttrs: fakestorage.ObjectAttrs{BucketName: bucketName, Name: objectName},
+				Content:     []byte("id,name\n1,Alice\n2,Bob\n3,Carol\n"),
+			},
+		},
+		PublicHost: publicHost,
+		Scheme:     "http",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageServer.Stop()
+	u, err := url.Parse(storageServer.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STORAGE_EMULATOR_HOST", fmt.Sprintf("http://%s:%s", publicHost, u.Port()))
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetID).Table(tableID)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		ExternalDataConfig: &bigquery.ExternalDataConfig{
+			SourceFormat: bigquery.CSV,
+			SourceURIs:   []string{fmt.Sprintf("gs://%s/%s", bucketName, objectName)},
+			AutoDetect:   true,
+		},
+	}); err != nil {
+		t.Fatalf("create external table: %+v", err)
+	}
+
+	it, err := client.Query(
+		fmt.Sprintf("SELECT id, name FROM %s.%s ORDER BY id", datasetID, tableID),
+	).Read(ctx)
+	if err != nil {
+		t.Fatalf("query external table: %+v", err)
+	}
+	var got [][]bigquery.Value
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err == iterator.Done {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, row)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 rows from the external table, got %d: %v", len(got), got)
+	}
+
+	md, err := table.Metadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.ExternalDataConfig == nil {
+		t.Fatal("external data configuration did not round-trip on tables.get")
+	}
+}
+
+// TestServeListenCallback covers #333: the bound listener addresses must be
+// reported to the caller (so a requested port of 0 resolves to the real
+// port). The library reports them through SetListenCallback instead of
+// writing to stdout.
+func TestServeListenCallback(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject("test"); err != nil {
+		t.Fatal(err)
+	}
+
+	addrCh := make(chan [2]string, 1)
+	bqServer.SetListenCallback(func(httpAddr, grpcAddr string) {
+		addrCh <- [2]string{httpAddr, grpcAddr}
+	})
+	go func() { _ = bqServer.Serve(ctx, "127.0.0.1:0", "127.0.0.1:0") }()
+	defer bqServer.Stop(ctx)
+
+	var addrs [2]string
+	select {
+	case addrs = <-addrCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("listen callback was not invoked")
+	}
+	for i, name := range []string{"http", "grpc"} {
+		if addrs[i] == "" || strings.HasSuffix(addrs[i], ":0") {
+			t.Errorf("%s callback reported an unbound address: %q", name, addrs[i])
+			continue
+		}
+		conn, err := net.Dial("tcp", addrs[i])
+		if err != nil {
+			t.Errorf("%s address %q is not connectable: %v", name, addrs[i], err)
+			continue
+		}
+		conn.Close()
 	}
 }
