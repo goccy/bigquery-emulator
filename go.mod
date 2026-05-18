@@ -3,7 +3,7 @@ module github.com/goccy/bigquery-emulator
 go 1.25.0
 
 require (
-	cloud.google.com/go/bigquery v1.76.0
+	cloud.google.com/go/bigquery v1.77.0
 	cloud.google.com/go/storage v1.62.0
 	github.com/GoogleCloudPlatform/golang-samples/bigquery v0.0.0-20221115172052-07ffb99455e8
 	github.com/apache/arrow-go/v18 v18.3.1
