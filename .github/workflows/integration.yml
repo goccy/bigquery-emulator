@@ -1,0 +1,24 @@
+name: integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  conformance:
+    name: multi-client conformance
+    # ubuntu-latest ships a working Docker daemon, which the suite needs to
+    # build and run the multi-language client image.
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: run client conformance suite
+        run: go test -v -count=1 -timeout 30m ./test/e2e/...

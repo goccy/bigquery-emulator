@@ -1,0 +1,8 @@
+{
+    "require": {
+        "google/cloud-bigquery": "^1.33"
+    },
+    "config": {
+        "vendor-dir": "vendor"
+    }
+}

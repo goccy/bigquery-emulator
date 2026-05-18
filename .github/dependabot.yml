@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Go module dependencies.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+
+  # GitHub Actions: dependabot also rewrites version tags to commit SHAs as
+  # it updates them, keeping the workflows pinned to immutable revisions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Base image of the emulator Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,11 @@
+# The emulator image only needs the Go module sources. Keep the build
+# context small and reproducible by excluding history, CI config, the
+# conformance suite, docs and local build artifacts.
+.git
+.github
+.claude
+test
+bench
+dist
+*.md
+/bigquery-emulator

@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/goccy/go-json"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/googlesqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
@@ -93,11 +93,11 @@ func (r *Repository) getConnection(ctx context.Context) (*sql.Conn, error) {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
 	if err := conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		gsqlConn, ok := c.(*googlesqlite.Conn)
 		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+			return fmt.Errorf("failed to get *googlesqlite.Conn from %T", c)
 		}
-		zetasqliteConn.SetNamePath([]string{})
+		gsqlConn.SetNamePath([]string{})
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("failed to setup connection: %w", err)
@@ -460,7 +460,75 @@ func (r *Repository) FindDataset(ctx context.Context, projectID, datasetID strin
 
 func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) ([]*Dataset, error) {
 	rows, err := tx.QueryContext(ctx,
-		"SELECT id, projectID, tableIDs, modelIDs, routineIDs, metadata FROM datasets WHERE projectID = @projectID AND id IN UNNEST(@datasetIDs)",
+		"SELECT id, projectID, metadata FROM datasets WHERE projectID = @projectID AND id IN UNNEST(@datasetIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetIDs", datasetIDs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Read every dataset row before issuing the batched child queries below.
+	var order []string
+	contentByID := map[string]*bigqueryv2.Dataset{}
+	for rows.Next() {
+		var (
+			datasetID string
+			projectID string
+			metadata  string
+		)
+		if err := rows.Scan(&datasetID, &projectID, &metadata); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		var content bigqueryv2.Dataset
+		if err := json.Unmarshal([]byte(metadata), &content); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		order = append(order, datasetID)
+		contentByID[datasetID] = &content
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(order) == 0 {
+		return []*Dataset{}, nil
+	}
+
+	// FindProject runs on every request, so loading the tables, models and
+	// routines with one batched query each (instead of three per dataset)
+	// keeps its cost from growing with the number of datasets in the project.
+	tablesByDataset, err := r.findTablesByDatasetIDs(ctx, tx, projectID, order)
+	if err != nil {
+		return nil, err
+	}
+	modelsByDataset, err := r.findModelsByDatasetIDs(ctx, tx, projectID, order)
+	if err != nil {
+		return nil, err
+	}
+	routinesByDataset, err := r.findRoutinesByDatasetIDs(ctx, tx, projectID, order)
+	if err != nil {
+		return nil, err
+	}
+
+	datasets := make([]*Dataset, 0, len(order))
+	for _, datasetID := range order {
+		datasets = append(datasets, NewDataset(
+			r, projectID, datasetID, contentByID[datasetID],
+			tablesByDataset[datasetID], modelsByDataset[datasetID], routinesByDataset[datasetID],
+		))
+	}
+	return datasets, nil
+}
+
+// findTablesByDatasetIDs loads the tables of every given dataset in one query,
+// grouped by dataset id.
+func (r *Repository) findTablesByDatasetIDs(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) (map[string][]*Table, error) {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT id, datasetID, metadata FROM tables WHERE projectID = @projectID AND datasetID IN UNNEST(@datasetIDs)",
 		sql.Named("projectID", projectID),
 		sql.Named("datasetIDs", datasetIDs),
 	)
@@ -468,42 +536,73 @@ func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, projectID str
 		return nil, err
 	}
 	defer rows.Close()
-
-	datasets := []*Dataset{}
+	result := map[string][]*Table{}
 	for rows.Next() {
-		var (
-			datasetID  string
-			projectID  string
-			tableIDs   []interface{}
-			modelIDs   []interface{}
-			routineIDs []interface{}
-			metadata   string
-		)
-		if err := rows.Scan(&datasetID, &projectID, &tableIDs, &modelIDs, &routineIDs, &metadata); err != nil {
+		var tableID, datasetID, metadata string
+		if err := rows.Scan(&tableID, &datasetID, &metadata); err != nil {
 			return nil, err
 		}
-		tables, err := r.findTables(ctx, tx, projectID, datasetID, r.convertToStrings(tableIDs))
-		if err != nil {
-			return nil, err
-		}
-		models, err := r.findModels(ctx, tx, projectID, datasetID, r.convertToStrings(modelIDs))
-		if err != nil {
-			return nil, err
-		}
-		routines, err := r.findRoutines(ctx, tx, projectID, datasetID, r.convertToStrings(routineIDs))
-		if err != nil {
-			return nil, err
-		}
-		var content bigqueryv2.Dataset
+		var content map[string]interface{}
 		if err := json.Unmarshal([]byte(metadata), &content); err != nil {
 			return nil, err
 		}
-		datasets = append(
-			datasets,
-			NewDataset(r, projectID, datasetID, &content, tables, models, routines),
-		)
+		result[datasetID] = append(result[datasetID], NewTable(r, projectID, datasetID, tableID, content))
 	}
-	return datasets, nil
+	return result, rows.Err()
+}
+
+// findModelsByDatasetIDs loads the models of every given dataset in one query,
+// grouped by dataset id.
+func (r *Repository) findModelsByDatasetIDs(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) (map[string][]*Model, error) {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT id, datasetID, metadata FROM models WHERE projectID = @projectID AND datasetID IN UNNEST(@datasetIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetIDs", datasetIDs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string][]*Model{}
+	for rows.Next() {
+		var modelID, datasetID, metadata string
+		if err := rows.Scan(&modelID, &datasetID, &metadata); err != nil {
+			return nil, err
+		}
+		var content map[string]interface{}
+		if err := json.Unmarshal([]byte(metadata), &content); err != nil {
+			return nil, err
+		}
+		result[datasetID] = append(result[datasetID], NewModel(r, projectID, datasetID, modelID, content))
+	}
+	return result, rows.Err()
+}
+
+// findRoutinesByDatasetIDs loads the routines of every given dataset in one
+// query, grouped by dataset id.
+func (r *Repository) findRoutinesByDatasetIDs(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) (map[string][]*Routine, error) {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT id, datasetID, metadata FROM routines WHERE projectID = @projectID AND datasetID IN UNNEST(@datasetIDs)",
+		sql.Named("projectID", projectID),
+		sql.Named("datasetIDs", datasetIDs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string][]*Routine{}
+	for rows.Next() {
+		var routineID, datasetID, metadata string
+		if err := rows.Scan(&routineID, &datasetID, &metadata); err != nil {
+			return nil, err
+		}
+		var content map[string]interface{}
+		if err := json.Unmarshal([]byte(metadata), &content); err != nil {
+			return nil, err
+		}
+		result[datasetID] = append(result[datasetID], NewRoutine(r, projectID, datasetID, routineID, content))
+	}
+	return result, rows.Err()
 }
 
 func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) error {

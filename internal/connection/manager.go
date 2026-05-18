@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/googlesqlite"
 )
 
 type Manager struct {
@@ -65,11 +65,11 @@ func (t *Tx) SetProjectAndDataset(projectID, datasetID string) {
 
 func (t *Tx) MetadataRepoMode() error {
 	if err := t.conn.Conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		gsqlConn, ok := c.(*googlesqlite.Conn)
 		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+			return fmt.Errorf("failed to get *googlesqlite.Conn from %T", c)
 		}
-		_ = zetasqliteConn.SetNamePath([]string{})
+		_ = gsqlConn.SetNamePath([]string{})
 		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to setup connection: %w", err)
@@ -79,17 +79,17 @@ func (t *Tx) MetadataRepoMode() error {
 
 func (t *Tx) ContentRepoMode() error {
 	if err := t.conn.Conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
+		gsqlConn, ok := c.(*googlesqlite.Conn)
 		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
+			return fmt.Errorf("failed to get *googlesqlite.Conn from %T", c)
 		}
 		if t.conn.DatasetID == "" {
-			_ = zetasqliteConn.SetNamePath([]string{t.conn.ProjectID})
+			_ = gsqlConn.SetNamePath([]string{t.conn.ProjectID})
 		} else {
-			_ = zetasqliteConn.SetNamePath([]string{t.conn.ProjectID, t.conn.DatasetID})
+			_ = gsqlConn.SetNamePath([]string{t.conn.ProjectID, t.conn.DatasetID})
 		}
 		const maxNamePath = 3 // projectID and datasetID and tableID
-		zetasqliteConn.SetMaxNamePath(maxNamePath)
+		gsqlConn.SetMaxNamePath(maxNamePath)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to setup connection: %w", err)
@@ -106,6 +106,11 @@ type Conn struct {
 func (c *Conn) Begin(ctx context.Context) (*Tx, error) {
 	tx, err := c.Conn.BeginTx(ctx, nil)
 	if err != nil {
+		// The pooled connection is owned by the Tx once BeginTx succeeds and
+		// is released by Commit/RollbackIfNotCommitted. When BeginTx fails no
+		// Tx is created, so the connection must be returned to the pool here
+		// or it leaks for the lifetime of the process.
+		_ = c.Conn.Close()
 		return nil, err
 	}
 	return &Tx{tx: tx, conn: c}, nil

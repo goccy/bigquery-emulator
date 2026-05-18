@@ -133,13 +133,9 @@ func runServer(args []string, opt option) error {
 		done <- bqServer.Serve(ctx, httpAddr, grpcAddr)
 	}()
 
-	select {
-	case err := <-done:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
+	err = <-done
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
 	}
-
-	return nil
+	return err
 }

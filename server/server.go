@@ -47,7 +47,7 @@ func New(storage Storage) (*Server, error) {
 			return os.Remove(f.Name())
 		}
 	}
-	db, err := sql.Open("zetasqlite", string(storage))
+	db, err := sql.Open("googlesqlite", string(storage))
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func New(storage Storage) (*Server, error) {
 	}
 	server.connMgr = connection.NewManager(db)
 	server.metaRepo = metaRepo
-	server.contentRepo = contentdata.NewRepository(db)
+	server.contentRepo = contentdata.NewRepository()
 
 	r := mux.NewRouter()
 	for _, handler := range handlers {

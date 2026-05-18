@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -815,6 +816,125 @@ func TestView(t *testing.T) {
 	}
 	if viewRows[0].Int != 1 {
 		t.Fatal("unexpected view row data")
+	}
+}
+
+func TestViewLifecycle(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		viewName    = "v"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	view := client.Dataset(datasetName).Table(viewName)
+	if err := view.Create(ctx, &bigquery.TableMetadata{
+		Name:      viewName,
+		ViewQuery: "SELECT 1 AS n, 'x' AS s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The view must be marked as a view and carry the schema resolved from
+	// its query (hydrated at creation, as real BigQuery does).
+	md, err := view.Metadata(ctx)
+	if err != nil {
+		t.Fatalf("get view metadata: %v", err)
+	}
+	if md.Type != bigquery.ViewTable {
+		t.Errorf("table type = %q, want %q", md.Type, bigquery.ViewTable)
+	}
+	if len(md.Schema) != 2 {
+		t.Errorf("view schema has %d fields, want 2 (schema not hydrated)", len(md.Schema))
+	}
+
+	// DROP VIEW must succeed (DROP TABLE does not apply to a view).
+	if err := view.Delete(ctx); err != nil {
+		t.Fatalf("delete view: %v", err)
+	}
+	if _, err := view.Metadata(ctx); err == nil {
+		t.Error("view metadata still resolves after delete")
+	}
+}
+
+func TestDDLCreateView(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		viewName    = "ddlview"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Create a view through a CREATE VIEW DDL statement.
+	job, err := client.Query(fmt.Sprintf("CREATE VIEW %s.%s AS SELECT 1 AS n", datasetName, viewName)).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Err() != nil {
+		t.Fatal(status.Err())
+	}
+
+	// The DDL-created view must be registered in the metadata as a view.
+	md, err := client.Dataset(datasetName).Table(viewName).Metadata(ctx)
+	if err != nil {
+		t.Fatalf("DDL-created view was not registered: %v", err)
+	}
+	if md.Type != bigquery.ViewTable {
+		t.Errorf("table type = %q, want %q", md.Type, bigquery.ViewTable)
 	}
 }
 
@@ -1731,6 +1851,184 @@ func TestLoadJSON(t *testing.T) {
 	}
 }
 
+func TestLoadWriteTruncate(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	schema := bigquery.Schema{{Name: "ID", Type: bigquery.IntegerFieldType}}
+
+	loadJSON := func(disposition bigquery.TableWriteDisposition, body string) {
+		t.Helper()
+		source := bigquery.NewReaderSource(bytes.NewBufferString(body))
+		source.SourceFormat = bigquery.JSON
+		source.Schema = schema
+		loader := table.LoaderFrom(source)
+		loader.WriteDisposition = disposition
+		job, err := loader.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Err() != nil {
+			t.Fatal(status.Err())
+		}
+	}
+
+	// Initial load of two rows into the (new) table.
+	loadJSON(bigquery.WriteAppend, "{\"ID\": 1}\n{\"ID\": 2}\n")
+	// WRITE_TRUNCATE must replace the existing rows, not append to them.
+	loadJSON(bigquery.WriteTruncate, "{\"ID\": 9}\n")
+
+	it, err := client.Query(fmt.Sprintf("SELECT ID FROM %s.%s ORDER BY ID", datasetName, tableName)).Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int
+	for {
+		var r struct{ ID int }
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		ids = append(ids, r.ID)
+	}
+	if diff := cmp.Diff([]int{9}, ids); diff != "" {
+		t.Errorf("rows after WRITE_TRUNCATE (-want +got):\n%s", diff)
+	}
+}
+
+func TestLoadCSVAutodetect(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "table_a"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	source := bigquery.NewReaderSource(bytes.NewBufferString("id,name,score\n1,alice,9.5\n2,bob,8\n"))
+	source.SourceFormat = bigquery.CSV
+	source.AutoDetect = true
+	source.SkipLeadingRows = 1
+
+	job, err := table.LoaderFrom(source).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Err() != nil {
+		t.Fatal(status.Err())
+	}
+
+	// The schema must be inferred: narrowest type per column.
+	md, err := table.Metadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotTypes := map[string]bigquery.FieldType{}
+	for _, f := range md.Schema {
+		gotTypes[f.Name] = f.Type
+	}
+	wantTypes := map[string]bigquery.FieldType{
+		"id":    bigquery.IntegerFieldType,
+		"name":  bigquery.StringFieldType,
+		"score": bigquery.FloatFieldType,
+	}
+	if diff := cmp.Diff(wantTypes, gotTypes); diff != "" {
+		t.Errorf("autodetected column types (-want +got):\n%s", diff)
+	}
+
+	it, err := client.Query(fmt.Sprintf("SELECT id, name, score FROM %s.%s ORDER BY id", datasetName, tableName)).Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		ID    int
+		Name  string
+		Score float64
+	}
+	var rows []row
+	for {
+		var r row
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, r)
+	}
+	if diff := cmp.Diff([]row{
+		{ID: 1, Name: "alice", Score: 9.5},
+		{ID: 2, Name: "bob", Score: 8},
+	}, rows); diff != "" {
+		t.Errorf("autodetected CSV rows (-want +got):\n%s", diff)
+	}
+}
+
 func TestImportFromGCS(t *testing.T) {
 	const (
 		projectID  = "test"
@@ -2452,6 +2750,67 @@ ORDER BY qty DESC;`)
 	}
 }
 
+func TestQueryWithNullParams(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		"test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// A typed NULL query parameter must reach the query as a real NULL,
+	// not as a coerced zero value or an empty string.
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+	}{
+		{"int64", bigquery.NullInt64{}},
+		{"float64", bigquery.NullFloat64{}},
+		{"bool", bigquery.NullBool{}},
+		{"timestamp", bigquery.NullTimestamp{}},
+		{"string", bigquery.NullString{}},
+		{"date", bigquery.NullDate{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := client.Query("SELECT @p AS v")
+			query.Parameters = []bigquery.QueryParameter{{Name: "p", Value: tc.value}}
+			it, err := query.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				t.Fatal(err)
+			}
+			if len(row) != 1 {
+				t.Fatalf("got %d columns, want 1", len(row))
+			}
+			if row[0] != nil {
+				t.Errorf("NULL %s parameter: got %v, want nil", tc.name, row[0])
+			}
+		})
+	}
+}
+
 func TestMultipleProject(t *testing.T) {
 	const (
 		mainProjectID = "main_project"
@@ -2602,11 +2961,18 @@ func TestListProjects(t *testing.T) {
 	}
 }
 
+// TestInformationSchema exercises the genuine INFORMATION_SCHEMA
+// virtual catalog that googlesqlite ships (formerly we registered
+// a manual fake `INFORMATION_SCHEMA.COLUMNS` table here as a
+// workaround). The driver synthesises rows on demand from the live
+// catalog, so registering a regular user table is enough — its
+// columns appear automatically in INFORMATION_SCHEMA.COLUMNS.
 func TestInformationSchema(t *testing.T) {
 	const (
 		projectID    = "test"
 		datasetID    = "test_dataset"
 		subProjectID = "sub"
+		tableID      = "users"
 	)
 
 	ctx := context.Background()
@@ -2622,18 +2988,13 @@ func TestInformationSchema(t *testing.T) {
 				types.NewDataset(
 					datasetID,
 					types.NewTable(
-						"INFORMATION_SCHEMA.COLUMNS",
+						tableID,
 						[]*types.Column{
-							types.NewColumn("table_schema", types.STRING),
-							types.NewColumn("table_name", types.STRING),
-							types.NewColumn("column_name", types.STRING),
+							types.NewColumn("id", types.INTEGER),
+							types.NewColumn("name", types.STRING),
 						},
 						types.Data{
-							{
-								"table_schema": "test_ds",
-								"table_name":   "table_type_graph",
-								"column_name":  "id",
-							},
+							{"id": 1, "name": "alice"},
 						},
 					),
 				),
@@ -2649,10 +3010,11 @@ func TestInformationSchema(t *testing.T) {
 		bqServer.Stop(ctx)
 	}()
 
-	t.Run("query from same project", func(t *testing.T) {
+	scanColumnNames := func(t *testing.T, q string, projectForClient string) []string {
+		t.Helper()
 		client, err := bigquery.NewClient(
 			ctx,
-			projectID,
+			projectForClient,
 			option.WithEndpoint(testServer.URL),
 			option.WithoutAuthentication(),
 		)
@@ -2660,53 +3022,186 @@ func TestInformationSchema(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer client.Close()
-
-		it, err := client.Query("SELECT * FROM test_dataset.INFORMATION_SCHEMA.COLUMNS").Read(ctx)
+		it, err := client.Query(q).Read(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
+		var names []string
 		for {
 			var row []bigquery.Value
 			if err := it.Next(&row); err != nil {
-				if err != iterator.Done {
-					t.Fatal(err)
+				if err == iterator.Done {
+					break
 				}
-				break
+				t.Fatal(err)
 			}
-			if len(row) != 3 {
-				t.Fatalf("failed to get row: %v", row)
+			if len(row) == 0 {
+				t.Fatalf("empty row from INFORMATION_SCHEMA.COLUMNS")
+			}
+			s, ok := row[0].(string)
+			if !ok {
+				t.Fatalf("expected first column STRING, got %T", row[0])
+			}
+			names = append(names, s)
+		}
+		return names
+	}
+
+	t.Run("query from same project", func(t *testing.T) {
+		got := scanColumnNames(t,
+			`SELECT column_name FROM test_dataset.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'users' ORDER BY ordinal_position`,
+			projectID,
+		)
+		want := []string{"id", "name"}
+		if len(got) != len(want) {
+			t.Fatalf("got %d columns want %d: %v", len(got), len(want), got)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("column[%d]: got %q want %q", i, got[i], w)
 			}
 		}
 	})
 
 	t.Run("query from sub project", func(t *testing.T) {
-		client, err := bigquery.NewClient(
-			ctx,
+		got := scanColumnNames(t,
+			`SELECT column_name FROM test.test_dataset.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'users' ORDER BY ordinal_position`,
 			subProjectID,
-			option.WithEndpoint(testServer.URL),
-			option.WithoutAuthentication(),
 		)
-		if err != nil {
-			t.Fatal(err)
+		want := []string{"id", "name"}
+		if len(got) != len(want) {
+			t.Fatalf("got %d columns want %d: %v", len(got), len(want), got)
 		}
-		defer client.Close()
-
-		it, err := client.Query("SELECT * FROM test.test_dataset.INFORMATION_SCHEMA.COLUMNS").Read(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for {
-			var row []bigquery.Value
-			if err := it.Next(&row); err != nil {
-				if err != iterator.Done {
-					t.Fatal(err)
-				}
-				break
-			}
-			if len(row) != 3 {
-				t.Fatalf("failed to get row: %v", row)
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("column[%d]: got %q want %q", i, got[i], w)
 			}
 		}
 	})
+}
 
+// rawRowSaver is a bigquery.ValueSaver that emits an arbitrary row map,
+// including fields that may be absent from the destination table schema.
+type rawRowSaver struct {
+	row map[string]bigquery.Value
+}
+
+func (s rawRowSaver) Save() (map[string]bigquery.Value, string, error) {
+	return s.row, "", nil
+}
+
+func TestInsertAllUnknownField(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "tbl"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	table := client.Dataset(datasetName).Table(tableName)
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Name: tableName,
+		Schema: bigquery.Schema{
+			{Name: "id", Type: bigquery.IntegerFieldType},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inserter := table.Inserter()
+
+	// A row whose fields are all declared inserts cleanly.
+	if err := inserter.Put(ctx, rawRowSaver{row: map[string]bigquery.Value{"id": 1}}); err != nil {
+		t.Fatalf("valid row was rejected: %v", err)
+	}
+
+	// A row carrying a field absent from the schema must be reported, not
+	// silently accepted.
+	if err := inserter.Put(ctx, rawRowSaver{row: map[string]bigquery.Value{"id": 2, "bogus": 3}}); err == nil {
+		t.Fatal("insertAll accepted a row with an unknown field; want an error")
+	}
+}
+
+func TestConcurrentQueries(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		"test",
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Many clients querying the emulator at once must not leak or wedge the
+	// SQL connection pool (no "statement is closed", no hang).
+	const (
+		workers   = 16
+		perWorker = 5
+	)
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers*perWorker)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				want := worker*1000 + i
+				it, err := client.Query(fmt.Sprintf("SELECT %d AS n", want)).Read(ctx)
+				if err != nil {
+					errCh <- fmt.Errorf("worker %d query %d: %w", worker, i, err)
+					continue
+				}
+				var row []bigquery.Value
+				if err := it.Next(&row); err != nil {
+					errCh <- fmt.Errorf("worker %d query %d read: %w", worker, i, err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
 }

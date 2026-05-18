@@ -29,6 +29,13 @@ func (t *Table) Delete(ctx context.Context, tx *sql.Tx) error {
 	return t.repo.DeleteTable(ctx, tx, t)
 }
 
+// IsView reports whether the table metadata describes a (logical or
+// materialized) view rather than an ordinary table.
+func (t *Table) IsView() bool {
+	typ, _ := t.metadata["type"].(string)
+	return typ == "VIEW" || typ == "MATERIALIZED_VIEW"
+}
+
 func (t *Table) Content() (*bigqueryv2.Table, error) {
 	encoded, err := json.Marshal(t.metadata)
 	if err != nil {

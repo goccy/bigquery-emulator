@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/googlesqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
@@ -17,6 +17,7 @@ type (
 		Rows         []*TableRow              `json:"rows"`
 		TotalRows    uint64                   `json:"totalRows,string"`
 		JobComplete  bool                     `json:"jobComplete"`
+		PageToken    string                   `json:"pageToken,omitempty"`
 		TotalBytes   uint64                   `json:"-"`
 	}
 
@@ -27,7 +28,7 @@ type (
 		TotalRows      uint64                     `json:"totalRows,string"`
 		JobComplete    bool                       `json:"jobComplete"`
 		TotalBytes     int64                      `json:"-"`
-		ChangedCatalog *zetasqlite.ChangedCatalog `json:"-"`
+		ChangedCatalog *googlesqlite.ChangedCatalog `json:"-"`
 	}
 
 	TableDataList struct {
@@ -184,19 +185,20 @@ func (c *TableCell) AppendValueToARROWBuilder(builder array.Builder) error {
 	}
 }
 
+// Format converts TIMESTAMP result cells from the raw canonical timestamp
+// produced by the SQL backend into the representation the BigQuery REST API
+// returns: int64 microseconds-since-epoch when useInt64Timestamp is set, and
+// otherwise a float seconds-since-epoch string. Every official client decodes
+// a TIMESTAMP value as one of those two numeric forms, never as a formatted
+// datetime string.
 func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp bool) []*TableRow {
-	if !useInt64Timestamp {
-		return rows
-	}
 	formattedRows := make([]*TableRow, 0, len(rows))
 	for _, row := range rows {
 		cells := make([]*TableCell, 0, len(row.F))
 		for colIdx, cell := range row.F {
 			if schema.Fields[colIdx].Type == "TIMESTAMP" && cell.V != nil {
-				t, _ := zetasqlite.TimeFromTimestampValue(cell.V.(string))
-				microsec := t.UnixNano() / int64(time.Microsecond)
 				cells = append(cells, &TableCell{
-					V: fmt.Sprint(microsec),
+					V: formatTimestampCell(cell.V, useInt64Timestamp),
 				})
 			} else {
 				cells = append(cells, cell)
@@ -207,4 +209,28 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 		})
 	}
 	return formattedRows
+}
+
+// formatTimestampCell renders one TIMESTAMP cell value. A non-string value or
+// an unparseable timestamp is passed through unchanged.
+func formatTimestampCell(v interface{}, useInt64Timestamp bool) interface{} {
+	raw, ok := v.(string)
+	if !ok {
+		return v
+	}
+	t, err := googlesqlite.TimeFromTimestampValue(raw)
+	if err != nil {
+		return v
+	}
+	micros := t.UnixMicro()
+	if useInt64Timestamp {
+		return fmt.Sprint(micros)
+	}
+	sec := micros / int64(time.Second/time.Microsecond)
+	frac := micros % int64(time.Second/time.Microsecond)
+	if frac < 0 {
+		frac += int64(time.Second / time.Microsecond)
+		sec--
+	}
+	return fmt.Sprintf("%d.%06d", sec, frac)
 }
