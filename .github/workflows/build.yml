@@ -39,7 +39,7 @@ jobs:
       # silently overwrote the first and the published image was never
       # actually multi-arch. The Dockerfile cross-compiles the pure-Go
       # binary from the build platform, so neither target needs QEMU.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         id: build
         with:
           context: .
