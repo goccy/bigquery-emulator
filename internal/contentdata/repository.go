@@ -34,28 +34,69 @@ func escapeIdent(ident string) string {
 	return strings.ReplaceAll(ident, "`", "``")
 }
 
-func (r *Repository) tablePath(projectID, datasetID, tableID string) string {
+// validateIdent rejects identifiers that cannot be embedded safely in a
+// backtick-quoted SQL identifier.
+//
+// Escaping alone is not sufficient here: a query first passes through the
+// GoogleSQL (ZetaSQL) parser and is then re-emitted for the SQLite backend,
+// and the two layers disagree on how a backtick is escaped (GoogleSQL uses a
+// backslash, SQLite doubles the backtick). A name containing a backtick or a
+// backslash can therefore survive one layer's escaping and break out of the
+// quoted region in the other, allowing arbitrary SQL to be injected (CWE-89).
+//
+// Neither character is valid in a BigQuery project, dataset, table, view,
+// routine or column name, so rejecting them closes the injection vector
+// without affecting any legitimate identifier.
+func validateIdent(kind, ident string) error {
+	if i := strings.IndexAny(ident, "`\\"); i >= 0 {
+		return fmt.Errorf(
+			"invalid %s %q: character %q is not allowed in an identifier",
+			kind, ident, ident[i],
+		)
+	}
+	return nil
+}
+
+func (r *Repository) tablePath(projectID, datasetID, tableID string) (string, error) {
 	var tablePath []string
 	if projectID != "" {
+		if err := validateIdent("project", projectID); err != nil {
+			return "", err
+		}
 		tablePath = append(tablePath, escapeIdent(projectID))
 	}
 	if datasetID != "" {
+		if err := validateIdent("dataset", datasetID); err != nil {
+			return "", err
+		}
 		tablePath = append(tablePath, escapeIdent(datasetID))
 	}
+	if err := validateIdent("table", tableID); err != nil {
+		return "", err
+	}
 	tablePath = append(tablePath, escapeIdent(tableID))
-	return strings.Join(tablePath, ".")
+	return strings.Join(tablePath, "."), nil
 }
 
-func (r *Repository) routinePath(projectID, datasetID, routineID string) string {
+func (r *Repository) routinePath(projectID, datasetID, routineID string) (string, error) {
 	var routinePath []string
 	if projectID != "" {
+		if err := validateIdent("project", projectID); err != nil {
+			return "", err
+		}
 		routinePath = append(routinePath, escapeIdent(projectID))
 	}
 	if datasetID != "" {
+		if err := validateIdent("dataset", datasetID); err != nil {
+			return "", err
+		}
 		routinePath = append(routinePath, escapeIdent(datasetID))
 	}
+	if err := validateIdent("routine", routineID); err != nil {
+		return "", err
+	}
 	routinePath = append(routinePath, escapeIdent(routineID))
-	return strings.Join(routinePath, ".")
+	return strings.Join(routinePath, "."), nil
 }
 
 func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
@@ -71,9 +112,15 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	}
 	fields := make([]string, 0, len(table.Schema.Fields))
 	for _, field := range table.Schema.Fields {
+		if err := validateIdent("column", field.Name); err != nil {
+			return err
+		}
 		fields = append(fields, fmt.Sprintf("`%s` %s", escapeIdent(field.Name), r.encodeSchemaField(field)))
 	}
-	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	tablePath, err := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	if err != nil {
+		return err
+	}
 	query := fmt.Sprintf("CREATE TABLE `%s` (%s)", tablePath, strings.Join(fields, ","))
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create table %s: %w", query, err)
@@ -103,7 +150,10 @@ func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *b
 	default:
 		return fmt.Errorf("view definition is nil")
 	}
-	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	tablePath, err := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
+	if err != nil {
+		return err
+	}
 	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, viewQuery)
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to create view %s: %w", query, err)
@@ -438,13 +488,20 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
+		if err := validateIdent("column", column.Name); err != nil {
+			return err
+		}
 		columns = append(columns,
 			fmt.Sprintf("`%s` %s", escapeIdent(column.Name), column.FormatType()),
 		)
 	}
+	tablePath, err := r.tablePath(projectID, datasetID, table.ID)
+	if err != nil {
+		return err
+	}
 	ddl := fmt.Sprintf(
 		"CREATE OR REPLACE TABLE `%s` (%s)",
-		r.tablePath(projectID, datasetID, table.ID), strings.Join(columns, ","),
+		tablePath, strings.Join(columns, ","),
 	)
 
 	if _, err := tx.Tx().ExecContext(ctx, ddl); err != nil {
@@ -473,13 +530,20 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	placeholders := make([]string, 0, len(columns))
 	columnsWithEscape := make([]string, 0, len(columns))
 	for _, col := range columns {
+		if err := validateIdent("column", col.Name); err != nil {
+			return err
+		}
 		placeholders = append(placeholders, "?")
 		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", escapeIdent(col.Name)))
 	}
 
+	tablePath, err := r.tablePath(projectID, datasetID, table.ID)
+	if err != nil {
+		return err
+	}
 	query := fmt.Sprintf(
 		"INSERT `%s` (%s) VALUES (%s)",
-		r.tablePath(projectID, datasetID, table.ID),
+		tablePath,
 		strings.Join(columnsWithEscape, ","),
 		strings.Join(placeholders, ","),
 	)
@@ -537,7 +601,10 @@ func (r *Repository) DeleteTables(ctx context.Context, tx *connection.Tx, projec
 	}()
 
 	for _, table := range tables {
-		tablePath := r.tablePath(projectID, datasetID, table.ID)
+		tablePath, err := r.tablePath(projectID, datasetID, table.ID)
+		if err != nil {
+			return err
+		}
 		logger.Logger(ctx).Debug("delete table", zap.String("table", tablePath))
 		stmt := "DROP TABLE"
 		if table.IsView {
@@ -561,7 +628,11 @@ func (r *Repository) TruncateTable(ctx context.Context, tx *connection.Tx, proje
 	defer func() {
 		_ = tx.MetadataRepoMode()
 	}()
-	query := fmt.Sprintf("DELETE FROM `%s` WHERE true", r.tablePath(projectID, datasetID, tableID))
+	tablePath, err := r.tablePath(projectID, datasetID, tableID)
+	if err != nil {
+		return err
+	}
+	query := fmt.Sprintf("DELETE FROM `%s` WHERE true", tablePath)
 	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to truncate table %s: %w", query, err)
 	}
@@ -578,7 +649,11 @@ func (r *Repository) CountTableRows(ctx context.Context, tx *connection.Tx, proj
 	defer func() {
 		_ = tx.MetadataRepoMode()
 	}()
-	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`", r.tablePath(projectID, datasetID, tableID))
+	tablePath, err := r.tablePath(projectID, datasetID, tableID)
+	if err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tablePath)
 	var count int64
 	if err := tx.Tx().QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count rows of %s: %w", query, err)
@@ -590,7 +665,11 @@ func (r *Repository) CountTableRows(ctx context.Context, tx *connection.Tx, proj
 // The view must already exist (visible to tx). It mirrors BigQuery, which
 // records a view's resolved schema at creation time.
 func (r *Repository) ViewSchema(ctx context.Context, tx *connection.Tx, projectID, datasetID, viewID string) (*bigqueryv2.TableSchema, error) {
-	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", r.tablePath(projectID, datasetID, viewID))
+	tablePath, err := r.tablePath(projectID, datasetID, viewID)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", tablePath)
 	response, err := r.Query(ctx, tx, projectID, datasetID, query, nil)
 	if err != nil {
 		return nil, err
@@ -658,10 +737,14 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, tx *connection.Tx
 	if routine.DefinitionBody == "" {
 		return fmt.Errorf("invalid body: missing function body")
 	}
+	routinePath, err := r.routinePath(ref.ProjectId, ref.DatasetId, ref.RoutineId)
+	if err != nil {
+		return err
+	}
 	query := fmt.Sprintf(
 		"%s `%s`(%s)%s AS (%s)",
 		routineType,
-		r.routinePath(ref.ProjectId, ref.DatasetId, ref.RoutineId),
+		routinePath,
 		strings.Join(args, ", "),
 		retType,
 		routine.DefinitionBody,
