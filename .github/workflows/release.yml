@@ -29,7 +29,12 @@ jobs:
         with:
           distribution: goreleaser
           version: latest
-          args: release --clean
+          # A single `go build` of this project peaks at ~5.6 GB RSS.
+          # GoReleaser defaults --parallelism to the CPU count (4 on
+          # ubuntu-latest), so building 4 targets at once needs ~22 GB
+          # on a 16 GB runner and the agent gets OOM-killed. Build the
+          # targets one at a time to keep memory bounded.
+          args: release --clean --parallelism 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
