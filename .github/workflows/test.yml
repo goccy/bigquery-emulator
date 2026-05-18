@@ -61,13 +61,13 @@ jobs:
         os: [ "ubuntu-latest", "macos-latest" ]
     runs-on: ${{ matrix.os }}
     steps:
+    - name: checkout
+      uses: actions/checkout@v4
     - name: setup Go
       uses: actions/setup-go@v5
       with:
         go-version-file: go.mod
         cache: true
-    - name: checkout
-      uses: actions/checkout@v4
     - name: cache for linux
       uses: actions/cache@v3
       if: runner.os == 'Linux'
