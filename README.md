@@ -65,7 +65,19 @@ You can also download the docker image with the following command
 $ docker pull ghcr.io/goccy/bigquery-emulator:latest
 ```
 
-You can also download the darwin(amd64) and linux(amd64) binaries directly from [releases](https://github.com/goccy/bigquery-emulator/releases)
+The image is a multi-arch manifest, so the same tag works on both `linux/amd64` and `linux/arm64`.
+
+You can also download prebuilt binaries (darwin/linux/windows, amd64/arm64) and `deb`/`rpm`/`apk` packages directly from [releases](https://github.com/goccy/bigquery-emulator/releases).
+
+Both the release archives and the container image ship a signed [GitHub build-provenance attestation](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds). Verify them with the GitHub CLI:
+
+```console
+# release archive
+$ gh attestation verify bigquery-emulator_v0.0.0_linux_amd64.tar.gz --repo goccy/bigquery-emulator
+
+# container image
+$ gh attestation verify oci://ghcr.io/goccy/bigquery-emulator:latest --repo goccy/bigquery-emulator
+```
 
 # How to start the standalone server
 
