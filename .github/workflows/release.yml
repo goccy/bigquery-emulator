@@ -3,6 +3,8 @@ on:
   push:
     tags:
       - v*
+permissions:
+  contents: write
 jobs:
   publish:
     name: Publish for ${{ matrix.os }}
