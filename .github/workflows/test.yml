@@ -22,7 +22,7 @@ jobs:
         go-version-file: go.mod
         cache: true
     - name: cache for linux
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       if: runner.os == 'Linux'
       with:
         path: |
@@ -32,7 +32,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     - name: cache for macOS
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       if: runner.os == 'macOS'
       with:
         path: |
@@ -71,7 +71,7 @@ jobs:
         go-version-file: go.mod
         cache: true
     - name: cache for linux
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       if: runner.os == 'Linux'
       with:
         path: |
@@ -81,7 +81,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     - name: cache for macOS
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       if: runner.os == 'macOS'
       with:
         path: |
