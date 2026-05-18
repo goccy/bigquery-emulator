@@ -12,7 +12,7 @@ name = "pypi"
 [dev-packages]
 
 [requires]
-python_version = "3.9"
+python_version = "3.12"
 
 [scripts]
 example = "python example.py"

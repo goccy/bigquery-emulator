@@ -1,4 +1,4 @@
-FROM python:3.9.14-bullseye
+FROM python:3.12-bookworm
 
 RUN pip install --upgrade pip
 RUN pip install --upgrade setuptools
