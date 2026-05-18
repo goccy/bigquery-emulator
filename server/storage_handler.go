@@ -246,7 +246,7 @@ func (s *storageReadServer) sendAVRORows(status *readStreamStatus, response *int
 	}
 	var buf []byte
 	for _, row := range response.Rows {
-		value, err := row.AVROValue(status.avroSchema.Fields)
+		value, err := row.AVROValue(status.avroSchema.Namespace, status.avroSchema.Fields)
 		if err != nil {
 			return fmt.Errorf("failed to convert response fields to avro value: %w", err)
 		}

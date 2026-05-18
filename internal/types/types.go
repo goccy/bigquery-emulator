@@ -61,16 +61,26 @@ func (r *TableRow) Data() (map[string]interface{}, error) {
 	return rowMap, nil
 }
 
-func (r *TableRow) AVROValue(fields []*types.AVROFieldSchema) (map[string]interface{}, error) {
+func (r *TableRow) AVROValue(namespace string, fields []*types.AVROFieldSchema) (map[string]interface{}, error) {
 	rowMap := map[string]interface{}{}
 	for idx, cell := range r.F {
-		v, err := cell.AVROValue(fields[idx])
+		v, err := cell.AVROValue(namespace, fields[idx])
 		if err != nil {
 			return nil, err
 		}
 		rowMap[cell.Name] = v
 	}
 	return rowMap, nil
+}
+
+// avroRecordUnionKey returns the Avro union branch name for a nullable record
+// field. goavro identifies a record branch within a union by the record's
+// full name, which is the enclosing namespace joined with the record name.
+func avroRecordUnionKey(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "." + name
 }
 
 func (c *TableCell) Data() (interface{}, error) {
@@ -99,15 +109,31 @@ func (c *TableCell) Data() (interface{}, error) {
 	}
 }
 
-func (c *TableCell) AVROValue(schema *types.AVROFieldSchema) (interface{}, error) {
+func (c *TableCell) AVROValue(namespace string, schema *types.AVROFieldSchema) (interface{}, error) {
 	switch v := c.V.(type) {
 	case TableRow:
 		fields := types.TableFieldSchemasToAVRO(schema.Type.TypeSchema.Fields)
-		return v.AVROValue(fields)
+		recordValue, err := v.AVROValue(namespace, fields)
+		if err != nil {
+			return nil, err
+		}
+		// The schema for a record field mirrors AVROType.MarshalJSON:
+		// REQUIRED/REPEATED records are encoded bare (REPEATED records are
+		// the bare element type of an array), while a nullable record is an
+		// Avro union and goavro requires its value to be wrapped in a
+		// single-key map keyed by the record's full name.
+		switch types.Mode(schema.Type.TypeSchema.Mode) {
+		case types.RequiredMode, types.RepeatedMode:
+			return recordValue, nil
+		default:
+			return map[string]interface{}{
+				avroRecordUnionKey(namespace, schema.Type.TypeSchema.Name): recordValue,
+			}, nil
+		}
 	case []*TableCell:
 		ret := make([]interface{}, 0, len(v))
 		for _, vv := range v {
-			avrov, err := vv.AVROValue(schema)
+			avrov, err := vv.AVROValue(namespace, schema)
 			if err != nil {
 				return nil, err
 			}
@@ -126,10 +152,14 @@ func (c *TableCell) AVROValue(schema *types.AVROFieldSchema) (interface{}, error
 		if err != nil {
 			return nil, err
 		}
-		if types.Mode(schema.Type.TypeSchema.Mode) == types.RequiredMode {
+		// A bare value for REQUIRED fields and for the element type of
+		// REPEATED arrays; a union-wrapped value for nullable fields.
+		switch types.Mode(schema.Type.TypeSchema.Mode) {
+		case types.RequiredMode, types.RepeatedMode:
 			return value, nil
+		default:
+			return map[string]interface{}{schema.Type.Key(): value}, nil
 		}
-		return map[string]interface{}{schema.Type.Key(): value}, nil
 	}
 }
 

@@ -1,20 +1,27 @@
 version: 2
+# Only Dependabot security updates are wanted in this repository.
+# Routine version-update pull requests are disabled per ecosystem by setting
+# `open-pull-requests-limit: 0`. This switch has no effect on security
+# updates, which Dependabot still opens automatically when a vulnerability is
+# reported against a dependency.
 updates:
   # Go module dependencies.
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
 
-  # GitHub Actions: dependabot also rewrites version tags to commit SHAs as
-  # it updates them, keeping the workflows pinned to immutable revisions.
+  # GitHub Actions used by the workflows.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
 
   # Base image of the emulator Dockerfile.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0

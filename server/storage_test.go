@@ -104,6 +104,11 @@ func TestStorageReadAVRO(t *testing.T) {
 	// increasing the MaxStreamCount.
 	readStream := session.GetStreams()[0].Name
 
+	// streamCtx lets either goroutine unblock the other on failure: the
+	// decoder cancels it when it stops, which aborts the reader's stream.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	ch := make(chan *storagepb.ReadRowsResponse)
 
 	// Use a waitgroup to coordinate the reading and decoding goroutines.
@@ -113,18 +118,23 @@ func TestStorageReadAVRO(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := processStream(t, ctx, bqReadClient, readStream, ch); err != nil {
-			t.Fatalf("processStream failure: %v", err)
+		// Always close ch so the decoder goroutine cannot block forever
+		// waiting for rows that will never arrive.
+		defer close(ch)
+		if err := processStream(t, streamCtx, bqReadClient, readStream, ch); err != nil {
+			t.Errorf("processStream failure: %v", err)
 		}
-		close(ch)
 	}()
 
 	// Start Avro processing and decoding in another goroutine.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := processAvro(t, ctx, session.GetAvroSchema().GetSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", storagepb.DataFormat_AVRO, err)
+		// Cancel the read stream when decoding stops so the reader
+		// goroutine cannot block forever sending on ch.
+		defer cancel()
+		if err := processAvro(t, streamCtx, session.GetAvroSchema().GetSchema(), ch); err != nil {
+			t.Errorf("error processing %s: %v", storagepb.DataFormat_AVRO, err)
 		}
 	}()
 
@@ -193,6 +203,11 @@ func TestStorageReadARROW(t *testing.T) {
 	// increasing the MaxStreamCount.
 	readStream := session.GetStreams()[0].Name
 
+	// streamCtx lets either goroutine unblock the other on failure: the
+	// decoder cancels it when it stops, which aborts the reader's stream.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	ch := make(chan *storagepb.ReadRowsResponse)
 
 	// Use a waitgroup to coordinate the reading and decoding goroutines.
@@ -202,18 +217,23 @@ func TestStorageReadARROW(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := processStream(t, ctx, bqReadClient, readStream, ch); err != nil {
-			t.Fatalf("processStream failure: %v", err)
+		// Always close ch so the decoder goroutine cannot block forever
+		// waiting for rows that will never arrive.
+		defer close(ch)
+		if err := processStream(t, streamCtx, bqReadClient, readStream, ch); err != nil {
+			t.Errorf("processStream failure: %v", err)
 		}
-		close(ch)
 	}()
 
-	// Start Avro processing and decoding in another goroutine.
+	// Start Arrow processing and decoding in another goroutine.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := processArrow(t, ctx, session.GetArrowSchema().GetSerializedSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", storagepb.DataFormat_ARROW, err)
+		// Cancel the read stream when decoding stops so the reader
+		// goroutine cannot block forever sending on ch.
+		defer cancel()
+		if err := processArrow(t, streamCtx, session.GetArrowSchema().GetSerializedSchema(), ch); err != nil {
+			t.Errorf("error processing %s: %v", storagepb.DataFormat_ARROW, err)
 		}
 	}()
 
@@ -261,7 +281,7 @@ func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQuery
 					}
 				}
 				if retryDelayDuration != 0 {
-					t.Fatalf("processStream failed with a retryable error, retrying in %v", retryDelayDuration)
+					t.Logf("processStream failed with a retryable error, retrying in %v", retryDelayDuration)
 					time.Sleep(retryDelayDuration)
 				} else {
 					retries++
@@ -283,7 +303,11 @@ func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQuery
 				offset = offset + rc
 				// We're making progress, reset retries.
 				retries = 0
-				ch <- r
+				select {
+				case ch <- r:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 		}
 	}
