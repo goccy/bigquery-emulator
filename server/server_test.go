@@ -987,6 +987,58 @@ func TestDuplicateTable(t *testing.T) {
 	}
 }
 
+func TestDuplicateDataset(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	dataset := client.Dataset(datasetName)
+	if err := dataset.Create(ctx, &bigquery.DatasetMetadata{
+		Name: datasetName,
+	}); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if err := dataset.Create(ctx, &bigquery.DatasetMetadata{
+		Name: datasetName,
+	}); err != nil {
+		ge := err.(*googleapi.Error)
+		if ge.Code != 409 {
+			t.Fatalf("expected 409 Conflict, got %d: %+v", ge.Code, ge)
+		}
+	} else {
+		t.Fatal("expected error when dataset name duplicates")
+	}
+}
+
 func TestDuplicateTableWithSchema(t *testing.T) {
 	const (
 		projectName = "test"

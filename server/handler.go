@@ -760,7 +760,11 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			errorResponse(ctx, w, errDuplicate(err.Error()))
+		} else {
+			errorResponse(ctx, w, errInternalError(err.Error()))
+		}
 		return
 	}
 	encodeResponse(ctx, w, res)
@@ -1149,7 +1153,11 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errJobInternalError(err.Error()))
+		if errors.Is(err, metadata.ErrDuplicatedJob) {
+			errorResponse(ctx, w, errDuplicate(err.Error()))
+		} else {
+			errorResponse(ctx, w, errJobInternalError(err.Error()))
+		}
 		return
 	}
 	encodeResponse(ctx, w, res)
