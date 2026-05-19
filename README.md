@@ -2,10 +2,19 @@
 
 [![build and test](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml/badge.svg)](https://github.com/goccy/bigquery-emulator/actions/workflows/test.yml)
 [![GoDoc](https://godoc.org/github.com/goccy/bigquery-emulator?status.svg)](https://pkg.go.dev/github.com/goccy/bigquery-emulator?tab=doc)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2)](https://github.com/sponsors/goccy)
 
 
-BigQuery emulator server implemented in Go.  
-BigQuery emulator provides a way to launch a BigQuery server on your local machine for testing and development.
+The only open-source emulator for Google BigQuery — run a BigQuery-compatible server on your local machine for testing and development, with no cloud project or credentials required.
+
+# Quick start
+
+```console
+$ docker run -it -p 9050:9050 -p 9060:9060 ghcr.io/goccy/bigquery-emulator:latest --project=test
+$ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT 1"
+```
+
+See [Install](#install) for `go install`, prebuilt binaries and packages, and [How to start the standalone server](#how-to-start-the-standalone-server) for the full set of options and client examples.
 
 # Features
 
@@ -114,7 +123,7 @@ $ ./bigquery-emulator --project=test
 If you want to use docker image to start emulator, specify like the following.
 
 ```console
-$ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
+$ docker run -it -p 9050:9050 -p 9060:9060 ghcr.io/goccy/bigquery-emulator:latest --project=test
 ```
 
 * If you are using an M1 Mac ( and Docker Desktop ) you may get a warning. In that case please use `--platform linux/x86_64` option.
@@ -303,7 +312,7 @@ If you have specified a database file when starting `bigquery-emulator`, the fil
 
 ## BigQuery Emulator Architecture Overview
 
-After receiving a GoogleSQL query via the REST API from bq or a client SDK, the googlesqlite driver parses and analyzes the query and executes it against an embedded SQLite database.
+After receiving a GoogleSQL query via the REST API from bq or a client SDK, the googlesqlite driver parses and analyzes the query — using [go-googlesql](https://github.com/goccy/go-googlesql), a GoogleSQL (ZetaSQL) parser and analyzer written in Go — and executes it against an embedded SQLite database.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145011-e35c2df4-5f5d-43ce-b7df-08cd130b5d31.png"></img>
 
