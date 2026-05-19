@@ -10,7 +10,7 @@ The only open-source emulator for Google BigQuery — run a BigQuery-compatible 
 # Quick start
 
 ```console
-$ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
+$ docker run -it -p 9050:9050 -p 9060:9060 ghcr.io/goccy/bigquery-emulator:latest --project=test
 $ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT 1"
 ```
 
@@ -123,7 +123,7 @@ $ ./bigquery-emulator --project=test
 If you want to use docker image to start emulator, specify like the following.
 
 ```console
-$ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
+$ docker run -it -p 9050:9050 -p 9060:9060 ghcr.io/goccy/bigquery-emulator:latest --project=test
 ```
 
 * If you are using an M1 Mac ( and Docker Desktop ) you may get a warning. In that case please use `--platform linux/x86_64` option.
