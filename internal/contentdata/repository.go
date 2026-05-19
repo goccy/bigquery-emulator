@@ -190,9 +190,16 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
-		value, err := r.queryParameterValueToGoValue(param.ParameterValue)
-		if err != nil {
-			return nil, err
+		var value interface{}
+		switch {
+		case param.ParameterType.Type == "ARRAY" && len(param.ParameterValue.ArrayValues) == 0:
+			value = nil
+		default:
+			var err error
+			value, err = r.queryParameterValueToGoValue(param.ParameterValue)
+			if err != nil {
+				return nil, err
+			}
 		}
 		// The BigQuery REST API encodes every scalar parameter as a
 		// JSON string, regardless of its declared type. The accompanying
