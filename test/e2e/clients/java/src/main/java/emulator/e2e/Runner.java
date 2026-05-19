@@ -7,10 +7,13 @@ import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
+import com.google.cloud.bigquery.InsertAllRequest;
+import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.QueryParameterValue;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
+import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -27,6 +30,8 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Java BigQuery client conformance runner.
@@ -91,6 +96,9 @@ public final class Runner {
   private static JsonObject runCase(BigQuery bq, JsonObject testCase) {
     String name = testCase.get("name").getAsString();
     try {
+      if (testCase.has("setup")) {
+        applySetup(bq, testCase.getAsJsonObject("setup"));
+      }
       QueryJobConfiguration.Builder cfg =
           QueryJobConfiguration.newBuilder(testCase.get("sql").getAsString());
       if (testCase.has("params")) {
@@ -112,6 +120,31 @@ public final class Runner {
       return result(name, "fail", "expected " + expected + " got " + actual);
     } catch (Exception e) {
       return errorResult(name, e.getClass().getSimpleName() + ": " + e.getMessage());
+    }
+  }
+
+  /**
+   * applySetup streams a case's {@code setup.rows} into its target table
+   * through tabledata.insertAll, so the query under test runs against
+   * freshly streamed data. The dataset and table are preloaded by the test
+   * harness (modelling an emulator started with --data-from-yaml); this
+   * runner only performs the streaming insert. Regression coverage for issue
+   * #470 — streamed rows must be visible to a subsequent query.
+   */
+  private static void applySetup(BigQuery bq, JsonObject setup) {
+    TableId tableId =
+        TableId.of(setup.get("dataset").getAsString(), setup.get("table").getAsString());
+    InsertAllRequest.Builder insert = InsertAllRequest.newBuilder(tableId);
+    for (JsonElement re : setup.getAsJsonArray("rows")) {
+      Map<String, Object> row = new LinkedHashMap<>();
+      for (Map.Entry<String, JsonElement> field : re.getAsJsonObject().entrySet()) {
+        row.put(field.getKey(), field.getValue().getAsString());
+      }
+      insert.addRow(row);
+    }
+    InsertAllResponse resp = bq.insertAll(insert.build());
+    if (resp.hasErrors()) {
+      throw new RuntimeException("insertAll reported errors: " + resp.getInsertErrors());
     }
   }
 

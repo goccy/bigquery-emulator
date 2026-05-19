@@ -42,7 +42,36 @@ def canonicalize(value):
     return text
 
 
+def apply_setup(host, project, setup):
+    """Stream a case's rows into its preloaded target table via `bq insert`.
+
+    `bq insert` drives tabledata.insertAll. The dataset and table are
+    preloaded by the test harness (modelling an emulator started with
+    --data-from-yaml); this runner only performs the streaming insert.
+    Regression coverage for issue #470 -- streamed rows must be visible to the
+    query that follows.
+    """
+    table = "{}.{}".format(setup["dataset"], setup["table"])
+    payload = "\n".join(json.dumps(row) for row in setup["rows"])
+    cmd = [
+        "bq",
+        "--api=" + host,
+        "--project_id=" + project,
+        "--headless",
+        "--quiet",
+        "insert",
+        table,
+    ]
+    proc = subprocess.run(cmd, input=payload, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            proc.stderr.strip() or proc.stdout.strip() or "bq insert exited non-zero"
+        )
+
+
 def run_case(host, project, case):
+    if "setup" in case:
+        apply_setup(host, project, case["setup"])
     cmd = [
         "bq",
         "--api=" + host,

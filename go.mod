@@ -11,7 +11,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.2
 	github.com/goccy/go-json v0.10.6
 	github.com/goccy/go-yaml v1.19.2
-	github.com/goccy/googlesqlite v0.2.1
+	github.com/goccy/googlesqlite v0.2.2
 	github.com/google/go-cmp v0.7.0
 	github.com/googleapis/gax-go/v2 v2.22.0
 	github.com/gorilla/mux v1.8.1

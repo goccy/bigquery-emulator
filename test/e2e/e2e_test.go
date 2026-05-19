@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,67 @@ func firstLine(s string) string {
 	return ""
 }
 
+// corpusCase is the subset of a cases/cases.json entry the harness itself
+// needs. The optional `setup` block names a table that must exist before the
+// client runs; the client then streams `rows` into it through insertAll.
+type corpusCase struct {
+	Name  string `json:"name"`
+	Setup *struct {
+		Dataset string `json:"dataset"`
+		Table   string `json:"table"`
+		Schema  []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+			Mode string `json:"mode"`
+		} `json:"schema"`
+	} `json:"setup"`
+}
+
+// crudPreloadProject builds the emulator's "test" project, preloading every
+// table named by a case's `setup` block (schema only, no rows). This models a
+// production emulator started with --data-from-yaml: the table exists up
+// front and each client runner streams rows into it through
+// tabledata.insertAll — the path issue #470 regressed. Keeping the corpus the
+// single source of truth means a new CRUD case needs no harness change.
+func crudPreloadProject(t *testing.T) *types.Project {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("cases", "cases.json"))
+	if err != nil {
+		t.Fatalf("read corpus: %v", err)
+	}
+	var corpus struct {
+		Cases []corpusCase `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatalf("parse corpus: %v", err)
+	}
+	tablesByDataset := map[string][]*types.Table{}
+	var datasetOrder []string
+	for _, c := range corpus.Cases {
+		if c.Setup == nil {
+			continue
+		}
+		cols := make([]*types.Column, 0, len(c.Setup.Schema))
+		for _, f := range c.Setup.Schema {
+			var opts []types.ColumnOption
+			if f.Mode != "" {
+				opts = append(opts, types.ColumnMode(types.Mode(f.Mode)))
+			}
+			cols = append(cols, types.NewColumn(f.Name, types.Type(f.Type), opts...))
+		}
+		if _, seen := tablesByDataset[c.Setup.Dataset]; !seen {
+			datasetOrder = append(datasetOrder, c.Setup.Dataset)
+		}
+		tablesByDataset[c.Setup.Dataset] = append(tablesByDataset[c.Setup.Dataset],
+			types.NewTable(c.Setup.Table, cols, nil))
+	}
+	datasets := make([]*types.Dataset, 0, len(datasetOrder))
+	for _, name := range datasetOrder {
+		datasets = append(datasets, types.NewDataset(name, tablesByDataset[name]...))
+	}
+	return types.NewProject("test", datasets...)
+}
+
 // startEmulator boots an in-process emulator with a single project ("test")
 // through its real Serve entrypoint, listening on all interfaces so a
 // container can reach it via the Docker host gateway. Using Serve (rather than
@@ -200,7 +262,7 @@ func startEmulator(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("create emulator: %v", err)
 	}
-	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+	if err := bqServer.Load(server.StructSource(crudPreloadProject(t))); err != nil {
 		t.Fatalf("load emulator project: %v", err)
 	}
 	httpPort, grpcPort := freePort(t), freePort(t)

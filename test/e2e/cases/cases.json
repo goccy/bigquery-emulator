@@ -60,6 +60,27 @@
       "sql": "SELECT TIMESTAMP '2024-03-15 12:34:56 UTC' AS ts",
       "params": [],
       "expected": [{ "ts": "2024-03-15T12:34:56Z" }]
+    },
+    {
+      "_comment": "CRUD case: a `setup` block creates a dataset + table and streams rows in through tabledata.insertAll BEFORE `sql` runs. Regression guard for issue #470 (insertAll rows must be visible to a subsequent query). Runners without setup support must skip a case that has a `setup` block.",
+      "name": "insert_all_then_select",
+      "setup": {
+        "dataset": "crud_e2e",
+        "table": "insert_all_target",
+        "schema": [
+          { "name": "id", "type": "STRING", "mode": "REQUIRED" },
+          { "name": "value", "type": "STRING", "mode": "REQUIRED" }
+        ],
+        "rows": [
+          { "id": "1", "value": "hello" },
+          { "id": "2", "value": "world" }
+        ]
+      },
+      "sql": "SELECT id, value FROM `test.crud_e2e.insert_all_target` ORDER BY id",
+      "expected": [
+        { "id": "1", "value": "hello" },
+        { "id": "2", "value": "world" }
+      ]
     }
   ]
 }
