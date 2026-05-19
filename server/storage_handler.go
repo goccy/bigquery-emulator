@@ -102,8 +102,18 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 		TableModifiers:             req.ReadSession.TableModifiers,
 		TraceId:                    req.ReadSession.TraceId,
 	}
-	outputColumns := req.ReadSession.ReadOptions.SelectedFields
-	condition := req.ReadSession.ReadOptions.RowRestriction
+	// ReadOptions is optional: a client may create a read session
+	// without selected fields or a row restriction to read the whole
+	// table. Guard the dereference so an absent ReadOptions reads
+	// every column with no filter instead of panicking.
+	var (
+		outputColumns []string
+		condition     string
+	)
+	if readOptions := req.ReadSession.ReadOptions; readOptions != nil {
+		outputColumns = readOptions.SelectedFields
+		condition = readOptions.RowRestriction
+	}
 	outputColumnMap := map[string]struct{}{}
 	for _, outputColumn := range outputColumns {
 		outputColumnMap[outputColumn] = struct{}{}
