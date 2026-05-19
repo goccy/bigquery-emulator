@@ -43,6 +43,18 @@ func errorResponse(ctx context.Context, w http.ResponseWriter, e *ServerError) {
 	w.Write(e.Response())
 }
 
+// uploadErrorResponse renders an error returned by the upload content handler.
+// When the handler produced a typed *ServerError (e.g. a missing dataset), its
+// HTTP status is preserved; any other failure is reported as a job error.
+func uploadErrorResponse(ctx context.Context, w http.ResponseWriter, err error) {
+	var serr *ServerError
+	if errors.As(err, &serr) {
+		errorResponse(ctx, w, serr)
+		return
+	}
+	errorResponse(ctx, w, errJobInternalError(err.Error()))
+}
+
 func encodeResponse(ctx context.Context, w http.ResponseWriter, response interface{}) {
 	b, err := json.Marshal(response)
 	if err != nil {
@@ -143,6 +155,26 @@ type UploadJob struct {
 	Configuration *UploadJobConfiguration  `json:"configuration"`
 }
 
+// normalize fills in fields that some client libraries omit from the upload
+// metadata. The Node.js client in particular sends no jobReference, which
+// previously caused a nil pointer dereference when the handler read the job
+// id. A missing job id is generated so the upload still gets a stable handle.
+func (j *UploadJob) normalize(projectID string) *ServerError {
+	if j.Configuration == nil || j.Configuration.Load == nil {
+		return errInvalid("upload job is missing configuration.load")
+	}
+	if j.JobReference == nil {
+		j.JobReference = &bigqueryv2.JobReference{}
+	}
+	if j.JobReference.JobId == "" {
+		j.JobReference.JobId = randomID()
+	}
+	if j.JobReference.ProjectId == "" {
+		j.JobReference.ProjectId = projectID
+	}
+	return nil
+}
+
 func (j *UploadJob) ToJob() *bigqueryv2.Job {
 	load := j.Configuration.Load
 	skipLeadingRows, _ := load.SkipLeadingRows.Int64()
@@ -217,6 +249,10 @@ func (h *uploadHandler) serveMultipart(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to decode job: %s", err.Error())))
 		return
 	}
+	if serr := job.normalize(project.ID); serr != nil {
+		errorResponse(ctx, w, serr)
+		return
+	}
 	uploadJob, err := h.Handle(ctx, &uploadRequest{
 		server:  server,
 		project: project,
@@ -240,7 +276,7 @@ func (h *uploadHandler) serveMultipart(w http.ResponseWriter, r *http.Request) {
 		reader:  p,
 	})
 	if err != nil {
-		errorResponse(ctx, w, errInternalError(err.Error()))
+		uploadErrorResponse(ctx, w, err)
 		return
 	}
 	encodeResponse(ctx, w, uploadJob.Content())
@@ -253,6 +289,10 @@ func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 	var job UploadJob
 	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
 		errorResponse(ctx, w, errInvalid(fmt.Sprintf("failed to decode job: %s", err.Error())))
+		return
+	}
+	if serr := job.normalize(project.ID); serr != nil {
+		errorResponse(ctx, w, serr)
 		return
 	}
 	res, err := h.Handle(ctx, &uploadRequest{
@@ -330,13 +370,17 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	jobID := uploadID[0]
 	job := project.Job(jobID)
+	if job == nil {
+		errorResponse(ctx, w, errNotFound(fmt.Sprintf("upload job %s is not found", jobID)))
+		return
+	}
 	if err := h.Handle(ctx, &uploadContentRequest{
 		server:  server,
 		project: project,
 		job:     job,
 		reader:  r.Body,
 	}); err != nil {
-		errorResponse(ctx, w, errJobInternalError(err.Error()))
+		uploadErrorResponse(ctx, w, err)
 		return
 	}
 	content := job.Content()
@@ -403,7 +447,13 @@ func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[stri
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	tableRef := load.DestinationTable
+	if tableRef == nil {
+		return errInvalid("load job is missing configuration.load.destinationTable")
+	}
 	dataset := r.project.Dataset(tableRef.DatasetId)
+	if dataset == nil {
+		return errNotFound(fmt.Sprintf("dataset %q is not found", tableRef.DatasetId))
+	}
 	table := dataset.Table(tableRef.TableId)
 	// The write disposition only matters for a table that already exists; a
 	// freshly created one is empty regardless.
@@ -1190,17 +1240,33 @@ const (
 	gcsURIPrefix           = "gs://"
 )
 
-func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
-	var opts []option.ClientOption
+// gcsClientOptions builds the option set for a Cloud Storage client.
+//
+//   - When STORAGE_EMULATOR_HOST is set, the client targets that GCS emulator
+//     with authentication disabled.
+//   - Otherwise, if no Application Default Credentials are configured, the
+//     client falls back to anonymous access so that loads from public buckets
+//     succeed instead of failing with "could not find default credentials".
+//   - When GOOGLE_APPLICATION_CREDENTIALS is set, those credentials are used.
+func gcsClientOptions(jsonReads bool) []option.ClientOption {
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
-		opts = append(
-			opts,
+		opts := []option.ClientOption{
 			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
-			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
-		)
+		}
+		if jsonReads {
+			opts = append(opts, storage.WithJSONReads())
+		}
+		return opts
 	}
-	client, err := storage.NewClient(ctx, opts...)
+	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
+		return []option.ClientOption{option.WithoutAuthentication()}
+	}
+	return nil
+}
+
+func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
+	client, err := storage.NewClient(ctx, gcsClientOptions(true)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1337,15 +1403,7 @@ func (h *jobsInsertHandler) importFromGCSObject(ctx context.Context, r *jobsInse
 }
 
 func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
-	var opts []option.ClientOption
-	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
-		opts = append(
-			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
-			option.WithoutAuthentication(),
-		)
-	}
-	client, err := storage.NewClient(ctx, opts...)
+	client, err := storage.NewClient(ctx, gcsClientOptions(false)...)
 	if err != nil {
 		return nil, err
 	}
@@ -2694,7 +2752,35 @@ func (h *tablesGetHandler) Handle(ctx context.Context, r *tablesGetRequest) (*bi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get table content: %w", err)
 	}
+	// Populate NumRows from the backing table so clients that depend on it
+	// (e.g. Table.getNumRows) observe an accurate count. Views and external
+	// tables have no backing row store and are left untouched.
+	if table.Type == "" || table.Type == "TABLE" {
+		if numRows, err := h.countRows(ctx, r); err == nil {
+			table.NumRows = uint64(numRows)
+		}
+	}
 	return table, nil
+}
+
+func (h *tablesGetHandler) countRows(ctx context.Context, r *tablesGetRequest) (int64, error) {
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	count, err := r.server.contentRepo.CountTableRows(ctx, tx, r.project.ID, r.dataset.ID, r.table.ID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (h *tablesGetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -2813,6 +2899,9 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 }
 
 func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, *ServerError) {
+	if r.table.ExternalDataConfiguration != nil {
+		return h.handleExternalTable(ctx, r)
+	}
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
 		return nil, errInternalError(err.Error())
@@ -2851,6 +2940,99 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
 	}
 	return table, nil
+}
+
+// handleExternalTable materializes an external table's source data into a
+// backing table so the table is registered with the query engine and can be
+// queried. Real BigQuery reads an external table live on every query; the
+// emulator snapshots the source at creation time, which is enough to make
+// the table queryable.
+func (h *tablesInsertHandler) handleExternalTable(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, *ServerError) {
+	edc := r.table.ExternalDataConfiguration
+	tableRef := r.table.TableReference
+	if tableRef == nil {
+		return nil, errInvalid("external table is missing tableReference")
+	}
+	if tableRef.ProjectId == "" {
+		tableRef.ProjectId = r.project.ID
+	}
+	if tableRef.DatasetId == "" {
+		tableRef.DatasetId = r.dataset.ID
+	}
+	if len(edc.SourceUris) == 0 {
+		return nil, errInvalid("external table is missing sourceUris")
+	}
+
+	// Translate the external data configuration into a load job and route it
+	// through the existing load pipeline, which creates the backing table and
+	// loads the rows (inferring the schema when autodetect is requested).
+	load := &bigqueryv2.JobConfigurationLoad{
+		DestinationTable:  tableRef,
+		SourceUris:        edc.SourceUris,
+		SourceFormat:      edc.SourceFormat,
+		Autodetect:        edc.Autodetect,
+		Schema:            edc.Schema,
+		CreateDisposition: "CREATE_IF_NEEDED",
+	}
+	if load.Schema == nil {
+		load.Schema = r.table.Schema
+	}
+	if csv := edc.CsvOptions; csv != nil {
+		load.Quote = csv.Quote
+		load.FieldDelimiter = csv.FieldDelimiter
+		load.SkipLeadingRows = csv.SkipLeadingRows
+		load.AllowJaggedRows = csv.AllowJaggedRows
+		load.AllowQuotedNewlines = csv.AllowQuotedNewlines
+		load.Encoding = csv.Encoding
+	}
+	job := &bigqueryv2.Job{
+		JobReference:  &bigqueryv2.JobReference{JobId: randomID(), ProjectId: r.project.ID},
+		Configuration: &bigqueryv2.JobConfiguration{Load: load},
+	}
+	if _, err := (&jobsInsertHandler{}).importFromGCS(ctx, &jobsInsertRequest{
+		server:  r.server,
+		project: r.project,
+		job:     job,
+	}); err != nil {
+		return nil, errInvalid(fmt.Sprintf("failed to load external table data: %s", err))
+	}
+
+	// The load created a plain table; record the external configuration on
+	// its metadata so it round-trips on tables.get and tables.list.
+	table := r.dataset.Table(tableRef.TableId)
+	if table == nil {
+		return nil, errInternalError("external table backing data was not created")
+	}
+	content, err := table.Content()
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	content.ExternalDataConfiguration = edc
+	content.Type = string(ExternalTableType)
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	var newMetadata map[string]interface{}
+	if err := json.Unmarshal(encoded, &newMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := table.Replace(ctx, tx.Tx(), newMetadata); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, errInternalError(err.Error())
+	}
+	return content, nil
 }
 
 func (h *tablesListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -2955,13 +3137,15 @@ func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) 
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.table.Update(ctx, tx.Tx(), tableMetadata); err != nil {
+	if err := r.table.Patch(ctx, tx.Tx(), tableMetadata); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.newTable, nil
+	// Return the full, merged table resource (kind/type/id/creationTime
+	// included) rather than echoing the request body.
+	return r.table.Content()
 }
 
 func (h *tablesSetIamPolicyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -3012,11 +3196,17 @@ func (h *tablesUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	project := projectFromContext(ctx)
 	dataset := datasetFromContext(ctx)
 	table := tableFromContext(ctx)
+	var newTable bigqueryv2.Table
+	if err := json.NewDecoder(r.Body).Decode(&newTable); err != nil {
+		errorResponse(ctx, w, errInvalid(err.Error()))
+		return
+	}
 	res, err := h.Handle(ctx, &tablesUpdateRequest{
-		server:  server,
-		project: project,
-		dataset: dataset,
-		table:   table,
+		server:   server,
+		project:  project,
+		dataset:  dataset,
+		table:    table,
+		newTable: &newTable,
 	})
 	if err != nil {
 		errorResponse(ctx, w, errInternalError(err.Error()))
@@ -3026,14 +3216,39 @@ func (h *tablesUpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 type tablesUpdateRequest struct {
-	server  *Server
-	project *metadata.Project
-	dataset *metadata.Dataset
-	table   *metadata.Table
+	server   *Server
+	project  *metadata.Project
+	dataset  *metadata.Dataset
+	table    *metadata.Table
+	newTable *bigqueryv2.Table
 }
 
 func (h *tablesUpdateHandler) Handle(ctx context.Context, r *tablesUpdateRequest) (*bigqueryv2.Table, error) {
-	return nil, fmt.Errorf("unsupported bigquery.tables.update")
+	encodedTableData, err := json.Marshal(r.newTable)
+	if err != nil {
+		return nil, err
+	}
+	var tableMetadata map[string]interface{}
+	if err := json.Unmarshal(encodedTableData, &tableMetadata); err != nil {
+		return nil, err
+	}
+
+	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := r.table.Replace(ctx, tx.Tx(), tableMetadata); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r.table.Content()
 }
 
 type defaultHandler struct{}

@@ -124,12 +124,15 @@ func runServer(args []string, opt option) error {
 		}
 	}()
 
+	bqServer.SetListenCallback(func(httpAddr, grpcAddr string) {
+		fmt.Fprintf(os.Stdout, "[bigquery-emulator] REST server listening at %s\n", httpAddr)
+		fmt.Fprintf(os.Stdout, "[bigquery-emulator] gRPC server listening at %s\n", grpcAddr)
+	})
+
 	done := make(chan error)
 	go func() {
 		httpAddr := fmt.Sprintf("%s:%d", opt.Host, opt.HTTPPort)
 		grpcAddr := fmt.Sprintf("%s:%d", opt.Host, opt.GRPCPort)
-		fmt.Fprintf(os.Stdout, "[bigquery-emulator] REST server listening at %s\n", httpAddr)
-		fmt.Fprintf(os.Stdout, "[bigquery-emulator] gRPC server listening at %s\n", grpcAddr)
 		done <- bqServer.Serve(ctx, httpAddr, grpcAddr)
 	}()
 

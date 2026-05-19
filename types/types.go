@@ -551,6 +551,16 @@ func parseDatetime(v string) (time.Time, error) {
 }
 
 func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface{}, error) {
+	// Without a schema field there is nothing to normalize against; this also
+	// guards the STRUCT branch below from recursing with a nil field.
+	if field == nil {
+		return v, nil
+	}
+	// A JSON column holds an arbitrary JSON document and must not be walked as
+	// a STRUCT/ARRAY even when its value is a map or slice.
+	if Type(field.Type) == JSON {
+		return v, nil
+	}
 	rv := reflect.ValueOf(v)
 	kind := rv.Kind()
 	if Mode(field.Mode) == RepeatedMode {

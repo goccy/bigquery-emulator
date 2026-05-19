@@ -21,17 +21,26 @@ import (
 )
 
 type Server struct {
-	Handler      http.Handler
-	storage      Storage
-	db           *sql.DB
-	loggerConfig *zap.Config
-	logger       *zap.Logger
-	connMgr      *connection.Manager
-	metaRepo     *metadata.Repository
-	contentRepo  *contentdata.Repository
-	fileCleanup  func() error
-	httpServer   *http.Server
-	grpcServer   *grpc.Server
+	Handler        http.Handler
+	storage        Storage
+	db             *sql.DB
+	loggerConfig   *zap.Config
+	logger         *zap.Logger
+	connMgr        *connection.Manager
+	metaRepo       *metadata.Repository
+	contentRepo    *contentdata.Repository
+	fileCleanup    func() error
+	httpServer     *http.Server
+	grpcServer     *grpc.Server
+	listenCallback func(httpAddr, grpcAddr string)
+}
+
+// SetListenCallback registers a function invoked once the HTTP and gRPC
+// listeners are bound, with the addresses they are actually listening on
+// (useful when a port of 0 was requested). It exists so the CLI can report
+// the bound addresses; the library itself writes nothing to stdout.
+func (s *Server) SetListenCallback(callback func(httpAddr, grpcAddr string)) {
+	s.listenCallback = callback
 }
 
 func New(storage Storage) (*Server, error) {
@@ -95,7 +104,9 @@ func New(storage Storage) (*Server, error) {
 	r.Use(withTableMiddleware())
 	r.Use(withModelMiddleware())
 	r.Use(withRoutineMiddleware())
-	server.Handler = r
+	// The method-override wrapper runs before mux matches a route, so a
+	// tunneled PATCH/PUT/DELETE reaches the correct method-specific handler.
+	server.Handler = methodOverrideMiddleware(r)
 	return server, nil
 }
 
@@ -228,7 +239,15 @@ func (s *Server) Serve(ctx context.Context, httpAddr, grpcAddr string) error {
 	}
 	grpcListener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
+		httpListener.Close()
 		return err
+	}
+
+	// Hand the actually bound addresses to the caller. With a requested port
+	// of 0 the kernel assigns a free port, so httpAddr / grpcAddr are not the
+	// real addresses. The library never writes to stdout itself.
+	if s.listenCallback != nil {
+		s.listenCallback(httpListener.Addr().String(), grpcListener.Addr().String())
 	}
 
 	var eg errgroup.Group

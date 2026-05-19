@@ -3,6 +3,7 @@ package contentdata
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -533,7 +534,14 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		if err := validateIdent("column", col.Name); err != nil {
 			return err
 		}
-		placeholders = append(placeholders, "?")
+		if col.Type == types.JSON {
+			// A JSON column cannot take a raw bound string: SQLite would store
+			// it as a JSON string literal (double-encoded). PARSE_JSON turns
+			// the bound JSON text into a proper JSON value.
+			placeholders = append(placeholders, "PARSE_JSON(?)")
+		} else {
+			placeholders = append(placeholders, "?")
+		}
 		columnsWithEscape = append(columnsWithEscape, fmt.Sprintf("`%s`", escapeIdent(col.Name)))
 	}
 
@@ -557,23 +565,35 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		values := make([]interface{}, 0, len(table.Columns))
 
 		for _, column := range columns {
-			if value, found := data[column.Name]; found {
-				isTimestampColumn := column.Type == types.TIMESTAMP
-				inputString, isInputString := value.(string)
-
-				if isInputString && isTimestampColumn {
-					parsedTimestamp, err := googlesqlite.TimeFromTimestampValue(inputString)
-					// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
-					if err == nil {
-						values = append(values, parsedTimestamp)
-						continue
-					}
-				}
-
-				values = append(values, value)
-			} else {
+			value, found := data[column.Name]
+			if !found || value == nil {
 				values = append(values, nil)
+				continue
 			}
+
+			if column.Type == types.JSON {
+				// The PARSE_JSON(?) placeholder expects JSON text. A string
+				// value is already JSON text (clients json-encode it); any
+				// other Go value is marshaled to its JSON representation.
+				jsonText, err := jsonColumnText(value)
+				if err != nil {
+					return fmt.Errorf("failed to encode JSON value for column %s: %w", column.Name, err)
+				}
+				values = append(values, jsonText)
+				continue
+			}
+
+			inputString, isInputString := value.(string)
+			if isInputString && column.Type == types.TIMESTAMP {
+				parsedTimestamp, err := googlesqlite.TimeFromTimestampValue(inputString)
+				// If we could parse the timestamp, use it when inserting, otherwise fallback to the supplied value
+				if err == nil {
+					values = append(values, parsedTimestamp)
+					continue
+				}
+			}
+
+			values = append(values, value)
 		}
 
 		if _, err := stmt.ExecContext(ctx, values...); err != nil {
@@ -582,6 +602,20 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 	}
 
 	return nil
+}
+
+// jsonColumnText returns the JSON text for a value bound to a JSON column.
+// A string is assumed to already hold JSON text (the form clients send for
+// JSON columns); any other value is marshaled to its JSON representation.
+func jsonColumnText(value interface{}) (string, error) {
+	if s, ok := value.(string); ok {
+		return s, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 // TableDeletion identifies one table or view to drop. A view must be dropped

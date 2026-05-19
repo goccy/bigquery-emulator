@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -12,6 +13,21 @@ import (
 
 	"github.com/goccy/bigquery-emulator/internal/logger"
 )
+
+// methodOverrideMiddleware honors the X-HTTP-Method-Override header on POST
+// requests. The Java BigQuery client tunnels PATCH (and other verbs) through
+// POST with this header by default; without translating it here the request
+// would never match the method-specific route registered with the router.
+func methodOverrideMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			if override := strings.TrimSpace(r.Header.Get("X-HTTP-Method-Override")); override != "" {
+				r.Method = strings.ToUpper(override)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func sequentialAccessMiddleware() func(http.Handler) http.Handler {
 	var mu sync.Mutex

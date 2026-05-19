@@ -17,7 +17,34 @@ type Table struct {
 	repo      *Repository
 }
 
-func (t *Table) Update(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
+// Patch shallow-merges the provided top-level fields into the table metadata
+// (the semantics of bigquery.tables.patch) and persists the result.
+func (t *Table) Patch(ctx context.Context, tx *sql.Tx, patch map[string]interface{}) error {
+	if t.metadata == nil {
+		t.metadata = map[string]interface{}{}
+	}
+	for k, v := range patch {
+		t.metadata[k] = v
+	}
+	return t.repo.UpdateTable(ctx, tx, t)
+}
+
+// Replace overwrites the table metadata with the provided resource (the
+// semantics of bigquery.tables.update), preserving the immutable identity
+// fields when the caller omits them.
+func (t *Table) Replace(ctx context.Context, tx *sql.Tx, metadata map[string]interface{}) error {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	for _, key := range []string{"id", "kind", "type", "tableReference", "creationTime", "selfLink"} {
+		if _, ok := metadata[key]; ok {
+			continue
+		}
+		if v, exists := t.metadata[key]; exists {
+			metadata[key] = v
+		}
+	}
+	t.metadata = metadata
 	return t.repo.UpdateTable(ctx, tx, t)
 }
 
