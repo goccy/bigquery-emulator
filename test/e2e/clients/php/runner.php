@@ -82,8 +82,30 @@ function values_equal($actual, $expected)
     return $actual === $expected;
 }
 
+/**
+ * apply_setup streams a case's rows into its preloaded target table through
+ * insertAll. The dataset and table are preloaded by the test harness
+ * (modelling an emulator started with --data-from-yaml); the runner only
+ * performs the streaming insert. Regression coverage for issue #470 --
+ * streamed rows must be visible to the query that follows.
+ */
+function apply_setup(BigQueryClient $bq, array $setup): void
+{
+    $table = $bq->dataset($setup['dataset'])->table($setup['table']);
+    $rows = array_map(fn ($r) => ['data' => $r], $setup['rows']);
+    $response = $table->insertRows($rows);
+    if (!$response->isSuccessful()) {
+        throw new RuntimeException(
+            'insertAll reported errors: ' . json_encode($response->failedRows())
+        );
+    }
+}
+
 function run_case(BigQueryClient $bq, array $case): array
 {
+    if (isset($case['setup'])) {
+        apply_setup($bq, $case['setup']);
+    }
     $config = $bq->query($case['sql']);
     $params = [];
     foreach ($case['params'] ?? [] as $p) {

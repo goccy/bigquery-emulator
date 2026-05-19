@@ -79,7 +79,19 @@ function valuesEqual(actual, expected) {
   return actual === expected;
 }
 
+// applySetup streams a case's rows into its preloaded target table through
+// insertAll. The dataset and table are preloaded by the test harness
+// (modelling an emulator started with --data-from-yaml); the runner only
+// performs the streaming insert. Regression coverage for issue #470 --
+// streamed rows must be visible to the query that follows.
+async function applySetup(bigquery, setup) {
+  await bigquery.dataset(setup.dataset).table(setup.table).insert(setup.rows);
+}
+
 async function runCase(bigquery, testCase) {
+  if (testCase.setup) {
+    await applySetup(bigquery, testCase.setup);
+  }
   const options = {query: testCase.sql};
   if (testCase.params && testCase.params.length) {
     options.params = {};

@@ -92,7 +92,23 @@ def make_param(spec):
     return bigquery.ScalarQueryParameter(spec["name"], spec["type"], spec["value"])
 
 
+def apply_setup(client, setup):
+    """Stream a case's rows into its preloaded target table via insertAll.
+
+    The dataset and table are preloaded by the test harness (modelling an
+    emulator started with --data-from-yaml); the runner only performs the
+    streaming insert. Regression coverage for issue #470 -- streamed rows must
+    be visible to the query that follows.
+    """
+    table_id = "{}.{}.{}".format(client.project, setup["dataset"], setup["table"])
+    errors = client.insert_rows_json(table_id, setup["rows"])
+    if errors:
+        raise RuntimeError("insertAll reported errors: {}".format(errors))
+
+
 def run_case(client, case):
+    if "setup" in case:
+        apply_setup(client, case["setup"])
     params = [make_param(p) for p in case.get("params", [])]
     job_config = bigquery.QueryJobConfig(query_parameters=params)
     # Bound both the per-request timeout and the overall retry window so a

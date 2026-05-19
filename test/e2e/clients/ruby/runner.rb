@@ -70,7 +70,19 @@ def values_equal(actual, expected)
   end
 end
 
+# apply_setup streams a case's rows into its preloaded target table through
+# insertAll. The dataset and table are preloaded by the test harness
+# (modelling an emulator started with --data-from-yaml); the runner only
+# performs the streaming insert. Regression coverage for issue #470 --
+# streamed rows must be visible to the query that follows.
+def apply_setup(bigquery, setup)
+  table = bigquery.dataset(setup["dataset"]).table(setup["table"])
+  result = table.insert(setup["rows"])
+  raise "insertAll reported errors: #{result.insert_errors}" unless result.success?
+end
+
 def run_case(bigquery, kase)
+  apply_setup(bigquery, kase["setup"]) if kase["setup"]
   params = {}
   (kase["params"] || []).each { |p| params[p["name"].to_sym] = p["value"] }
   data = if params.empty?
