@@ -4108,12 +4108,12 @@ WHERE persona_id IN UNNEST(@ids)
 		}
 	})
 
-	// Empty array: IN UNNEST([]) must return no rows, not error.
-	t.Run("empty array returns no rows", func(t *testing.T) {
-		q := client.Query(`
-SELECT persona_id
-FROM dataset1.people
-WHERE persona_id IN UNNEST(@ids)`)
+	// Empty array: the empty array must be preserved (not silently cleared to
+	// NULL). ARRAY_LENGTH distinguishes the two: an empty []string{} gives 0,
+	// while NULL would give NULL. IN UNNEST([]) also returns no rows, but that
+	// assertion holds for either behaviour and would not catch a regression.
+	t.Run("empty array is preserved, not cleared to NULL", func(t *testing.T) {
+		q := client.Query(`SELECT ARRAY_LENGTH(@ids) AS n`)
 		q.Parameters = []bigquery.QueryParameter{
 			{Name: "ids", Value: []string{}},
 		}
@@ -4121,19 +4121,14 @@ WHERE persona_id IN UNNEST(@ids)`)
 		if err != nil {
 			t.Fatalf("empty array query failed: %v", err)
 		}
-		var count int
-		for {
-			var row []bigquery.Value
-			if err := it.Next(&row); err != nil {
-				if err == iterator.Done {
-					break
-				}
-				t.Fatal(err)
-			}
-			count++
+		var row struct{ N bigquery.NullInt64 }
+		if err := it.Next(&row); err != nil {
+			t.Fatal(err)
 		}
-		if count != 0 {
-			t.Errorf("got %d rows, want 0", count)
+		if !row.N.Valid {
+			t.Error("ARRAY_LENGTH of empty array returned NULL; want 0 (array was silently cleared)")
+		} else if row.N.Int64 != 0 {
+			t.Errorf("ARRAY_LENGTH of empty array = %d; want 0", row.N.Int64)
 		}
 	})
 

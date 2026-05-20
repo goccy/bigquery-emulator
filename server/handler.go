@@ -666,35 +666,51 @@ func parseQueryValueAsUint64(r *http.Request, key string) (uint64, bool) {
 }
 
 // applyNullQueryParameters inspects the raw JSON of a query-parameters array
-// and clears the ParameterValue of every parameter whose value was JSON null
-// or absent. The bigqueryv2 structs store a parameter value as a plain string,
-// so they cannot otherwise distinguish a NULL parameter from an empty string.
+// and clears the ParameterValue of every scalar parameter whose value was JSON
+// null or absent. The bigqueryv2 structs store a parameter value as a plain
+// string, so they cannot otherwise distinguish a NULL scalar from an empty string.
 //
-// Array and struct parameters never carry a scalar "value" field; they use
-// "arrayValues" / "structValues" instead. We must not clear those.
+// ARRAY and STRUCT parameters must never be cleared, even when their
+// parameterValue is empty (e.g. an empty []string{} omits "arrayValues"
+// entirely due to JSON omitempty). The parameter type is used as the
+// authoritative signal: any parameter whose type is "ARRAY" or "STRUCT" is
+// left untouched.
 func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.QueryParameter) {
 	for i, raw := range rawParams {
 		if i >= len(params) || params[i] == nil {
 			continue
 		}
 		var p struct {
-			ParameterValue *struct {
-				Value        *json.RawMessage          `json:"value"`
-				ArrayValues  []json.RawMessage         `json:"arrayValues"`
-				StructValues map[string]json.RawMessage `json:"structValues"`
-			} `json:"parameterValue"`
+			ParameterType *struct {
+				Type string `json:"type"`
+			} `json:"parameterType"`
+			ParameterValue *json.RawMessage `json:"parameterValue"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		// Non-scalar parameters (ARRAY, STRUCT) carry no "value" field —
-		// only "arrayValues" or "structValues". Skip clearing those.
-		if p.ParameterValue != nil &&
-			(len(p.ParameterValue.ArrayValues) > 0 || len(p.ParameterValue.StructValues) > 0) {
+		// ARRAY and STRUCT parameters must not be cleared regardless of whether
+		// their parameterValue happens to be empty.
+		if p.ParameterType != nil {
+			switch p.ParameterType.Type {
+			case "ARRAY", "STRUCT":
+				continue
+			}
+		}
+		// No parameterValue key at all → treat as null scalar.
+		if p.ParameterValue == nil {
+			params[i].ParameterValue = nil
 			continue
 		}
-		if p.ParameterValue == nil || p.ParameterValue.Value == nil ||
-			string(*p.ParameterValue.Value) == "null" {
+		// Decode parameterValue into a key-presence map.
+		// JSON null decodes to a nil map; map lookups on nil return false safely.
+		var pv map[string]json.RawMessage
+		if err := json.Unmarshal(*p.ParameterValue, &pv); err != nil {
+			continue
+		}
+		// Scalar: clear if "value" is absent or is the JSON literal null.
+		valueRaw, hasValue := pv["value"]
+		if !hasValue || string(valueRaw) == "null" {
 			params[i].ParameterValue = nil
 		}
 	}

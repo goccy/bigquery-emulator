@@ -190,7 +190,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
-		value, err := r.queryParameterValueToGoValue(param.ParameterValue)
+		value, err := r.queryParameterValueToGoValue(param.ParameterType, param.ParameterValue)
 		if err != nil {
 			return nil, err
 		}
@@ -299,6 +299,28 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	}, nil
 }
 
+// emptyTypedArray returns a typed empty Go slice for the given BigQuery array
+// element type. Using a typed slice (e.g. []string{}) rather than
+// []interface{}{} lets googlesqlite infer the correct ARRAY<T> declaration
+// even when there are no elements to reflect on.
+func emptyTypedArray(arrayType *bigqueryv2.QueryParameterType) interface{} {
+	if arrayType == nil {
+		return []interface{}{}
+	}
+	switch strings.ToUpper(arrayType.Type) {
+	case "STRING", "BYTES":
+		return []string{}
+	case "INT64", "INTEGER", "INT":
+		return []int64{}
+	case "FLOAT64", "FLOAT", "DOUBLE":
+		return []float64{}
+	case "BOOL", "BOOLEAN":
+		return []bool{}
+	default:
+		return []interface{}{}
+	}
+}
+
 // coerceScalarParameterValue converts the JSON-string representation
 // of a scalar query parameter into the Go type that matches the
 // declared BigQuery parameter type. Returns the original value
@@ -366,17 +388,55 @@ func coerceScalarParameterValue(value interface{}, paramType string) interface{}
 	return value
 }
 
-func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParameterValue) (interface{}, error) {
+func (r *Repository) queryParameterValueToGoValue(ptype *bigqueryv2.QueryParameterType, value *bigqueryv2.QueryParameterValue) (interface{}, error) {
 	// A nil parameter value denotes an explicit NULL: the handler clears it
 	// when the request JSON carried `null` (or no value) for the parameter.
 	if value == nil {
 		return nil, nil
 	}
+	// When the declared type is known, use it as the primary signal. This
+	// handles the empty-array and empty-struct cases where ArrayValues /
+	// StructValues are nil due to JSON omitempty on the bigqueryv2 fields.
+	if ptype != nil {
+		switch strings.ToUpper(ptype.Type) {
+		case "ARRAY":
+			if len(value.ArrayValues) == 0 {
+				return emptyTypedArray(ptype.ArrayType), nil
+			}
+			arr := make([]interface{}, 0, len(value.ArrayValues))
+			for _, v := range value.ArrayValues {
+				elem, err := r.queryParameterValueToGoValue(ptype.ArrayType, v)
+				if err != nil {
+					return nil, err
+				}
+				arr = append(arr, elem)
+			}
+			return arr, nil
+		case "STRUCT":
+			fieldTypes := make(map[string]*bigqueryv2.QueryParameterType, len(ptype.StructTypes))
+			for _, ft := range ptype.StructTypes {
+				fieldTypes[ft.Name] = ft.Type
+			}
+			st := make(map[string]interface{}, len(value.StructValues))
+			for k, v := range value.StructValues {
+				vCopy := v
+				elem, err := r.queryParameterValueToGoValue(fieldTypes[k], &vCopy)
+				if err != nil {
+					return nil, err
+				}
+				st[k] = elem
+			}
+			return st, nil
+		}
+	}
+	// Scalar fallback: type is absent or is a scalar type. Fall back to
+	// data-driven detection for safety (e.g. recursive calls where ptype
+	// was not propagated).
 	switch {
 	case len(value.ArrayValues) != 0:
 		arr := make([]interface{}, 0, len(value.ArrayValues))
 		for _, v := range value.ArrayValues {
-			elem, err := r.queryParameterValueToGoValue(v)
+			elem, err := r.queryParameterValueToGoValue(nil, v)
 			if err != nil {
 				return nil, err
 			}
@@ -386,7 +446,8 @@ func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParamet
 	case len(value.StructValues) != 0:
 		st := make(map[string]interface{}, len(value.StructValues))
 		for k, v := range value.StructValues {
-			elem, err := r.queryParameterValueToGoValue(&v)
+			vCopy := v
+			elem, err := r.queryParameterValueToGoValue(nil, &vCopy)
 			if err != nil {
 				return nil, err
 			}
