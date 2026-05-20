@@ -4175,3 +4175,152 @@ WHERE persona_id IN UNNEST(@ids)
 		}
 	})
 }
+
+// TestExportDataStatement is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/418: an `EXPORT DATA
+// OPTIONS(...) AS <query>` statement must materialize the inner query's
+// rows into the GCS URI declared by its OPTIONS clause (matching real
+// BigQuery), not be silently treated as an opaque SELECT.
+//
+// googlesqlite v0.2.3+ owns the OPTIONS parsing and the per-format
+// encoding: it lowers EXPORT DATA into a writer call on the URI's
+// registered scheme (the built-in `gs://` writer honours
+// STORAGE_EMULATOR_HOST, so the fake-gcs-server below is reachable with no
+// extra wiring). The emulator no longer needs its own EXPORT DATA dispatch
+// — the previous regex-based handler.go code is gone.
+func TestExportDataStatement(t *testing.T) {
+	const (
+		projectID  = "test"
+		datasetID  = "dataset_exp"
+		publicHost = "127.0.0.1"
+		bucketName = "test-export-data-bucket"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectID,
+		types.NewDataset(datasetID,
+			types.NewTable("src",
+				[]*types.Column{
+					types.NewColumn("id", types.INT64),
+					types.NewColumn("name", types.STRING),
+				},
+				types.Data{
+					{"id": int64(1), "name": "a"},
+					{"id": int64(2), "name": "b"},
+				},
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	storageServer, err := fakestorage.NewServerWithOptions(fakestorage.Options{
+		PublicHost: publicHost,
+		Scheme:     "http",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageServer.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: bucketName})
+	u, _ := url.Parse(storageServer.URL())
+	storageEmulatorHost := fmt.Sprintf("http://%s:%s", publicHost, u.Port())
+	t.Setenv("STORAGE_EMULATOR_HOST", storageEmulatorHost)
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+		storageServer.Stop()
+	}()
+
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	storageClient, err := storage.NewClient(ctx,
+		option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", storageEmulatorHost)),
+		option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageClient.Close()
+
+	exec := func(t *testing.T, sql string) {
+		t.Helper()
+		q := client.Query(sql)
+		job, err := q.Run(ctx)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		st, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if e := st.Err(); e != nil {
+			t.Fatalf("job err: %v", e)
+		}
+	}
+
+	readObject := func(t *testing.T, name string) string {
+		t.Helper()
+		rc, err := storageClient.Bucket(bucketName).Object(name).NewReader(ctx)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+
+	t.Run("CSV", func(t *testing.T) {
+		exec(t, fmt.Sprintf(
+			"EXPORT DATA OPTIONS(uri='gs://%s/csv/*.csv', format='CSV') AS SELECT id, name FROM %s.src ORDER BY id",
+			bucketName, datasetID,
+		))
+		// `*` in the EXPORT DATA URI is the shard placeholder; the
+		// emulator writes a single shard at the 12-digit BigQuery
+		// convention. The integer column comes through the value
+		// envelope decoder as a Go int64 and is rendered as a CSV
+		// scalar (no quotes).
+		if got, want := readObject(t, "csv/000000000000.csv"), "id,name\n1,a\n2,b\n"; got != want {
+			t.Errorf("csv body = %q; want %q", got, want)
+		}
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		exec(t, fmt.Sprintf(
+			"EXPORT DATA OPTIONS(uri='gs://%s/json/out.json', format='JSON') AS SELECT id, name FROM %s.src ORDER BY id",
+			bucketName, datasetID,
+		))
+		got := readObject(t, "json/out.json")
+		want := `{"id":1,"name":"a"}` + "\n" + `{"id":2,"name":"b"}` + "\n"
+		if got != want {
+			t.Errorf("json body = %q; want %q", got, want)
+		}
+	})
+
+	t.Run("missing uri is rejected", func(t *testing.T) {
+		// googlesqlite analyzes OPTIONS up-front and errors when
+		// `uri` is missing — that error surfaces as a job failure
+		// here, not a successful no-op write.
+		q := client.Query(fmt.Sprintf(
+			"EXPORT DATA OPTIONS(format='CSV') AS SELECT id FROM %s.src",
+			datasetID,
+		))
+		job, err := q.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := job.Wait(ctx)
+		if err == nil && st.Err() == nil {
+			t.Fatal("EXPORT DATA without `uri` should fail")
+		}
+	})
+}
