@@ -474,14 +474,18 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 	columns := make([]*Column, 0, len(t.Schema.Fields))
 	nameToFieldMap := map[string]*bigqueryv2.TableFieldSchema{}
 	for _, field := range t.Schema.Fields {
-		nameToFieldMap[field.Name] = field
+		// BigQuery column names are case-insensitive; index by a
+		// lower-cased key so a row keyed with a different case (e.g. a
+		// Storage Write API proto field declared `createdat` against a
+		// `createdAt` column) still resolves to its column.
+		nameToFieldMap[strings.ToLower(field.Name)] = field
 		columns = append(columns, NewColumnWithSchema(field))
 	}
 	newData := Data{}
 	for _, row := range data {
 		rowData := map[string]interface{}{}
 		for k, v := range row {
-			field, exists := nameToFieldMap[k]
+			field, exists := nameToFieldMap[strings.ToLower(k)]
 			if !exists {
 				continue
 			}
@@ -489,7 +493,9 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 			if err != nil {
 				return nil, err
 			}
-			rowData[k] = v
+			// Key the normalized row by the schema's canonical column
+			// name so downstream INSERT generation matches the column.
+			rowData[field.Name] = v
 		}
 		newData = append(newData, rowData)
 	}
@@ -580,17 +586,19 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 		return values, nil
 	}
 	if kind == reflect.Map {
+		// STRUCT field names, like top-level column names, are matched
+		// case-insensitively: index every map by a lower-cased key.
 		fieldMap := map[string]*bigqueryv2.TableFieldSchema{}
 		columnNameToValueMap := map[string]interface{}{}
 		for _, f := range field.Fields {
-			fieldMap[f.Name] = f
-			columnNameToValueMap[f.Name] = nil
+			fieldMap[strings.ToLower(f.Name)] = f
+			columnNameToValueMap[strings.ToLower(f.Name)] = nil
 		}
 		for _, key := range rv.MapKeys() {
 			if key.Kind() != reflect.String {
 				return nil, fmt.Errorf("invalid value type %s for STRUCT column", key.Kind())
 			}
-			columnName := key.Interface().(string)
+			columnName := strings.ToLower(key.Interface().(string))
 			value, err := normalizeData(rv.MapIndex(key).Interface(), fieldMap[columnName])
 			if err != nil {
 				return nil, err
@@ -599,7 +607,7 @@ func normalizeData(v interface{}, field *bigqueryv2.TableFieldSchema) (interface
 		}
 		fields := make([]map[string]interface{}, 0, len(fieldMap))
 		for _, f := range field.Fields {
-			value, exists := columnNameToValueMap[f.Name]
+			value, exists := columnNameToValueMap[strings.ToLower(f.Name)]
 			if !exists {
 				return nil, fmt.Errorf("failed to find value from %v by %s", columnNameToValueMap, f.Name)
 			}

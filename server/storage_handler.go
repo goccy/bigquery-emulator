@@ -102,8 +102,18 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 		TableModifiers:             req.ReadSession.TableModifiers,
 		TraceId:                    req.ReadSession.TraceId,
 	}
-	outputColumns := req.ReadSession.ReadOptions.SelectedFields
-	condition := req.ReadSession.ReadOptions.RowRestriction
+	// ReadOptions is optional: a client may create a read session
+	// without selected fields or a row restriction to read the whole
+	// table. Guard the dereference so an absent ReadOptions reads
+	// every column with no filter instead of panicking.
+	var (
+		outputColumns []string
+		condition     string
+	)
+	if readOptions := req.ReadSession.ReadOptions; readOptions != nil {
+		outputColumns = readOptions.SelectedFields
+		condition = readOptions.RowRestriction
+	}
 	outputColumnMap := map[string]struct{}{}
 	for _, outputColumn := range outputColumns {
 		outputColumnMap[outputColumn] = struct{}{}
@@ -640,6 +650,13 @@ func (s *storageWriteServer) decodeProtoReflectValueFromKind(kind protoreflect.K
 		return v.Bytes(), nil
 	case protoreflect.MessageKind:
 		msg := v.Message()
+		// A google.protobuf scalar wrapper (wrappers.proto) carries a
+		// single `value` field; BigQuery maps a wrapper-typed proto
+		// field to its underlying scalar column, so unwrap it rather
+		// than rendering a one-field STRUCT.
+		if scalar, ok, err := s.unwrapWrapperValue(msg); ok || err != nil {
+			return scalar, err
+		}
 		structV := map[string]interface{}{}
 		var decodeErr error
 		msg.Range(func(f protoreflect.FieldDescriptor, val protoreflect.Value) bool {
@@ -656,6 +673,37 @@ func (s *storageWriteServer) decodeProtoReflectValueFromKind(kind protoreflect.K
 		return nil, fmt.Errorf("unsupported group kind for storage api")
 	}
 	return nil, fmt.Errorf("specified unknown kind")
+}
+
+// wrapperMessageNames is the set of google.protobuf scalar wrapper messages
+// (wrappers.proto). Each carries a single scalar `value` field.
+var wrapperMessageNames = map[protoreflect.FullName]struct{}{
+	"google.protobuf.DoubleValue": {},
+	"google.protobuf.FloatValue":  {},
+	"google.protobuf.Int64Value":  {},
+	"google.protobuf.UInt64Value": {},
+	"google.protobuf.Int32Value":  {},
+	"google.protobuf.UInt32Value": {},
+	"google.protobuf.BoolValue":   {},
+	"google.protobuf.StringValue": {},
+	"google.protobuf.BytesValue":  {},
+}
+
+// unwrapWrapperValue reports whether msg is a google.protobuf scalar wrapper
+// and, if so, returns its underlying `value`. A wrapper-typed proto field
+// maps to its scalar BigQuery column, so the Storage Write API decoder must
+// hand back the bare scalar instead of a single-field STRUCT, which the
+// schema-driven normalizer cannot reconcile with a scalar column.
+func (s *storageWriteServer) unwrapWrapperValue(msg protoreflect.Message) (interface{}, bool, error) {
+	if _, ok := wrapperMessageNames[msg.Descriptor().FullName()]; !ok {
+		return nil, false, nil
+	}
+	valueField := msg.Descriptor().Fields().ByName("value")
+	if valueField == nil {
+		return nil, false, nil
+	}
+	v, err := s.decodeProtoReflectValueFromKind(valueField.Kind(), msg.Get(valueField))
+	return v, true, err
 }
 
 func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection.Tx, status *writeStreamStatus, data types.Data) error {

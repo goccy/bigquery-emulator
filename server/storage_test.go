@@ -745,3 +745,82 @@ func generateExampleMessages(numMessages int) ([][]byte, error) {
 	}
 	return msgs, nil
 }
+
+// TestIssue382CreateReadSessionWithoutReadOptions is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/382: CreateReadSession
+// panicked with a nil pointer dereference when the request's ReadSession
+// carried no ReadOptions (a valid request shape — read the whole table with
+// no column projection or row restriction).
+func TestIssue382CreateReadSessionWithoutReadOptions(t *testing.T) {
+	const (
+		project = "test"
+		dataset = "dataset1"
+		table   = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	// ReadSession deliberately carries no ReadOptions.
+	req := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", project),
+		ReadSession: &storagepb.ReadSession{
+			Table: fmt.Sprintf("projects/%s/datasets/%s/tables/%s",
+				project, dataset, table),
+			DataFormat: storagepb.DataFormat_AVRO,
+		},
+		MaxStreamCount: 1,
+	}
+	session, err := bqReadClient.CreateReadSession(ctx, req, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession without ReadOptions: %v", err)
+	}
+	if len(session.GetStreams()) == 0 {
+		t.Fatal("expected at least one stream in the session")
+	}
+	if session.GetAvroSchema().GetSchema() == "" {
+		t.Fatal("expected an AVRO schema on the session")
+	}
+
+	// The session must still be readable end to end: with no selected
+	// fields the whole row is streamed back.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch := make(chan *storagepb.ReadRowsResponse)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer close(ch)
+		if err := processStream(t, streamCtx, bqReadClient, session.GetStreams()[0].Name, ch); err != nil {
+			t.Errorf("processStream failure: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		if err := processAvro(t, streamCtx, session.GetAvroSchema().GetSchema(), ch); err != nil {
+			t.Errorf("error processing AVRO: %v", err)
+		}
+	}()
+	wg.Wait()
+}
