@@ -80,17 +80,17 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 	if err != nil {
 		return nil, fmt.Errorf("failed to get table metadata: %w", err)
 	}
-	streams := make([]*storagepb.ReadStream, 0, req.MaxStreamCount)
-	streamID := randomID()
-	streamName := fmt.Sprintf("%s/streams/%s", sessionName, streamID)
+	// MaxStreamCount is documented as a request for an upper bound, with 0
+	// asking the server to choose a sensible default. Real BigQuery always
+	// returns at least one stream when data is available; the emulator only
+	// supports a single stream, so treat any non-1 request (including the
+	// unset 0) as 1 rather than producing a session with zero streams.
 	if req.MaxStreamCount > 1 {
 		return nil, fmt.Errorf("currently supported only one stream")
 	}
-	for i := int32(0); i < req.MaxStreamCount; i++ {
-		streams = append(streams, &storagepb.ReadStream{
-			Name: streamName,
-		})
-	}
+	streamID := randomID()
+	streamName := fmt.Sprintf("%s/streams/%s", sessionName, streamID)
+	streams := []*storagepb.ReadStream{{Name: streamName}}
 	readSession := &storagepb.ReadSession{
 		Name:                       sessionName,
 		ExpireTime:                 timestamppb.New(time.Now().Add(1 * time.Hour)),

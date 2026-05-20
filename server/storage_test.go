@@ -824,3 +824,59 @@ func TestIssue382CreateReadSessionWithoutReadOptions(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestCreateReadSessionDefaultsToOneStream is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/409: a
+// CreateReadSession request with MaxStreamCount left at the zero default
+// produced a session carrying zero streams, so the client could never read
+// any rows. Real BigQuery picks a sensible default; the emulator caps at one
+// stream, so an unset MaxStreamCount must yield one stream too.
+func TestCreateReadSessionDefaultsToOneStream(t *testing.T) {
+	const (
+		project = "test"
+		dataset = "dataset1"
+		table   = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	// MaxStreamCount intentionally omitted (zero value).
+	req := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", project),
+		ReadSession: &storagepb.ReadSession{
+			Table: fmt.Sprintf("projects/%s/datasets/%s/tables/%s",
+				project, dataset, table),
+			DataFormat: storagepb.DataFormat_AVRO,
+			ReadOptions: &storagepb.ReadSession_TableReadOptions{
+				SelectedFields: outputColumns,
+			},
+		},
+	}
+	session, err := bqReadClient.CreateReadSession(ctx, req, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession: %v", err)
+	}
+	if got := len(session.GetStreams()); got != 1 {
+		t.Fatalf("session has %d streams; want 1 (unset MaxStreamCount must default to one)", got)
+	}
+}
