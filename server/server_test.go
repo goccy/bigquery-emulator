@@ -4020,3 +4020,158 @@ func TestIssue468CountStarOverEmptyTable(t *testing.T) {
 		}
 	})
 }
+
+// TestInUnnestArrayParam is a regression test for a bug introduced in v0.7.0
+// where named ARRAY parameters were silently discarded before reaching the
+// query engine.  applyNullQueryParameters checked parameterValue.value == nil
+// to detect NULL scalars, but array parameters carry their data in
+// parameterValue.arrayValues — they never have a value field — so every array
+// parameter was incorrectly cleared to nil, causing IN UNNEST(@param) to
+// match nothing.  The fix skips clearing when arrayValues or structValues are
+// present in the raw JSON.
+func TestInUnnestArrayParam(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "people"
+	)
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("persona_id", types.STRING),
+					types.NewColumn("status", types.STRING),
+				},
+				types.Data{
+					{"persona_id": "persona-aaa", "status": "active"},
+					{"persona_id": "persona-bbb", "status": "suspended"},
+					{"persona_id": "persona-ccc", "status": "active"},
+				},
+			),
+		),
+	))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Core case: ARRAY parameter must not be wiped by applyNullQueryParameters.
+	t.Run("string array matches correct rows", func(t *testing.T) {
+		q := client.Query(`
+SELECT persona_id
+FROM dataset1.people
+WHERE persona_id IN UNNEST(@ids)
+  AND status = 'active'`)
+		q.Parameters = []bigquery.QueryParameter{
+			{Name: "ids", Value: []string{"persona-aaa", "persona-bbb"}},
+		}
+		it, err := q.Read(ctx)
+		if err != nil {
+			t.Fatalf("query failed: %v", err)
+		}
+		var got []string
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatal(err)
+			}
+			got = append(got, fmt.Sprint(row[0]))
+		}
+		// persona-bbb is suspended, persona-ccc is not in the list.
+		if len(got) != 1 || got[0] != "persona-aaa" {
+			t.Errorf("got %v, want [persona-aaa]", got)
+		}
+	})
+
+	// Empty array: the empty array must be preserved (not silently cleared to
+	// NULL). ARRAY_LENGTH distinguishes the two: an empty []string{} gives 0,
+	// while NULL would give NULL. IN UNNEST([]) also returns no rows, but that
+	// assertion holds for either behaviour and would not catch a regression.
+	t.Run("empty array is preserved, not cleared to NULL", func(t *testing.T) {
+		q := client.Query(`SELECT ARRAY_LENGTH(@ids) AS n`)
+		q.Parameters = []bigquery.QueryParameter{
+			{Name: "ids", Value: []string{}},
+		}
+		it, err := q.Read(ctx)
+		if err != nil {
+			t.Fatalf("empty array query failed: %v", err)
+		}
+		var row struct{ N bigquery.NullInt64 }
+		if err := it.Next(&row); err != nil {
+			t.Fatal(err)
+		}
+		if !row.N.Valid {
+			t.Error("ARRAY_LENGTH of empty array returned NULL; want 0 (array was silently cleared)")
+		} else if row.N.Int64 != 0 {
+			t.Errorf("ARRAY_LENGTH of empty array = %d; want 0", row.N.Int64)
+		}
+	})
+
+	// STRUCT parameters also use structValues (not value) in the REST JSON and
+	// must survive applyNullQueryParameters for the same reason as arrays.
+	t.Run("struct param is not cleared", func(t *testing.T) {
+		type filter struct {
+			Status string
+		}
+		q := client.Query(`SELECT @f IS NULL AS is_null`)
+		q.Parameters = []bigquery.QueryParameter{
+			{Name: "f", Value: filter{Status: "active"}},
+		}
+		it, err := q.Read(ctx)
+		if err != nil {
+			t.Fatalf("struct param query failed: %v", err)
+		}
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			t.Fatal(err)
+		}
+		if row[0] != false {
+			t.Errorf("struct param was cleared: got is_null=%v, want false", row[0])
+		}
+	})
+
+	// Scalar NULL parameters must still be treated as NULL after the fix
+	// (i.e. applyNullQueryParameters must not have broken the scalar path).
+	t.Run("null scalar param still observed as NULL", func(t *testing.T) {
+		q := client.Query(`SELECT @p IS NULL AS is_null`)
+		q.Parameters = []bigquery.QueryParameter{
+			{Name: "p", Value: bigquery.NullString{}},
+		}
+		it, err := q.Read(ctx)
+		if err != nil {
+			t.Fatalf("null scalar query failed: %v", err)
+		}
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			t.Fatal(err)
+		}
+		if row[0] != true {
+			t.Errorf("null scalar: got is_null=%v, want true", row[0])
+		}
+	})
+}
