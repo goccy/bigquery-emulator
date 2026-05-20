@@ -3773,3 +3773,82 @@ func TestServeListenCallback(t *testing.T) {
 		conn.Close()
 	}
 }
+
+// TestDeleteDatasetCascadeRequiresDeleteContents is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/341 and the related #161:
+// deleting a non-empty dataset without `deleteContents=true` used to remove
+// the dataset row while leaving its tables behind (orphaned, and unable to be
+// recreated under the same name without a UNIQUE constraint violation). The
+// failure was additionally returned as a 500, which the Google SDKs retry
+// indefinitely, so the test pipeline deadlocked instead of failing fast.
+//
+// Real BigQuery rejects the delete with a 400 / resourceInUse; the emulator
+// must too, and a subsequent DeleteWithContents must actually cascade.
+func TestDeleteDatasetCascadeRequiresDeleteContents(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.MemoryStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject("test"); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, "test",
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ds := client.Dataset("ds341")
+	if err := ds.Create(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	tbl := ds.Table("t")
+	schema := bigquery.Schema{{Name: "n", Type: bigquery.IntegerFieldType}}
+	if err := tbl.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plain Delete on a non-empty dataset must fail with a 4xx (not a
+	// 5xx — the latter causes the Google SDK to retry indefinitely).
+	err = ds.Delete(ctx)
+	if err == nil {
+		t.Fatal("Delete of a non-empty dataset without DeleteContents should fail")
+	}
+	apiErr, ok := err.(*googleapi.Error)
+	if !ok {
+		t.Fatalf("expected *googleapi.Error, got %T: %v", err, err)
+	}
+	if apiErr.Code/100 != 4 {
+		t.Fatalf("expected a 4xx status, got %d: %v", apiErr.Code, err)
+	}
+
+	// Both the dataset and the table must still exist — the rejected
+	// delete must not have partially removed state.
+	if _, err := tbl.Metadata(ctx); err != nil {
+		t.Fatalf("table should still exist after a rejected delete: %v", err)
+	}
+
+	// DeleteWithContents cascades and succeeds.
+	if err := ds.DeleteWithContents(ctx); err != nil {
+		t.Fatalf("DeleteWithContents: %v", err)
+	}
+
+	// Re-creating the dataset and table with the same names must
+	// succeed — proof that the previous delete cleared both the
+	// dataset metadata and its backing tables (the orphan-table bug
+	// surfaced as a UNIQUE constraint violation on table recreate).
+	if err := ds.Create(ctx, nil); err != nil {
+		t.Fatalf("recreate dataset after DeleteWithContents: %v", err)
+	}
+	if err := tbl.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatalf("recreate table after DeleteWithContents: %v", err)
+	}
+}
