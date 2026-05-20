@@ -669,6 +669,9 @@ func parseQueryValueAsUint64(r *http.Request, key string) (uint64, bool) {
 // and clears the ParameterValue of every parameter whose value was JSON null
 // or absent. The bigqueryv2 structs store a parameter value as a plain string,
 // so they cannot otherwise distinguish a NULL parameter from an empty string.
+//
+// Array and struct parameters never carry a scalar "value" field; they use
+// "arrayValues" / "structValues" instead. We must not clear those.
 func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.QueryParameter) {
 	for i, raw := range rawParams {
 		if i >= len(params) || params[i] == nil {
@@ -676,10 +679,18 @@ func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.
 		}
 		var p struct {
 			ParameterValue *struct {
-				Value *json.RawMessage `json:"value"`
+				Value        *json.RawMessage          `json:"value"`
+				ArrayValues  []json.RawMessage         `json:"arrayValues"`
+				StructValues map[string]json.RawMessage `json:"structValues"`
 			} `json:"parameterValue"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		// Non-scalar parameters (ARRAY, STRUCT) carry no "value" field —
+		// only "arrayValues" or "structValues". Skip clearing those.
+		if p.ParameterValue != nil &&
+			(len(p.ParameterValue.ArrayValues) > 0 || len(p.ParameterValue.StructValues) > 0) {
 			continue
 		}
 		if p.ParameterValue == nil || p.ParameterValue.Value == nil ||
