@@ -2027,7 +2027,8 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	response, err := r.server.contentRepo.Query(
+	startTime := time.Now()
+	response, queryErr := r.server.contentRepo.Query(
 		ctx,
 		tx,
 		r.project.ID,
@@ -2035,10 +2036,87 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		r.queryRequest.Query,
 		r.queryRequest.QueryParameters,
 	)
-	if err != nil {
-		return nil, err
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	endTime := time.Now()
+	// jobs.query allocates jobIDs server-side (real BigQuery does the
+	// same). queryRequest.RequestId is the *idempotency* key — same
+	// RequestId on retry should return the cached result — and is
+	// deliberately not the jobID. The Go BigQuery client in particular
+	// instantiates a fresh `uid.NewSpace("request", …)` per call, so its
+	// per-Space atomic counter always emits `-0001`; concurrent
+	// in-process callers therefore submit identical RequestIds and would
+	// collide on AddJob if we routed them through as the jobID. Idempotency
+	// (RequestId → cached response) is a TODO; for now every call gets a
+	// fresh jobID.
+	jobID := randomID()
+
+	// Persist the job in the metadata store, mirroring what
+	// jobsInsertHandler.Handle does at line ~1758. The previous behaviour
+	// returned a JobReference whose ID was never recorded, so any client
+	// that then issued `jobs.get(jobID)` — e.g. Go's
+	// `RowIterator.SourceJob().Status(ctx)`, or the Java/Node clients
+	// that poll the job for status after a synchronous query — got a 404
+	// and (for clients that treat 404 as transient) hung re-polling. The
+	// synthetic Job below carries the minimum fields the GET handler
+	// returns to the caller; DryRun queries skip both the AddJob and the
+	// Commit so they remain side-effect-free.
+	var totalBytes int64
+	if response != nil {
+		totalBytes = response.TotalBytes
+	}
+	job := &bigqueryv2.Job{
+		Kind: "bigquery#job",
+		JobReference: &bigqueryv2.JobReference{
+			ProjectId: r.project.ID,
+			JobId:     jobID,
+			Location:  r.queryRequest.Location,
+		},
+		Configuration: &bigqueryv2.JobConfiguration{
+			JobType: "QUERY",
+			DryRun:  r.queryRequest.DryRun,
+			Query: &bigqueryv2.JobConfigurationQuery{
+				Query:           r.queryRequest.Query,
+				QueryParameters: r.queryRequest.QueryParameters,
+				Priority:        "INTERACTIVE",
+			},
+		},
+		Status: &bigqueryv2.JobStatus{State: "DONE"},
+		Statistics: &bigqueryv2.JobStatistics{
+			Query: &bigqueryv2.JobStatistics2{
+				CacheHit:            false,
+				StatementType:       "SELECT",
+				TotalBytesBilled:    totalBytes,
+				TotalBytesProcessed: totalBytes,
+			},
+			CreationTime:        startTime.Unix(),
+			StartTime:           startTime.Unix(),
+			EndTime:             endTime.Unix(),
+			TotalBytesProcessed: totalBytes,
+		},
+		SelfLink: fmt.Sprintf(
+			"http://%s/bigquery/v2/projects/%s/jobs/%s",
+			r.server.httpServer.Addr,
+			r.project.ID,
+			jobID,
+		),
 	}
 	if !r.queryRequest.DryRun {
+		if err := r.project.AddJob(
+			ctx,
+			tx.Tx(),
+			metadata.NewJob(
+				r.server.metaRepo,
+				r.project.ID,
+				jobID,
+				job,
+				response,
+				nil,
+			),
+		); err != nil {
+			return nil, fmt.Errorf("failed to add job: %w", err)
+		}
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
@@ -2048,15 +2126,8 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 			}
 		}
 	}
-	jobID := r.queryRequest.RequestId
-	if jobID == "" {
-		jobID = randomID() // generate job id
-	}
 	response.Rows = internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
-	response.JobReference = &bigqueryv2.JobReference{
-		ProjectId: r.project.ID,
-		JobId:     jobID,
-	}
+	response.JobReference = job.JobReference
 	return response, nil
 }
 
