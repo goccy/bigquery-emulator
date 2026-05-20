@@ -3852,3 +3852,76 @@ func TestDeleteDatasetCascadeRequiresDeleteContents(t *testing.T) {
 		t.Fatalf("recreate table after DeleteWithContents: %v", err)
 	}
 }
+
+// TestQueryWithDestinationCreateDisposition is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/360: a query with an
+// explicit destination table must honour CreateDisposition. CREATE_IF_NEEDED
+// (and the default) materializes a missing table; CREATE_NEVER must reject a
+// missing destination with a 404 (matching real BigQuery and the existing
+// load-job behaviour) rather than silently materializing it.
+func TestQueryWithDestinationCreateDisposition(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, "test",
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	runWithDispositionInto := func(t *testing.T, tableID string, disp bigquery.TableCreateDisposition) error {
+		t.Helper()
+		q := client.Query("SELECT id FROM dataset1.table_a")
+		q.QueryConfig.Dst = &bigquery.Table{
+			ProjectID: "test", DatasetID: "dataset1", TableID: tableID,
+		}
+		q.QueryConfig.CreateDisposition = disp
+		job, err := q.Run(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = job.Wait(ctx)
+		return err
+	}
+
+	t.Run("CREATE_IF_NEEDED creates a missing destination", func(t *testing.T) {
+		const dest = "q360_if_needed_dest"
+		if err := runWithDispositionInto(t, dest, bigquery.CreateIfNeeded); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if _, err := client.Dataset("dataset1").Table(dest).Metadata(ctx); err != nil {
+			t.Fatalf("destination table was not created: %v", err)
+		}
+	})
+
+	t.Run("CREATE_NEVER rejects a missing destination", func(t *testing.T) {
+		const dest = "q360_never_missing_dest"
+		err := runWithDispositionInto(t, dest, bigquery.CreateNever)
+		if err == nil {
+			t.Fatal("expected an error when querying into a missing table with CREATE_NEVER")
+		}
+		apiErr, ok := err.(*googleapi.Error)
+		if !ok {
+			t.Fatalf("expected *googleapi.Error, got %T: %v", err, err)
+		}
+		if apiErr.Code != 404 {
+			t.Fatalf("expected 404, got %d: %v", apiErr.Code, err)
+		}
+		// And the missing table must NOT have been created as a side effect.
+		if _, err := client.Dataset("dataset1").Table(dest).Metadata(ctx); err == nil {
+			t.Fatal("CREATE_NEVER silently materialized the destination table")
+		}
+	})
+}

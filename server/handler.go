@@ -1220,6 +1220,14 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		job:     &job,
 	})
 	if err != nil {
+		// Preserve typed *ServerError (e.g. a 404 notFound for a missing
+		// destination table under CREATE_NEVER) so the client sees the
+		// real HTTP status rather than a blanket 400 jobInternalError.
+		var serr *ServerError
+		if errors.As(err, &serr) {
+			errorResponse(ctx, w, serr)
+			return
+		}
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
@@ -1651,6 +1659,18 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			destinationTable := destinationDataset.Table(tableRef.TableId)
 			destinationTableExists := destinationTable != nil
 			if !destinationTableExists {
+				// CreateDisposition controls whether a missing destination
+				// table is materialized on the fly. CREATE_NEVER must
+				// surface the missing table as a 404 (matching real
+				// BigQuery and load-job behaviour); CREATE_IF_NEEDED (the
+				// default) and an empty value create it from the query's
+				// inferred schema.
+				if job.Configuration.Query.CreateDisposition == "CREATE_NEVER" {
+					return nil, errNotFound(fmt.Sprintf(
+						"Not found: Table %s:%s.%s",
+						tableRef.ProjectId, tableRef.DatasetId, tableRef.TableId,
+					))
+				}
 				_, err := createTableMetadata(ctx, tx, r.server, r.project, destinationDataset, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
 				if err != nil {
 					return nil, fmt.Errorf("failed to create table: %w", err)
