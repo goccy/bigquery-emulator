@@ -7,11 +7,11 @@ require (
 	cloud.google.com/go/storage v1.62.1
 	github.com/GoogleCloudPlatform/golang-samples/bigquery v0.0.0-20221115172052-07ffb99455e8
 	github.com/apache/arrow-go/v18 v18.6.0
-	github.com/fsouza/fake-gcs-server v1.43.0
+	github.com/fsouza/fake-gcs-server v1.54.0
 	github.com/go-playground/validator/v10 v10.30.2
 	github.com/goccy/go-json v0.10.6
 	github.com/goccy/go-yaml v1.19.2
-	github.com/goccy/googlesqlite v0.2.2
+	github.com/goccy/googlesqlite v0.2.3
 	github.com/google/go-cmp v0.7.0
 	github.com/googleapis/gax-go/v2 v2.22.0
 	github.com/gorilla/mux v1.8.1
@@ -35,7 +35,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.11.0 // indirect
 	cloud.google.com/go/monitoring v1.29.0 // indirect
-	cloud.google.com/go/pubsub v1.50.2 // indirect
 	cloud.google.com/go/pubsub/v2 v2.5.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
@@ -82,7 +81,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
-	github.com/gorilla/handlers v1.5.1 // indirect
+	github.com/gorilla/handlers v1.5.2 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
@@ -106,7 +105,7 @@ require (
 	github.com/parquet-go/jsonlite v1.5.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/xattr v0.4.9 // indirect
+	github.com/pkg/xattr v0.4.12 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
