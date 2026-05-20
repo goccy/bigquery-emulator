@@ -3773,3 +3773,250 @@ func TestServeListenCallback(t *testing.T) {
 		conn.Close()
 	}
 }
+
+// TestDeleteDatasetCascadeRequiresDeleteContents is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/341 and the related #161:
+// deleting a non-empty dataset without `deleteContents=true` used to remove
+// the dataset row while leaving its tables behind (orphaned, and unable to be
+// recreated under the same name without a UNIQUE constraint violation). The
+// failure was additionally returned as a 500, which the Google SDKs retry
+// indefinitely, so the test pipeline deadlocked instead of failing fast.
+//
+// Real BigQuery rejects the delete with a 400 / resourceInUse; the emulator
+// must too, and a subsequent DeleteWithContents must actually cascade.
+func TestDeleteDatasetCascadeRequiresDeleteContents(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.MemoryStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject("test"); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, "test",
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ds := client.Dataset("ds341")
+	if err := ds.Create(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	tbl := ds.Table("t")
+	schema := bigquery.Schema{{Name: "n", Type: bigquery.IntegerFieldType}}
+	if err := tbl.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plain Delete on a non-empty dataset must fail with a 4xx (not a
+	// 5xx — the latter causes the Google SDK to retry indefinitely).
+	err = ds.Delete(ctx)
+	if err == nil {
+		t.Fatal("Delete of a non-empty dataset without DeleteContents should fail")
+	}
+	apiErr, ok := err.(*googleapi.Error)
+	if !ok {
+		t.Fatalf("expected *googleapi.Error, got %T: %v", err, err)
+	}
+	if apiErr.Code/100 != 4 {
+		t.Fatalf("expected a 4xx status, got %d: %v", apiErr.Code, err)
+	}
+
+	// Both the dataset and the table must still exist — the rejected
+	// delete must not have partially removed state.
+	if _, err := tbl.Metadata(ctx); err != nil {
+		t.Fatalf("table should still exist after a rejected delete: %v", err)
+	}
+
+	// DeleteWithContents cascades and succeeds.
+	if err := ds.DeleteWithContents(ctx); err != nil {
+		t.Fatalf("DeleteWithContents: %v", err)
+	}
+
+	// Re-creating the dataset and table with the same names must
+	// succeed — proof that the previous delete cleared both the
+	// dataset metadata and its backing tables (the orphan-table bug
+	// surfaced as a UNIQUE constraint violation on table recreate).
+	if err := ds.Create(ctx, nil); err != nil {
+		t.Fatalf("recreate dataset after DeleteWithContents: %v", err)
+	}
+	if err := tbl.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatalf("recreate table after DeleteWithContents: %v", err)
+	}
+}
+
+// TestQueryWithDestinationCreateDisposition is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/360: a query with an
+// explicit destination table must honour CreateDisposition. CREATE_IF_NEEDED
+// (and the default) materializes a missing table; CREATE_NEVER must reject a
+// missing destination with a 404 (matching real BigQuery and the existing
+// load-job behaviour) rather than silently materializing it.
+func TestQueryWithDestinationCreateDisposition(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+	client, err := bigquery.NewClient(ctx, "test",
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	runWithDispositionInto := func(t *testing.T, tableID string, disp bigquery.TableCreateDisposition) error {
+		t.Helper()
+		q := client.Query("SELECT id FROM dataset1.table_a")
+		q.QueryConfig.Dst = &bigquery.Table{
+			ProjectID: "test", DatasetID: "dataset1", TableID: tableID,
+		}
+		q.QueryConfig.CreateDisposition = disp
+		job, err := q.Run(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = job.Wait(ctx)
+		return err
+	}
+
+	t.Run("CREATE_IF_NEEDED creates a missing destination", func(t *testing.T) {
+		const dest = "q360_if_needed_dest"
+		if err := runWithDispositionInto(t, dest, bigquery.CreateIfNeeded); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if _, err := client.Dataset("dataset1").Table(dest).Metadata(ctx); err != nil {
+			t.Fatalf("destination table was not created: %v", err)
+		}
+	})
+
+	t.Run("CREATE_NEVER rejects a missing destination", func(t *testing.T) {
+		const dest = "q360_never_missing_dest"
+		err := runWithDispositionInto(t, dest, bigquery.CreateNever)
+		if err == nil {
+			t.Fatal("expected an error when querying into a missing table with CREATE_NEVER")
+		}
+		apiErr, ok := err.(*googleapi.Error)
+		if !ok {
+			t.Fatalf("expected *googleapi.Error, got %T: %v", err, err)
+		}
+		if apiErr.Code != 404 {
+			t.Fatalf("expected 404, got %d: %v", apiErr.Code, err)
+		}
+		// And the missing table must NOT have been created as a side effect.
+		if _, err := client.Dataset("dataset1").Table(dest).Metadata(ctx); err == nil {
+			t.Fatal("CREATE_NEVER silently materialized the destination table")
+		}
+	})
+}
+
+// TestIssue468CountStarOverEmptyTable is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/468: COUNT(*) over
+// an empty table returned NULL instead of the INT64 0, breaking every
+// client that scans the column into a non-pointer integer.
+//
+// COUNT is non-nullable per the GoogleSQL spec; SUM over an empty input
+// is legitimately NULL and must stay that way.
+func TestIssue468CountStarOverEmptyTable(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(ctx, "test",
+		option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ds := client.Dataset("ds468")
+	if err := ds.Create(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	empty := ds.Table("empty_tbl")
+	schema := bigquery.Schema{{Name: "n", Type: bigquery.IntegerFieldType}}
+	if err := empty.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every COUNT/COUNTIF form over an empty table must scan into a
+	// plain int64 as 0 — issue #468 covers the whole family, not only
+	// COUNT(*).
+	for _, q := range []string{
+		"SELECT COUNT(*) AS n FROM ds468.empty_tbl",
+		"SELECT COUNT(n) AS n FROM ds468.empty_tbl",
+		"SELECT COUNTIF(n > 0) AS n FROM ds468.empty_tbl",
+		"SELECT COUNT(*) AS n FROM ds468.empty_tbl WHERE FALSE",
+	} {
+		t.Run("scan into int64: "+q, func(t *testing.T) {
+			it, err := client.Query(q).Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var row struct{ N int64 }
+			if err := it.Next(&row); err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			if row.N != 0 {
+				t.Fatalf("%q over empty table = %d; want 0", q, row.N)
+			}
+		})
+	}
+
+	t.Run("COUNT(*) reports a non-NULL value", func(t *testing.T) {
+		it, err := client.Query("SELECT COUNT(*) AS n FROM ds468.empty_tbl").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row struct{ N bigquery.NullInt64 }
+		if err := it.Next(&row); err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !row.N.Valid {
+			t.Fatal("COUNT(*) over empty table returned NULL; want INT64 0")
+		}
+		if row.N.Int64 != 0 {
+			t.Fatalf("COUNT(*) over empty table = %d; want 0", row.N.Int64)
+		}
+	})
+
+	t.Run("SUM over empty table stays NULL", func(t *testing.T) {
+		it, err := client.Query("SELECT SUM(n) AS n FROM ds468.empty_tbl").Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row struct{ N bigquery.NullInt64 }
+		if err := it.Next(&row); err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if row.N.Valid {
+			t.Fatalf("SUM over empty table = %d; want NULL", row.N.Int64)
+		}
+	})
+}
