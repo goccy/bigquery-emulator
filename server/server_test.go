@@ -4421,3 +4421,94 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestIssue478ConnectionCorruptionOnCancel reproduces
+// https://github.com/goccy/bigquery-emulator/issues/478: when a client
+// cancels a slow request mid-flight, the in-flight query fails with
+// `context canceled` — and every *subsequent* request then fails with
+// `500 sql: connection is already closed`, wedging the emulator.
+//
+// The cancellation has to land *while the handler is inside the DB
+// transaction* (not before the request is processed), so the test
+// fires the request in a goroutine and cancels after a delay long
+// enough for the server to be mid-CREATE, then asserts the emulator
+// still answers a fresh, un-cancelled request.
+func TestIssue478ConnectionCorruptionOnCancel(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "ds478"
+	)
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(
+		projectID,
+		types.NewDataset(datasetID),
+	))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	schema := bigquery.Schema{
+		{Name: "entity", Type: bigquery.StringFieldType},
+	}
+
+	// healthy issues a fresh, un-cancelled CREATE + Metadata round-trip
+	// and reports whether the emulator answered without a
+	// connection-closed error. The context is bounded so a corrupted
+	// emulator (which 500s and makes the client retry forever) surfaces
+	// as a prompt failure instead of an indefinite hang.
+	healthy := func(tableName string) error {
+		hctx, hcancel := context.WithTimeout(ctx, 8*time.Second)
+		defer hcancel()
+		if err := client.Dataset(datasetID).Table(tableName).Create(hctx,
+			&bigquery.TableMetadata{Schema: schema}); err != nil {
+			return fmt.Errorf("create: %w", err)
+		}
+		if _, err := client.Dataset(datasetID).Table(tableName).Metadata(hctx); err != nil {
+			return fmt.Errorf("metadata: %w", err)
+		}
+		return nil
+	}
+
+	// Confirm the emulator is healthy before we start.
+	if err := healthy("before"); err != nil {
+		t.Fatalf("emulator unhealthy before the test even started: %v", err)
+	}
+
+	// Fire one CREATE TABLE and cancel it mid-flight at 300ms — long
+	// enough for the handler to be inside the DB transaction. Then
+	// check the emulator still answers.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Dataset(datasetID).Table("canary").Create(
+			cancelCtx, &bigquery.TableMetadata{Schema: schema})
+	}()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	t.Logf("cancelled CREATE returned: %v", <-done)
+
+	if err := healthy("after"); err != nil {
+		if strings.Contains(err.Error(), "connection is already closed") {
+			t.Fatalf("emulator wedged after a cancelled request: %v", err)
+		}
+		t.Fatalf("emulator unhealthy after a cancelled request: %v", err)
+	}
+}
