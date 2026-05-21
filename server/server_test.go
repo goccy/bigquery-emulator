@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -4174,6 +4175,102 @@ WHERE persona_id IN UNNEST(@ids)
 			t.Errorf("null scalar: got is_null=%v, want true", row[0])
 		}
 	})
+}
+
+// TestJobsQueryRegistersJob pins the contract that the synchronous
+// `jobs.query` endpoint records the job in the metadata store before
+// returning. Without that, the JobReference returned to the client points
+// at a job ID that `jobs.get` cannot find, and clients that look up the
+// source job after iterating (Go's `RowIterator.SourceJob().Status(ctx)`,
+// or the Java/Node/Python equivalents that poll the job for status) get
+// a 404 — which most clients then re-poll forever, surfacing as a hang.
+//
+// The Go BigQuery client's `Query.Read(ctx)` routes through `jobs.query`
+// when the query fits in a single response, so it is the natural shape
+// for the regression: `iter.SourceJob().Status(ctx)` must succeed and
+// see State=DONE.
+func TestJobsQueryRegistersJob(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset_jq"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(
+		projectID,
+		types.NewDataset(datasetID,
+			types.NewTable("t",
+				[]*types.Column{types.NewColumn("id", types.INT64)},
+				types.Data{
+					{"id": int64(1)},
+					{"id": int64(2)},
+				},
+			),
+		),
+	))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// q.Read takes the jobs.query short path (no separate jobs.insert
+	// + poll dance). The iterator carries the jobID returned in the
+	// QueryResponse so we can then look the job up by ID below.
+	iter, err := client.Query(fmt.Sprintf("SELECT id FROM %s.t ORDER BY id", datasetID)).Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	var rows []int64
+	for {
+		var row []bigquery.Value
+		if err := iter.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatalf("iter.Next: %v", err)
+		}
+		rows = append(rows, row[0].(int64))
+	}
+	if want := []int64{1, 2}; !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows = %v; want %v", rows, want)
+	}
+
+	// SourceJob() pulls the JobReference out of the QueryResponse;
+	// Status(ctx) then issues a `jobs.get` against that ID. Before
+	// the fix, the GET returned 404 because jobsQueryHandler.Handle
+	// never wrote the job into the metadata store — the synthetic
+	// reference advertised to the client did not exist.
+	srcJob := iter.SourceJob()
+	if srcJob == nil {
+		t.Fatal("iter.SourceJob() returned nil; jobs.query did not advertise a JobReference")
+	}
+	status, err := srcJob.Status(ctx)
+	if err != nil {
+		t.Fatalf("jobs.get on %s/%s failed: %v (jobs.query did not register the job in metadata)",
+			srcJob.ProjectID(), srcJob.ID(), err)
+	}
+	if status.State != bigquery.Done {
+		t.Errorf("status.State = %v; want %v", status.State, bigquery.Done)
+	}
+	if status.Err() != nil {
+		t.Errorf("status.Err = %v; want nil", status.Err())
+	}
 }
 
 // TestExportDataStatement is a regression test for
