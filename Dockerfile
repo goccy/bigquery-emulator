@@ -29,4 +29,15 @@ COPY --from=builder /go/bin/bigquery-emulator /bin/bigquery-emulator
 
 WORKDIR /work
 
+# Run the embedded wasm SQL engine under the wazero compiler instead of
+# the interpreter default. For the emulator's workload (a long-lived
+# server answering many queries) the compiler is ~2x faster per query
+# and uses far less RSS; the only cost is a one-time AOT compile on the
+# first query. GOOGLESQLITE_WASM_CACHE_DIR amortises that compile across
+# container restarts. The cache cannot be pre-warmed at image-build time
+# because wazero's AOT output is architecture-specific and this image is
+# cross-compiled for multiple target arches.
+ENV GOOGLESQLITE_WASM_COMPILATION_MODE=compiler
+ENV GOOGLESQLITE_WASM_CACHE_DIR=/tmp/googlesqlite-wasm-cache
+
 ENTRYPOINT ["/bin/bigquery-emulator"]
