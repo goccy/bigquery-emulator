@@ -664,6 +664,114 @@ func TestStorageWrite(t *testing.T) {
 	}
 }
 
+// TestDefaultStreamPathFormats verifies that the _default stream can be
+// accessed using both path formats:
+//   - projects/{p}/datasets/{d}/tables/{t}/streams/_default (Go client format)
+//   - projects/{p}/datasets/{d}/tables/{t}/_default (Java client format)
+//
+// This is a regression test for https://github.com/goccy/bigquery-emulator/issues/246
+func TestDefaultStreamPathFormats(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		streamPath string // path format for the _default stream
+	}{
+		{
+			name:       "with_streams_prefix",
+			streamPath: "projects/%s/datasets/%s/tables/%s/streams/_default",
+		},
+		{
+			name:       "without_streams_prefix",
+			streamPath: "projects/%s/datasets/%s/tables/%s/_default",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const (
+				projectID = "test"
+				datasetID = "test"
+				tableID   = "default_stream_test"
+			)
+
+			ctx := context.Background()
+			bqServer, err := server.New(server.TempStorage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := bqServer.Load(
+				server.StructSource(
+					types.NewProject(
+						projectID,
+						types.NewDataset(
+							datasetID,
+							types.NewTable(
+								tableID,
+								[]*types.Column{
+									types.NewColumn("string_col", types.STRING),
+									types.NewColumn("int64_col", types.INT64),
+								},
+								nil,
+							),
+						),
+					),
+				),
+			); err != nil {
+				t.Fatal(err)
+			}
+			testServer := bqServer.TestServer()
+			defer func() {
+				testServer.Close()
+				bqServer.Close()
+			}()
+			opts, err := testServer.GRPCClientOptions(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Use the raw BigQueryWriteClient (not managedwriter) so we
+			// control the exact stream path sent in the request.
+			writeClient, err := bqStorage.NewBigQueryWriteClient(ctx, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writeClient.Close()
+
+			streamName := fmt.Sprintf(test.streamPath, projectID, datasetID, tableID)
+
+			// GetWriteStream should succeed and return the table schema.
+			writeStream, err := writeClient.GetWriteStream(ctx, &storagepb.GetWriteStreamRequest{
+				Name: streamName,
+			})
+			if err != nil {
+				t.Fatalf("GetWriteStream(%s) failed: %v", streamName, err)
+			}
+			if writeStream.GetTableSchema() == nil {
+				t.Fatal("GetWriteStream returned nil TableSchema")
+			}
+			if len(writeStream.GetTableSchema().GetFields()) == 0 {
+				t.Fatal("GetWriteStream returned empty schema fields")
+			}
+			t.Logf("GetWriteStream succeeded: %d schema fields", len(writeStream.GetTableSchema().GetFields()))
+
+			// Verify we can also query the table via REST to confirm it's accessible.
+			bqClient, err := bigquery.NewClient(
+				ctx,
+				projectID,
+				option.WithEndpoint(testServer.URL),
+				option.WithoutAuthentication(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bqClient.Close()
+
+			iter := bqClient.Dataset(datasetID).Table(tableID).Read(ctx)
+			rowCount := countRows(t, iter)
+			if rowCount != 0 {
+				t.Fatalf("expected 0 rows in fresh table, got %d", rowCount)
+			}
+		})
+	}
+}
+
 func countRows(t *testing.T, iter *bigquery.RowIterator) int {
 	var resultRowCount int
 	for {
