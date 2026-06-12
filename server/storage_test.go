@@ -583,6 +583,17 @@ func TestStorageWrite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("AppendRows first call error: %v", err)
 			}
+			// managedwriter's AppendRows returns a future; the gRPC
+			// request itself is sent (and acknowledged) asynchronously.
+			// Wait for the ACK before issuing the Read below — otherwise
+			// the Read can race the server's COMMITTED-stream insert and
+			// observe an empty (or partial) table. The wazero-backed
+			// SQL engine was slow enough to hide the race; a native-Go
+			// engine (e.g. wasm2go) surfaces it as a flake on the first
+			// / second AppendRows iteration.
+			if _, err := result.GetResult(ctx); err != nil {
+				t.Fatalf("first AppendRows result error: %v", err)
+			}
 
 			iter := bqClient.Dataset(datasetID).Table(tableID).Read(ctx)
 			resultRowCount := countRows(t, iter)
@@ -599,6 +610,9 @@ func TestStorageWrite(t *testing.T) {
 			result, err = managedStream.AppendRows(ctx, rows, managedwriter.WithOffset(curOffset))
 			if err != nil {
 				t.Fatalf("AppendRows second call error: %v", err)
+			}
+			if _, err := result.GetResult(ctx); err != nil {
+				t.Fatalf("second AppendRows result error: %v", err)
 			}
 
 			iter = bqClient.Dataset(datasetID).Table(tableID).Read(ctx)
