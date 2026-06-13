@@ -191,15 +191,56 @@ https://cloud.google.com/bigquery/docs/samples/bigquery-query-results-dataframe?
 result = client.query(sql).to_dataframe(create_bqstorage_client=False)
 ```
 
-or
+or use a BigQuery Storage client that points at the local gRPC port (see below).
+
+### 3. Call the BigQuery Storage API (gRPC) from the python client
+
+The emulator's gRPC server (default port `9060`) speaks **plaintext** — it does
+not terminate TLS. The `google-cloud-bigquery-storage` clients
+(`BigQueryReadClient` / `BigQueryWriteClient`) default to a secure (TLS) channel,
+so passing only `api_endpoint` makes the client attempt a TLS handshake against a
+plaintext server and fail with an error such as:
+
+```
+E0000 ... ssl_transport_security.cc:... Handshake failed with fatal error
+SSL_ERROR_SSL: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER
+```
+
+To talk to the emulator you must build the client on top of an **insecure**
+gRPC channel via its transport. For the read client:
 
 ```python
+import grpc
 from google.cloud import bigquery_storage
+from google.cloud.bigquery_storage_v1.services.big_query_read.transports import (
+    BigQueryReadGrpcTransport,
+)
 
-client_options = ClientOptions(api_endpoint="0.0.0.0:9060")
-read_client = bigquery_storage.BigQueryReadClient(client_options=client_options)
+transport = BigQueryReadGrpcTransport(
+    channel=grpc.insecure_channel("0.0.0.0:9060"),
+)
+read_client = bigquery_storage.BigQueryReadClient(transport=transport)
 result = client.query(sql).to_dataframe(bqstorage_client=read_client)
-``` 
+```
+
+For the write client (Storage Write API), do the same with its transport:
+
+```python
+import grpc
+from google.cloud import bigquery_storage
+from google.cloud.bigquery_storage_v1.services.big_query_write.transports import (
+    BigQueryWriteGrpcTransport,
+)
+
+transport = BigQueryWriteGrpcTransport(
+    channel=grpc.insecure_channel("0.0.0.0:9060"),
+)
+write_client = bigquery_storage.BigQueryWriteClient(transport=transport)
+```
+
+If you use a Go client, pass an insecure gRPC connection with
+`option.WithGRPCConn(grpc.NewClient("0.0.0.0:9060", grpc.WithTransportCredentials(insecure.NewCredentials())))`
+when constructing `storage.NewBigQueryReadClient` / `NewBigQueryWriteClient`.
 
 # Synopsis
 
