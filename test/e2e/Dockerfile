@@ -100,15 +100,21 @@ COPY cases/cases.json         /app/cases.json
 COPY entrypoint.sh            /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-ENV PYTHONPATH=/deps/python \
-    GEM_HOME=/deps/ruby \
-    GEM_PATH=/deps/ruby \
-    NODE_PATH=/deps/node/node_modules \
-    PROJECT_ID=test \
+ENV PROJECT_ID=test \
     CASES_FILE=/app/cases.json \
     REPORT_FILE=/work/report.json \
     CLOUDSDK_AUTH_ACCESS_TOKEN=emulator \
     CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
+# Per-language interpreter search paths are NOT exported globally.
+# Setting PYTHONPATH=/deps/python image-wide leaks into the `bq` CLI
+# (a Python script that ships its own bundled `oauth2client` /
+# `cryptography`): the bq subprocess loads cryptography from
+# /deps/python instead of its own bundle, and the moment PyPI rolls a
+# newer cryptography wheel into /deps/python the bundled oauth2client
+# raises `module 'lib' has no attribute 'GEN_EMAIL'` on import. The
+# entrypoint exports each path only for the client that actually
+# needs it (see test/e2e/entrypoint.sh).
 
 WORKDIR /work
 ENTRYPOINT ["/app/entrypoint.sh"]
