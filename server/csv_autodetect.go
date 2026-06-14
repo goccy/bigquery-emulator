@@ -93,15 +93,49 @@ func inferCSVColumnType(values []string) string {
 	}
 }
 
-// inferCSVSchema infers a table schema from CSV records, taking the first row
-// as the header (column names) and the remaining rows as sample data. It backs
-// the load job's autodetect option.
-func inferCSVSchema(records [][]string) (*bigqueryv2.TableSchema, error) {
-	if len(records) == 0 {
-		return nil, fmt.Errorf("cannot autodetect schema: the CSV has no rows")
+type csvRowWindow struct {
+	headerIndex int
+	dataStart   int
+	hasHeader   bool
+}
+
+func csvRowWindowFor(rowCount int, skipLeadingRows int64) (csvRowWindow, error) {
+	if rowCount == 0 {
+		return csvRowWindow{}, fmt.Errorf("the CSV has no rows")
 	}
-	header := records[0]
-	dataRows := records[1:]
+	if skipLeadingRows < 0 {
+		return csvRowWindow{}, fmt.Errorf("skipLeadingRows must be non-negative")
+	}
+	if skipLeadingRows > int64(rowCount) {
+		return csvRowWindow{dataStart: rowCount}, nil
+	}
+	if skipLeadingRows > 0 {
+		return csvRowWindow{
+			headerIndex: int(skipLeadingRows) - 1,
+			dataStart:   int(skipLeadingRows),
+			hasHeader:   true,
+		}, nil
+	}
+	return csvRowWindow{
+		headerIndex: 0,
+		dataStart:   0,
+		hasHeader:   true,
+	}, nil
+}
+
+// inferCSVSchema infers a table schema from CSV records. The header row is the
+// last skipped row when skipLeadingRows is set, otherwise it is the first row.
+// The remaining rows are used as sample data.
+func inferCSVSchema(records [][]string, skipLeadingRows int64) (*bigqueryv2.TableSchema, error) {
+	window, err := csvRowWindowFor(len(records), skipLeadingRows)
+	if err != nil {
+		return nil, fmt.Errorf("cannot autodetect schema: %w", err)
+	}
+	if !window.hasHeader {
+		return nil, fmt.Errorf("cannot autodetect schema: skipLeadingRows exceeds the CSV row count")
+	}
+	header := records[window.headerIndex]
+	dataRows := records[window.headerIndex+1:]
 	fields := make([]*bigqueryv2.TableFieldSchema, len(header))
 	for i, name := range header {
 		column := make([]string, 0, len(dataRows))

@@ -383,6 +383,7 @@ type storageWriteServer struct {
 }
 
 type writeStreamStatus struct {
+	mu            sync.Mutex
 	streamType    storagepb.WriteStream_Type
 	stream        *storagepb.WriteStream
 	projectID     string
@@ -393,19 +394,8 @@ type writeStreamStatus struct {
 	finalized     bool
 }
 
-func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storagepb.CreateWriteStreamRequest) (*storagepb.WriteStream, error) {
-	projectID, datasetID, tableID, err := getIDsFromPath(req.Parent)
-	if err != nil {
-		return nil, err
-	}
-	tableMetadata, err := getTableMetadata(ctx, s.server, projectID, datasetID, tableID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get table metadata: %w", err)
-	}
-	streamID := randomID()
-	streamName := fmt.Sprintf("%s/streams/%s", req.Parent, streamID)
+func newWriteStreamStatus(streamName string, streamType storagepb.WriteStream_Type, projectID, datasetID, tableID string, tableMetadata *bigqueryv2.Table) *writeStreamStatus {
 	createTime := timestamppb.New(time.Now())
-	streamType := req.GetWriteStream().GetType()
 	var commitTime *timestamppb.Timestamp
 	if streamType == storagepb.WriteStream_COMMITTED {
 		commitTime = createTime
@@ -419,8 +409,7 @@ func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storage
 		TableSchema: schema,
 		WriteMode:   storagepb.WriteStream_INSERT,
 	}
-	s.mu.Lock()
-	s.streamMap[streamName] = &writeStreamStatus{
+	return &writeStreamStatus{
 		streamType:    streamType,
 		stream:        stream,
 		projectID:     projectID,
@@ -428,8 +417,44 @@ func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storage
 		tableID:       tableID,
 		tableMetadata: tableMetadata,
 	}
+}
+
+func (s *writeStreamStatus) ensureAppendable() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finalized {
+		return fmt.Errorf("stream is already finalized")
+	}
+	return nil
+}
+
+func (s *writeStreamStatus) appendBufferedRows(data types.Data) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finalized {
+		return fmt.Errorf("stream is already finalized")
+	}
+	s.rows = append(s.rows, data...)
+	return nil
+}
+
+func (s *storageWriteServer) CreateWriteStream(ctx context.Context, req *storagepb.CreateWriteStreamRequest) (*storagepb.WriteStream, error) {
+	projectID, datasetID, tableID, err := getIDsFromPath(req.Parent)
+	if err != nil {
+		return nil, err
+	}
+	tableMetadata, err := getTableMetadata(ctx, s.server, projectID, datasetID, tableID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get table metadata: %w", err)
+	}
+	streamID := randomID()
+	streamName := fmt.Sprintf("%s/streams/%s", req.Parent, streamID)
+	streamType := req.GetWriteStream().GetType()
+	streamStatus := newWriteStreamStatus(streamName, streamType, projectID, datasetID, tableID, tableMetadata)
+	s.mu.Lock()
+	s.streamMap[streamName] = streamStatus
 	s.mu.Unlock()
-	return stream, nil
+	return streamStatus.stream, nil
 }
 
 func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRowsServer) error {
@@ -444,7 +469,8 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 	if err != nil {
 		return err
 	}
-	if err := s.appendRows(req, msgDesc, stream); err != nil {
+	status, streamName, err := s.appendRows(req, msgDesc, stream, nil, "")
+	if err != nil {
 		return fmt.Errorf("failed to append rows: %w", err)
 	}
 	for {
@@ -455,7 +481,8 @@ func (s *storageWriteServer) AppendRows(stream storagepb.BigQueryWrite_AppendRow
 		if err != nil {
 			return err
 		}
-		if err := s.appendRows(req, msgDesc, stream); err != nil {
+		status, streamName, err = s.appendRows(req, msgDesc, stream, status, streamName)
+		if err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
 		}
 	}
@@ -477,25 +504,21 @@ func (s *storageWriteServer) getMessageDescriptor(req *storagepb.AppendRowsReque
 	return fd.Messages().ByName(protoreflect.Name(descProto.GetName())), nil
 }
 
-func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDesc protoreflect.MessageDescriptor, stream storagepb.BigQueryWrite_AppendRowsServer) error {
+func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDesc protoreflect.MessageDescriptor, stream storagepb.BigQueryWrite_AppendRowsServer, fallbackStatus *writeStreamStatus, fallbackStreamName string) (*writeStreamStatus, string, error) {
 	streamName := req.GetWriteStream()
-	s.mu.RLock()
 	var status *writeStreamStatus
 	if streamName == "" {
-		for _, s := range s.streamMap {
-			status = s
-			break
-		}
+		status = fallbackStatus
+		streamName = fallbackStreamName
 	} else {
-		s, exists := s.streamMap[streamName]
-		if !exists {
-			return fmt.Errorf("failed to get stream from %s", streamName)
+		var err error
+		status, streamName, err = s.getOrCreateWriteStreamStatus(stream.Context(), streamName)
+		if err != nil {
+			return nil, "", err
 		}
-		status = s
 	}
-	s.mu.RUnlock()
-	if status.finalized {
-		return fmt.Errorf("stream is already finalized")
+	if status == nil {
+		return nil, "", fmt.Errorf("write stream is not specified")
 	}
 	offset := int64(0)
 	if req.GetOffset() != nil {
@@ -505,36 +528,67 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 	data, err := s.decodeData(msgDesc, rows)
 	if err != nil {
 		s.sendErrorMessage(stream, streamName, err)
-		return err
+		return nil, "", err
 	}
 	if status.streamType == storagepb.WriteStream_COMMITTED {
+		if err := status.ensureAppendable(); err != nil {
+			return nil, "", err
+		}
 		ctx := context.Background()
 		ctx = logger.WithLogger(ctx, s.server.logger)
 
 		conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
-			return err
+			return nil, "", err
 		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
-			return err
+			return nil, "", err
 		}
 		defer tx.RollbackIfNotCommitted()
 		if err := s.insertTableData(ctx, tx, status, data); err != nil {
 			s.sendErrorMessage(stream, streamName, err)
-			return err
+			return nil, "", err
 		}
 		if err := tx.Commit(); err != nil {
 			s.sendErrorMessage(stream, streamName, err)
-			return err
+			return nil, "", err
 		}
 	} else {
-		status.rows = append(status.rows, data...)
+		if err := status.appendBufferedRows(data); err != nil {
+			return nil, "", err
+		}
 	}
-	return s.sendResult(stream, streamName, offset+int64(len(rows)))
+	if err := s.sendResult(stream, streamName, offset+int64(len(rows))); err != nil {
+		return nil, "", err
+	}
+	return status, streamName, nil
 
+}
+
+func (s *storageWriteServer) lookupWriteStreamStatus(streamName string) (*writeStreamStatus, string, bool) {
+	canonicalName := canonicalWriteStreamName(streamName)
+	s.mu.RLock()
+	status, exists := s.streamMap[canonicalName]
+	s.mu.RUnlock()
+	return status, canonicalName, exists
+}
+
+func (s *storageWriteServer) getOrCreateWriteStreamStatus(ctx context.Context, streamName string) (*writeStreamStatus, string, error) {
+	status, canonicalName, exists := s.lookupWriteStreamStatus(streamName)
+	if exists {
+		return status, canonicalName, nil
+	}
+	if !isDefaultWriteStreamName(streamName) {
+		return nil, "", fmt.Errorf("failed to get stream from %s", streamName)
+	}
+	status, canonicalName, err := s.createDefaultStreamStatus(ctx, streamName)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get stream from %s", streamName)
+	}
+	return status, canonicalName, nil
 }
 
 func (s *storageWriteServer) sendResult(stream storagepb.BigQueryWrite_AppendRowsServer, streamName string, offset int64) error {
@@ -724,39 +778,31 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 }
 
 func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
-	s.mu.RLock()
-	status, exists := s.streamMap[req.Name]
-	s.mu.RUnlock()
-	if !exists {
-		stream, err := s.createDefaultStream(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find stream from %s", req.Name)
-		}
-		return stream, err
+	status, _, err := s.getOrCreateWriteStreamStatus(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find stream from %s", req.Name)
 	}
 	return status.stream, nil
 }
 
 func (s *storageWriteServer) FinalizeWriteStream(ctx context.Context, req *storagepb.FinalizeWriteStreamRequest) (*storagepb.FinalizeWriteStreamResponse, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	status, exists := s.streamMap[req.GetName()]
+	status, _, exists := s.lookupWriteStreamStatus(req.GetName())
 	if !exists {
 		return nil, fmt.Errorf("failed to get stream from %s", req.GetName())
 	}
+	status.mu.Lock()
 	status.finalized = true
+	rowCount := int64(len(status.rows))
+	status.mu.Unlock()
 	return &storagepb.FinalizeWriteStreamResponse{
-		RowCount: int64(len(status.rows)),
+		RowCount: rowCount,
 	}, nil
 }
 
 func (s *storageWriteServer) BatchCommitWriteStreams(ctx context.Context, req *storagepb.BatchCommitWriteStreamsRequest) (*storagepb.BatchCommitWriteStreamsResponse, error) {
 	var streamErrors []*storagepb.StorageError
 	for _, streamName := range req.GetWriteStreams() {
-		s.mu.RLock()
-		status, exists := s.streamMap[streamName]
-		s.mu.RUnlock()
-
+		status, _, exists := s.lookupWriteStreamStatus(streamName)
 		if !exists {
 			streamErrors = append(streamErrors, &storagepb.StorageError{
 				Code:         storagepb.StorageError_STREAM_NOT_FOUND,
@@ -765,6 +811,9 @@ func (s *storageWriteServer) BatchCommitWriteStreams(ctx context.Context, req *s
 			})
 			continue
 		}
+		status.mu.Lock()
+		rows := append(types.Data(nil), status.rows...)
+		status.mu.Unlock()
 		conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
 		if err != nil {
 			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
@@ -776,7 +825,7 @@ func (s *storageWriteServer) BatchCommitWriteStreams(ctx context.Context, req *s
 			continue
 		}
 		defer tx.RollbackIfNotCommitted()
-		if err := s.insertTableData(ctx, tx, status, status.rows); err != nil {
+		if err := s.insertTableData(ctx, tx, status, rows); err != nil {
 			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
 			continue
 		}
@@ -800,13 +849,21 @@ func (s *storageWriteServer) createUnspecifiedStorageError(streamName string, er
 
 func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.FlushRowsRequest) (*storagepb.FlushRowsResponse, error) {
 	streamName := req.GetWriteStream()
-	s.mu.RLock()
-	status, exists := s.streamMap[streamName]
-	s.mu.RUnlock()
+	status, _, exists := s.lookupWriteStreamStatus(streamName)
 	if !exists {
 		return nil, fmt.Errorf("failed to find stream from %s", streamName)
 	}
+	if req.GetOffset() == nil {
+		return nil, fmt.Errorf("offset is required")
+	}
 	offset := req.GetOffset().Value
+	status.mu.Lock()
+	if offset < 0 || offset >= int64(len(status.rows)) {
+		status.mu.Unlock()
+		return nil, fmt.Errorf("offset %d is out of range", offset)
+	}
+	rows := append(types.Data(nil), status.rows[:offset+1]...)
+	status.mu.Unlock()
 	conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
 	if err != nil {
 		return nil, err
@@ -816,7 +873,7 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := s.insertTableData(ctx, tx, status, status.rows[:offset+1]); err != nil {
+	if err := s.insertTableData(ctx, tx, status, rows); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -827,56 +884,70 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 	}, nil
 }
 
-/*
-*
-According to google documentation (https://pkg.go.dev/cloud.google.com/go/bigquery/storage/apiv1#BigQueryWriteClient.GetWriteStream)
-every table has a special stream named ‘_default’ to which data can be written. This stream doesn’t need to be created using CreateWriteStream
-
-Here we create the default stream and add it to map in case it not exists yet, the GetWriteStreamRequest given as second
-argument should have Name in this format: projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default
-*/
+// According to google documentation every table has a special stream named
+// `_default` to which data can be written. This stream doesn't need to be
+// created using CreateWriteStream. Client libraries use both
+// projects/<projectId>/datasets/<datasetId>/tables/<tableId>/_default and
+// projects/<projectId>/datasets/<datasetId>/tables/<tableId>/streams/_default,
+// so accept both forms.
 func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
-	streamId := req.Name
-	suffix := "_default"
-	streams := "/streams/"
-	if !strings.HasSuffix(streamId, suffix) {
-		return nil, fmt.Errorf("unexpected stream id: %s, expected '%s' suffix", streamId, suffix)
-	}
-	index := strings.LastIndex(streamId, streams)
-	if index == -1 {
-		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
-	}
-	streamPart := streamId[:index]
-	writeStreamReq := &storagepb.CreateWriteStreamRequest{
-		Parent: streamPart,
-		WriteStream: &storagepb.WriteStream{
-			Type: storagepb.WriteStream_COMMITTED,
-		},
-	}
-	stream, err := s.CreateWriteStream(ctx, writeStreamReq)
+	status, _, err := s.createDefaultStreamStatus(ctx, req.Name)
 	if err != nil {
 		return nil, err
 	}
-	projectID, datasetID, tableID, err := getIDsFromPath(streamPart)
+	return status.stream, nil
+}
+
+func (s *storageWriteServer) createDefaultStreamStatus(ctx context.Context, streamName string) (*writeStreamStatus, string, error) {
+	tablePath, err := defaultWriteStreamTablePath(streamName)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	canonicalName := canonicalDefaultWriteStreamName(tablePath)
+	projectID, datasetID, tableID, err := getIDsFromPath(tablePath)
+	if err != nil {
+		return nil, "", err
 	}
 	tableMetadata, err := getTableMetadata(ctx, s.server, projectID, datasetID, tableID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	streamStatus := &writeStreamStatus{
-		streamType:    storagepb.WriteStream_COMMITTED,
-		stream:        stream,
-		projectID:     projectID,
-		datasetID:     datasetID,
-		tableID:       tableID,
-		tableMetadata: tableMetadata,
-	}
+	streamStatus := newWriteStreamStatus(canonicalName, storagepb.WriteStream_COMMITTED, projectID, datasetID, tableID, tableMetadata)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streamMap[streamId] = streamStatus
-	return stream, nil
+	if status, exists := s.streamMap[canonicalName]; exists {
+		return status, canonicalName, nil
+	}
+	s.streamMap[canonicalName] = streamStatus
+	return streamStatus, canonicalName, nil
+}
+
+func isDefaultWriteStreamName(name string) bool {
+	_, err := defaultWriteStreamTablePath(name)
+	return err == nil
+}
+
+func canonicalWriteStreamName(name string) string {
+	tablePath, err := defaultWriteStreamTablePath(name)
+	if err != nil {
+		return name
+	}
+	return canonicalDefaultWriteStreamName(tablePath)
+}
+
+func canonicalDefaultWriteStreamName(tablePath string) string {
+	return tablePath + "/_default"
+}
+
+func defaultWriteStreamTablePath(name string) (string, error) {
+	switch {
+	case strings.HasSuffix(name, "/streams/_default"):
+		return strings.TrimSuffix(name, "/streams/_default"), nil
+	case strings.HasSuffix(name, "/_default"):
+		return strings.TrimSuffix(name, "/_default"), nil
+	default:
+		return "", fmt.Errorf("unexpected default stream name: %s", name)
+	}
 }
 
 func getIDsFromPath(path string) (string, string, string, error) {
@@ -916,6 +987,9 @@ func getTableMetadata(ctx context.Context, server *Server, projectID, datasetID,
 	if err != nil {
 		return nil, err
 	}
+	if project == nil {
+		return nil, fmt.Errorf("project %s is not found", projectID)
+	}
 	dataset := project.Dataset(datasetID)
 	if dataset == nil {
 		return nil, fmt.Errorf("dataset %s is not found in project %s", datasetID, projectID)
@@ -924,12 +998,7 @@ func getTableMetadata(ctx context.Context, server *Server, projectID, datasetID,
 	if table == nil {
 		return nil, fmt.Errorf("table %s is not found in dataset %s", tableID, datasetID)
 	}
-	return new(tablesGetHandler).Handle(ctx, &tablesGetRequest{
-		server:  server,
-		project: project,
-		dataset: dataset,
-		table:   table,
-	})
+	return table.Content()
 }
 
 func registerStorageServer(grpcServer *grpc.Server, srv *Server) {

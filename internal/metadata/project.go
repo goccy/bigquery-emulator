@@ -3,9 +3,12 @@ package metadata
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+var ErrDuplicatedDataset = errors.New("dataset is already created")
 
 type Project struct {
 	ID         string
@@ -69,7 +72,7 @@ func (p *Project) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.datasetMap[dataset.ID]; exists {
-		return fmt.Errorf("dataset %s is already created", dataset.ID)
+		return fmt.Errorf("dataset %s: %w", dataset.ID, ErrDuplicatedDataset)
 	}
 	if err := dataset.Insert(ctx, tx); err != nil {
 		return err
