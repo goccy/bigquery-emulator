@@ -317,17 +317,10 @@ func (s *storageReadServer) getARROWSchema(tableMetadata *bigqueryv2.Table, outp
 }
 
 func (s *storageReadServer) getSerializedARROWSchema(schema *arrow.Schema) ([]byte, error) {
-	mem := memory.NewGoAllocator()
+	payload := ipc.GetSchemaPayload(schema, memory.NewGoAllocator())
+	defer payload.Release()
 	buf := new(bytes.Buffer)
-	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(schema))
-	builder := array.NewRecordBuilder(mem, schema)
-	defer builder.Release()
-	record := builder.NewRecord()
-	if err := writer.Write(record); err != nil {
-		return nil, err
-	}
-	record.Release()
-	if err := writer.Close(); err != nil {
+	if _, err := payload.WritePayload(buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -347,13 +340,14 @@ func (s *storageReadServer) sendARROWRows(status *readStreamStatus, response *in
 		}
 	}
 	record := builder.NewRecord()
-	buf := new(bytes.Buffer)
-	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(status.arrowSchema))
-	if err := writer.Write(record); err != nil {
+	defer record.Release()
+	payload, err := ipc.GetRecordBatchPayload(record, ipc.WithAllocator(mem))
+	if err != nil {
 		return err
 	}
-	record.Release()
-	if err := writer.Close(); err != nil {
+	defer payload.Release()
+	buf := new(bytes.Buffer)
+	if _, err := payload.WritePayload(buf); err != nil {
 		return err
 	}
 	rows := &storagepb.ReadRowsResponse_ArrowRecordBatch{
