@@ -444,6 +444,95 @@ func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[stri
 	}
 }
 
+func newLoadCSVReader(reader io.Reader, fieldDelimiter string) (*csv.Reader, error) {
+	csvReader := csv.NewReader(reader)
+	csvReader.FieldsPerRecord = -1
+	if fieldDelimiter == "" {
+		return csvReader, nil
+	}
+	delimiters := []rune(fieldDelimiter)
+	if len(delimiters) != 1 {
+		return nil, fmt.Errorf("fieldDelimiter must be a single character")
+	}
+	csvReader.Comma = delimiters[0]
+	return csvReader, nil
+}
+
+func schemaColumns(fields []*bigqueryv2.TableFieldSchema) []*types.Column {
+	columns := make([]*types.Column, 0, len(fields))
+	for _, field := range fields {
+		columns = append(columns, types.NewColumnWithSchema(field))
+	}
+	return columns
+}
+
+func columnsFromCSVHeader(header []string, columnToType map[string]types.Type) ([]*types.Column, bool) {
+	columns := make([]*types.Column, 0, len(header))
+	for _, col := range header {
+		columnType, exists := columnToType[col]
+		if !exists {
+			return nil, false
+		}
+		columns = append(columns, &types.Column{
+			Name: col,
+			Type: columnType,
+		})
+	}
+	return columns, true
+}
+
+func csvLoadColumnsAndRows(records [][]string, schemaFields []*bigqueryv2.TableFieldSchema, columnToType map[string]types.Type, skipLeadingRows int64) ([]*types.Column, [][]string, error) {
+	window, err := csvRowWindowFor(len(records), skipLeadingRows)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !window.hasHeader {
+		return schemaColumns(schemaFields), nil, nil
+	}
+
+	dataStart := window.dataStart
+	if window.headerIndex < len(records) {
+		if columns, ok := columnsFromCSVHeader(records[window.headerIndex], columnToType); ok {
+			if dataStart <= window.headerIndex {
+				dataStart = window.headerIndex + 1
+			}
+			return columns, records[dataStart:], nil
+		}
+	}
+	return schemaColumns(schemaFields), records[dataStart:], nil
+}
+
+func csvRowsToTableData(records [][]string, schemaFields []*bigqueryv2.TableFieldSchema, skipLeadingRows int64, allowJaggedRows bool) ([]*types.Column, types.Data, error) {
+	columnToType := map[string]types.Type{}
+	for _, field := range schemaFields {
+		columnToType[field.Name] = types.Type(field.Type)
+	}
+	columns, dataRows, err := csvLoadColumnsAndRows(records, schemaFields, columnToType, skipLeadingRows)
+	if err != nil {
+		return nil, nil, err
+	}
+	data := types.Data{}
+	for _, record := range dataRows {
+		rowData := map[string]interface{}{}
+		if len(record) > len(columns) || (!allowJaggedRows && len(record) != len(columns)) {
+			return nil, nil, fmt.Errorf("invalid column number: found broken row data: %v", record)
+		}
+		for i := 0; i < len(columns); i++ {
+			var colData string
+			if i < len(record) {
+				colData = record[i]
+			}
+			if colData == "" {
+				rowData[columns[i].Name] = nil
+			} else {
+				rowData[columns[i].Name] = colData
+			}
+		}
+		data = append(data, rowData)
+	}
+	return columns, data, nil
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	tableRef := load.DestinationTable
@@ -462,14 +551,21 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	// Read CSV content up front so an autodetect load can infer the schema
 	// before the destination table is created.
 	var csvRecords [][]string
+	var csvColumns []*types.Column
+	var csvData types.Data
+	var csvDataReady bool
 	if load.SourceFormat == "CSV" {
-		records, err := csv.NewReader(r.reader).ReadAll()
+		csvReader, err := newLoadCSVReader(r.reader, load.FieldDelimiter)
+		if err != nil {
+			return err
+		}
+		records, err := csvReader.ReadAll()
 		if err != nil {
 			return fmt.Errorf("failed to read csv: %w", err)
 		}
 		csvRecords = records
 		if !tableExisted && load.Schema == nil && load.Autodetect {
-			schema, err := inferCSVSchema(csvRecords)
+			schema, err := inferCSVSchema(csvRecords, load.SkipLeadingRows)
 			if err != nil {
 				return err
 			}
@@ -479,6 +575,14 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	if table == nil {
 		if load.CreateDisposition == "CREATE_NEVER" {
 			return fmt.Errorf("`%s` is not found", tableRef.TableId)
+		}
+		if load.SourceFormat == "CSV" && load.Schema != nil {
+			var err error
+			csvColumns, csvData, err = csvRowsToTableData(csvRecords, load.Schema.Fields, load.SkipLeadingRows, load.AllowJaggedRows)
+			if err != nil {
+				return err
+			}
+			csvDataReady = true
 		}
 		if _, err := (&tablesInsertHandler{}).Handle(ctx, &tablesInsertRequest{
 			server:  r.server,
@@ -498,58 +602,21 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	if err != nil {
 		return err
 	}
-	columnToType := map[string]types.Type{}
-	for _, field := range tableContent.Schema.Fields {
-		columnToType[field.Name] = types.Type(field.Type)
-	}
 
 	sourceFormat := load.SourceFormat
 	columns := []*types.Column{}
 	data := types.Data{}
 	switch sourceFormat {
 	case "CSV":
-		records := csvRecords
-		if len(records) == 0 {
-			return fmt.Errorf("failed to find csv header")
+		if csvDataReady {
+			columns = csvColumns
+			data = csvData
+			break
 		}
-		if len(records) == 1 {
-			return nil
-		}
-		header := records[0]
-		var ignoreHeader bool
-		for _, col := range header {
-			if _, exists := columnToType[col]; !exists {
-				ignoreHeader = true
-				break
-			}
-			columns = append(columns, &types.Column{
-				Name: col,
-				Type: columnToType[col],
-			})
-		}
-		if ignoreHeader {
-			columns = []*types.Column{}
-			for _, field := range tableContent.Schema.Fields {
-				columns = append(columns, &types.Column{
-					Name: field.Name,
-					Type: types.Type(field.Type),
-				})
-			}
-		}
-		for _, record := range records[1:] {
-			rowData := map[string]interface{}{}
-			if len(record) != len(columns) {
-				return fmt.Errorf("invalid column number: found broken row data: %v", record)
-			}
-			for i := 0; i < len(record); i++ {
-				colData := record[i]
-				if colData == "" {
-					rowData[columns[i].Name] = nil
-				} else {
-					rowData[columns[i].Name] = colData
-				}
-			}
-			data = append(data, rowData)
+		var err error
+		columns, data, err = csvRowsToTableData(csvRecords, tableContent.Schema.Fields, load.SkipLeadingRows, load.AllowJaggedRows)
+		if err != nil {
+			return err
 		}
 	case "PARQUET":
 		b, err := io.ReadAll(r.reader)
@@ -559,12 +626,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		reader := parquet.NewReader(bytes.NewReader(b))
 		defer reader.Close()
 
-		for _, f := range load.Schema.Fields {
-			columns = append(columns, &types.Column{
-				Name: f.Name,
-				Type: types.Type(f.Type),
-			})
-		}
+		columns = schemaColumns(load.Schema.Fields)
 
 		for i := 0; i < int(reader.NumRows()); i++ {
 			var rowData interface{}
@@ -576,12 +638,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 			data = append(data, rowData.(map[string]interface{}))
 		}
 	case "NEWLINE_DELIMITED_JSON":
-		for _, f := range tableContent.Schema.Fields {
-			columns = append(columns, &types.Column{
-				Name: f.Name,
-				Type: types.Type(f.Type),
-			})
-		}
+		columns = schemaColumns(tableContent.Schema.Fields)
 		columnMap := map[string]*types.Column{}
 		for _, col := range columns {
 			columnMap[col.Name] = col
@@ -858,6 +915,11 @@ func (h *datasetsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		dataset: &dataset,
 	})
 	if err != nil {
+		var serr *ServerError
+		if errors.As(err, &serr) {
+			errorResponse(ctx, w, serr)
+			return
+		}
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
@@ -901,6 +963,9 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 			nil,
 		),
 	); err != nil {
+		if errors.Is(err, metadata.ErrDuplicatedDataset) {
+			return nil, errDuplicate(err.Error())
+		}
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1291,6 +1356,32 @@ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *
 	)
 }
 
+func (h *jobsInsertHandler) destinationProjectAndDataset(ctx context.Context, r *jobsInsertRequest, tableRef *bigqueryv2.TableReference) (*metadata.Project, *metadata.Dataset, error) {
+	projectID := tableRef.ProjectId
+	if projectID == "" {
+		projectID = r.project.ID
+		tableRef.ProjectId = projectID
+	}
+
+	project := r.project
+	if projectID != r.project.ID {
+		var err error
+		project, err = r.server.metaRepo.FindProject(ctx, projectID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if project == nil {
+			return nil, nil, errNotFound(fmt.Sprintf("project %q is not found", projectID))
+		}
+	}
+
+	dataset := project.Dataset(tableRef.DatasetId)
+	if dataset == nil {
+		return nil, nil, errNotFound(fmt.Sprintf("dataset %q is not found in project %q", tableRef.DatasetId, projectID))
+	}
+	return project, dataset, nil
+}
+
 const (
 	gcsEmulatorHostEnvName = "STORAGE_EMULATOR_HOST"
 	gcsURIPrefix           = "gs://"
@@ -1648,7 +1739,8 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		}
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
+	queryProjectID, datasetID := queryProjectAndDataset(job.Configuration.Query.DefaultDataset, r.project.ID)
+	conn, err := r.server.connMgr.Connection(ctx, queryProjectID, datasetID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
@@ -1662,8 +1754,8 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	response, jobErr := r.server.contentRepo.Query(
 		ctx,
 		tx,
-		r.project.ID,
-		"",
+		queryProjectID,
+		datasetID,
 		job.Configuration.Query.Query,
 		job.Configuration.Query.QueryParameters,
 	)
@@ -1675,13 +1767,13 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		if hasDestinationTable {
 			// insert results to destination table
 			tableRef := job.Configuration.Query.DestinationTable
-			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+			destinationProject, destinationDataset, err := h.destinationProjectAndDataset(ctx, r, tableRef)
 			if err != nil {
 				return nil, err
 			}
-			destinationDataset := r.project.Dataset(tableRef.DatasetId)
-			if destinationDataset == nil {
-				return nil, fmt.Errorf("failed to find destination dataset: %s", tableRef.DatasetId)
+			tableDef, err := h.tableDefFromQueryResponse(tableRef.TableId, response)
+			if err != nil {
+				return nil, err
 			}
 			destinationTable := destinationDataset.Table(tableRef.TableId)
 			destinationTableExists := destinationTable != nil
@@ -1698,16 +1790,18 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 						tableRef.ProjectId, tableRef.DatasetId, tableRef.TableId,
 					))
 				}
-				_, err := createTableMetadata(ctx, tx, r.server, r.project, destinationDataset, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
+				table := tableDef.ToBigqueryV2(destinationProject.ID, tableRef.DatasetId)
+				_, err := createTableMetadata(ctx, tx, r.server, destinationProject, destinationDataset, table)
 				if err != nil {
 					return nil, fmt.Errorf("failed to create table: %w", err)
 				}
-				serverErr := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(r.project.ID, tableRef.DatasetId))
+				tx.SetProjectAndDataset(destinationProject.ID, tableRef.DatasetId)
+				serverErr := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(destinationProject.ID, tableRef.DatasetId))
 				if serverErr != nil {
 					return nil, fmt.Errorf("failed to create table: %w", serverErr)
 				}
 			}
-			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+			if err := r.server.contentRepo.AddTableData(ctx, tx, destinationProject.ID, tableRef.DatasetId, tableDef); err != nil {
 				return nil, fmt.Errorf("failed to add table data: %w", err)
 			}
 		} else if response != nil && response.Schema != nil && len(response.Schema.Fields) > 0 {
@@ -1781,6 +1875,18 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	}
 
 	return job, nil
+}
+
+func queryProjectAndDataset(defaultDataset *bigqueryv2.DatasetReference, fallbackProjectID string) (string, string) {
+	projectID := fallbackProjectID
+	var datasetID string
+	if defaultDataset != nil {
+		if defaultDataset.ProjectId != "" {
+			projectID = defaultDataset.ProjectId
+		}
+		datasetID = defaultDataset.DatasetId
+	}
+	return projectID, datasetID
 }
 
 func syncCatalog(ctx context.Context, server *Server, cat *googlesqlite.ChangedCatalog) error {
@@ -1917,6 +2023,7 @@ func (h *jobsInsertHandler) addQueryResultToDynamicDestinationTable(ctx context.
 	if err := r.server.metaRepo.AddTable(ctx, tx.Tx(), table); err != nil {
 		return nil, err
 	}
+	tx.SetProjectAndDataset(projectID, datasetID)
 	if err := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(projectID, datasetID)); err != nil {
 		return nil, err
 	}
@@ -2014,11 +2121,8 @@ type jobsQueryRequest struct {
 }
 
 func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*internaltypes.QueryResponse, error) {
-	var datasetID string
-	if r.queryRequest.DefaultDataset != nil {
-		datasetID = r.queryRequest.DefaultDataset.DatasetId
-	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
+	queryProjectID, datasetID := queryProjectAndDataset(r.queryRequest.DefaultDataset, r.project.ID)
+	conn, err := r.server.connMgr.Connection(ctx, queryProjectID, datasetID)
 	if err != nil {
 		return nil, err
 	}
@@ -2031,7 +2135,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	response, queryErr := r.server.contentRepo.Query(
 		ctx,
 		tx,
-		r.project.ID,
+		queryProjectID,
 		datasetID,
 		r.queryRequest.Query,
 		r.queryRequest.QueryParameters,
@@ -2078,6 +2182,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 			DryRun:  r.queryRequest.DryRun,
 			Query: &bigqueryv2.JobConfigurationQuery{
 				Query:           r.queryRequest.Query,
+				DefaultDataset:  r.queryRequest.DefaultDataset,
 				QueryParameters: r.queryRequest.QueryParameters,
 				Priority:        "INTERACTIVE",
 			},

@@ -1047,6 +1047,51 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 	}
 }
 
+func TestDuplicateDatasetReturnsConflict(t *testing.T) {
+	const projectName = "test"
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	dataset := client.Dataset("dataset_dup")
+	if err := dataset.Create(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	err = dataset.Create(ctx, nil)
+	if err == nil {
+		t.Fatal("creating a duplicate dataset should fail")
+	}
+	ge, ok := err.(*googleapi.Error)
+	if !ok {
+		t.Fatalf("expected *googleapi.Error, got %T: %v", err, err)
+	}
+	if ge.Code != http.StatusConflict {
+		t.Fatalf("duplicate dataset returned %d; want 409: %v", ge.Code, ge)
+	}
+}
+
 func TestDataFromStruct(t *testing.T) {
 	ctx := context.Background()
 
@@ -3600,6 +3645,148 @@ func TestUploadWithoutJobReference(t *testing.T) {
 	}
 }
 
+func TestUploadCSVHonorsFieldDelimiter(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	jobJSON := `{"configuration":{"load":{"sourceFormat":"CSV","autodetect":true,` +
+		`"fieldDelimiter":";","destinationTable":{"projectId":"test","datasetId":"dataset1","tableId":"semicolon_csv"}}}}`
+	contentType, body := multipartUpload(jobJSON, "name;age\r\nAlice;30\r\nBob;41")
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+		body, map[string]string{"Content-Type": contentType})
+	if code != http.StatusOK {
+		t.Fatalf("semicolon CSV upload: expected 200, got %d (%v)", code, resp)
+	}
+
+	code, resp = httpJSON(t, http.MethodPost,
+		testServer.URL+"/projects/test/queries",
+		`{"query":"SELECT name, age FROM dataset1.semicolon_csv ORDER BY age","useLegacySql":false}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("query semicolon CSV table: %d (%v)", code, resp)
+	}
+	rows := queryRows(t, resp)
+	want := [][]string{{"Alice", "30"}, {"Bob", "41"}}
+	if diff := cmp.Diff(want, rows); diff != "" {
+		t.Fatalf("semicolon CSV rows mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestUploadCSVSkipLeadingRows(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID, types.NewDataset(datasetID)),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	upload := func(t *testing.T, tableID, loadOptions, body string) [][]string {
+		t.Helper()
+		jobJSON := fmt.Sprintf(`{"configuration":{"load":{"sourceFormat":"CSV",%s`+
+			`"schema":{"fields":[{"name":"name","type":"STRING"},{"name":"age","type":"STRING"}]},`+
+			`"destinationTable":{"projectId":"%s","datasetId":"%s","tableId":"%s"}}}}`,
+			loadOptions, projectID, datasetID, tableID)
+		contentType, uploadBody := multipartUpload(jobJSON, body)
+		code, resp := httpJSON(t, http.MethodPost,
+			testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+			uploadBody, map[string]string{"Content-Type": contentType})
+		if code != http.StatusOK {
+			t.Fatalf("CSV upload: expected 200, got %d (%v)", code, resp)
+		}
+
+		query := fmt.Sprintf(`{"query":"SELECT name, age FROM %s.%s ORDER BY name","useLegacySql":false}`, datasetID, tableID)
+		code, resp = httpJSON(t, http.MethodPost, testServer.URL+"/projects/test/queries", query, nil)
+		if code != http.StatusOK {
+			t.Fatalf("query CSV table: %d (%v)", code, resp)
+		}
+		return queryRows(t, resp)
+	}
+
+	t.Run("headerless CSV keeps first row", func(t *testing.T) {
+		rows := upload(t, "headerless_csv", "", "Alice,30\r\nBob,41")
+		want := [][]string{{"Alice", "30"}, {"Bob", "41"}}
+		if diff := cmp.Diff(want, rows); diff != "" {
+			t.Fatalf("headerless CSV rows mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("skipLeadingRows skips all leading rows", func(t *testing.T) {
+		rows := upload(t, "skip_leading_csv", `"skipLeadingRows":2,`, "ignored,ignored\r\nname,age\r\nAlice,30\r\nBob,41")
+		want := [][]string{{"Alice", "30"}, {"Bob", "41"}}
+		if diff := cmp.Diff(want, rows); diff != "" {
+			t.Fatalf("skipLeadingRows CSV rows mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("skipped rows may have different field counts", func(t *testing.T) {
+		rows := upload(t, "skip_variable_width_csv", `"skipLeadingRows":1,`, "description only\r\nAlice,30\r\nBob,41")
+		want := [][]string{{"Alice", "30"}, {"Bob", "41"}}
+		if diff := cmp.Diff(want, rows); diff != "" {
+			t.Fatalf("variable-width skipped CSV rows mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("allowJaggedRows pads trailing columns", func(t *testing.T) {
+		rows := upload(t, "allow_jagged_csv", `"allowJaggedRows":true,`, "Alice,30\r\nBob")
+		want := [][]string{{"Alice", "30"}, {"Bob", "<nil>"}}
+		if diff := cmp.Diff(want, rows); diff != "" {
+			t.Fatalf("allowJaggedRows CSV rows mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("invalid new-table CSV does not create destination table", func(t *testing.T) {
+		tableID := "invalid_new_csv"
+		jobJSON := fmt.Sprintf(`{"configuration":{"load":{"sourceFormat":"CSV",`+
+			`"schema":{"fields":[{"name":"name","type":"STRING"},{"name":"age","type":"STRING"}]},`+
+			`"destinationTable":{"projectId":"%s","datasetId":"%s","tableId":"%s"}}}}`,
+			projectID, datasetID, tableID)
+		contentType, uploadBody := multipartUpload(jobJSON, "Alice,30\r\nBadOnly")
+		code, resp := httpJSON(t, http.MethodPost,
+			testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+			uploadBody, map[string]string{"Content-Type": contentType})
+		if code == http.StatusOK {
+			t.Fatalf("invalid CSV upload unexpectedly succeeded: %v", resp)
+		}
+
+		code, resp = httpJSON(t, http.MethodGet,
+			fmt.Sprintf("%s/projects/%s/datasets/%s/tables/%s", testServer.URL, projectID, datasetID, tableID),
+			"", nil)
+		if code != http.StatusNotFound {
+			t.Fatalf("destination table should not exist after failed upload, got %d (%v)", code, resp)
+		}
+	})
+}
+
 // TestUploadToMissingDataset covers #396: uploading to a non-existent dataset
 // must return a clean error instead of panicking the process.
 func TestUploadToMissingDataset(t *testing.T) {
@@ -4270,6 +4457,195 @@ func TestJobsQueryRegistersJob(t *testing.T) {
 	}
 	if status.Err() != nil {
 		t.Errorf("status.Err = %v; want nil", status.Err())
+	}
+}
+
+func TestJobsInsertQueryUsesDefaultDataset(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset_jobs_insert_default"
+		jobID     = "job_default_dataset"
+	)
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(
+		projectID,
+		types.NewDataset(datasetID,
+			types.NewTable("tableA",
+				[]*types.Column{types.NewColumn("name", types.STRING)},
+				types.Data{
+					{"name": "AAA"},
+					{"name": "BBB"},
+				},
+			),
+		),
+	))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	body := fmt.Sprintf(`{
+		"jobReference":{"projectId":"%s","jobId":"%s"},
+		"configuration":{"query":{
+			"query":"SELECT name FROM tableA ORDER BY name",
+			"defaultDataset":{"projectId":"%s","datasetId":"%s"},
+			"useLegacySql":false
+		}}
+	}`, projectID, jobID, projectID, datasetID)
+	code, resp := httpJSON(t, http.MethodPost, testServer.URL+"/projects/test/jobs", body, nil)
+	if code != http.StatusOK {
+		t.Fatalf("jobs.insert: expected 200, got %d (%v)", code, resp)
+	}
+	if status, _ := resp["status"].(map[string]any); status["errorResult"] != nil {
+		t.Fatalf("jobs.insert query failed: %v", status["errorResult"])
+	}
+
+	code, resp = httpJSON(t, http.MethodGet, testServer.URL+"/projects/test/queries/"+jobID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("getQueryResults: expected 200, got %d (%v)", code, resp)
+	}
+	rows := queryRows(t, resp)
+	want := [][]string{{"AAA"}, {"BBB"}}
+	if diff := cmp.Diff(want, rows); diff != "" {
+		t.Fatalf("jobs.insert default dataset rows mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestJobsInsertAnonymousDestinationWithCrossProjectDefaultDataset(t *testing.T) {
+	const (
+		projectID       = "test"
+		sourceProjectID = "source_project"
+		datasetID       = "dataset_jobs_insert_default_cross_project"
+		jobID           = "job_default_dataset_cross_project"
+	)
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID),
+		types.NewProject(sourceProjectID,
+			types.NewDataset(datasetID,
+				types.NewTable("tableA",
+					[]*types.Column{types.NewColumn("name", types.STRING)},
+					types.Data{
+						{"name": "AAA"},
+						{"name": "BBB"},
+					},
+				),
+			),
+		),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	body := fmt.Sprintf(`{
+		"jobReference":{"projectId":"%s","jobId":"%s"},
+		"configuration":{"query":{
+			"query":"SELECT name FROM tableA ORDER BY name",
+			"defaultDataset":{"projectId":"%s","datasetId":"%s"},
+			"useLegacySql":false
+		}}
+	}`, projectID, jobID, sourceProjectID, datasetID)
+	code, resp := httpJSON(t, http.MethodPost, testServer.URL+"/projects/test/jobs", body, nil)
+	if code != http.StatusOK {
+		t.Fatalf("jobs.insert: expected 200, got %d (%v)", code, resp)
+	}
+	if status, _ := resp["status"].(map[string]any); status["errorResult"] != nil {
+		t.Fatalf("jobs.insert query failed: %v", status["errorResult"])
+	}
+	configuration, _ := resp["configuration"].(map[string]any)
+	queryConfig, _ := configuration["query"].(map[string]any)
+	destinationTable, _ := queryConfig["destinationTable"].(map[string]any)
+	if destinationTable["projectId"] != projectID {
+		t.Fatalf("anonymous destination project = %v; want %s", destinationTable["projectId"], projectID)
+	}
+
+	code, resp = httpJSON(t, http.MethodGet, testServer.URL+"/projects/test/queries/"+jobID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("getQueryResults: expected 200, got %d (%v)", code, resp)
+	}
+	rows := queryRows(t, resp)
+	want := [][]string{{"AAA"}, {"BBB"}}
+	if diff := cmp.Diff(want, rows); diff != "" {
+		t.Fatalf("jobs.insert default dataset rows mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestJobsInsertDestinationTableUsesDestinationProject(t *testing.T) {
+	const (
+		projectID     = "test"
+		destProjectID = "dest_project"
+		sourceDataset = "source_dataset"
+		destDataset   = "dest_dataset"
+		sourceTable   = "source_table"
+		destTable     = "copied_table"
+		jobID         = "job_destination_project"
+	)
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID,
+			types.NewDataset(sourceDataset,
+				types.NewTable(sourceTable,
+					[]*types.Column{types.NewColumn("name", types.STRING)},
+					types.Data{
+						{"name": "AAA"},
+						{"name": "BBB"},
+					},
+				),
+			),
+		),
+		types.NewProject(destProjectID,
+			types.NewDataset(destDataset),
+		),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	body := fmt.Sprintf(`{
+		"jobReference":{"projectId":"%s","jobId":"%s"},
+		"configuration":{"query":{
+			"query":"SELECT name FROM %s.%s ORDER BY name",
+			"destinationTable":{"projectId":"%s","datasetId":"%s","tableId":"%s"},
+			"useLegacySql":false
+		}}
+	}`, projectID, jobID, sourceDataset, sourceTable, destProjectID, destDataset, destTable)
+	code, resp := httpJSON(t, http.MethodPost, testServer.URL+"/projects/test/jobs", body, nil)
+	if code != http.StatusOK {
+		t.Fatalf("jobs.insert: expected 200, got %d (%v)", code, resp)
+	}
+	if status, _ := resp["status"].(map[string]any); status["errorResult"] != nil {
+		t.Fatalf("jobs.insert query failed: %v", status["errorResult"])
+	}
+
+	query := fmt.Sprintf(`{"query":"SELECT name FROM %s.%s ORDER BY name","useLegacySql":false}`, destDataset, destTable)
+	code, resp = httpJSON(t, http.MethodPost, testServer.URL+"/projects/"+destProjectID+"/queries", query, nil)
+	if code != http.StatusOK {
+		t.Fatalf("query destination table: expected 200, got %d (%v)", code, resp)
+	}
+	rows := queryRows(t, resp)
+	want := [][]string{{"AAA"}, {"BBB"}}
+	if diff := cmp.Diff(want, rows); diff != "" {
+		t.Fatalf("destination table rows mismatch (-want +got):\n%s", diff)
 	}
 }
 
