@@ -15,15 +15,15 @@ import (
 )
 
 type option struct {
-	Project      string           `description:"specify the project name" long:"project" env:"BIGQUERY_EMULATOR_PROJECT"`
-	Dataset      string           `description:"specify the dataset name" long:"dataset" env:"BIGQUERY_EMULATOR_DATASET"`
+	Project      string           `description:"specify the project name, unless --data-from-yaml is specified" long:"project" env:"BIGQUERY_EMULATOR_PROJECT"`
+	Dataset      string           `description:"specify the dataset name, unless --data-from-yaml is specified" long:"dataset" env:"BIGQUERY_EMULATOR_DATASET"`
 	Host         string           `description:"specify the host" long:"host" default:"0.0.0.0"`
 	HTTPPort     uint16           `description:"specify the http port number. this port used by bigquery api" long:"port" default:"9050"`
 	GRPCPort     uint16           `description:"specify the grpc port number. this port used by bigquery storage api" long:"grpc-port" default:"9060"`
 	LogLevel     server.LogLevel  `description:"specify the log level (debug/info/warn/error)" long:"log-level" default:"error"`
 	LogFormat    server.LogFormat `description:"specify the log format (console/json)" long:"log-format" default:"console"`
 	Database     string           `description:"specify the database file if required. if not specified, it will be on memory" long:"database"`
-	DataFromYAML string           `description:"specify the path to the YAML file that contains the initial data" long:"data-from-yaml"`
+	DataFromYAML string           `description:"specify the path to a YAML file which defines the projects and datasets and contains the initial data" long:"data-from-yaml"`
 	Version      bool             `description:"print version" long:"version" short:"v"`
 }
 
@@ -75,41 +75,54 @@ func runServer(args []string, opt option) error {
 		fmt.Fprintf(os.Stdout, "version: %s (%s)\n", version, revision)
 		return nil
 	}
-	if opt.Project == "" {
-		return fmt.Errorf("the required flag --project was not specified")
+	if opt.Project == "" && opt.DataFromYAML == "" {
+		return fmt.Errorf("specifying either the --project flag or --data-from-yaml flag is required")
 	}
+
+	if opt.Project == "" && opt.Dataset != "" {
+		return fmt.Errorf("specifying the --dataset flag requires specifying the --project flag")
+	}
+	
 	var db server.Storage
 	if opt.Database == "" {
 		db = server.TempStorage
 	} else {
 		db = server.Storage(fmt.Sprintf("file:%s?cache=shared", opt.Database))
 	}
-	project := types.NewProject(opt.Project)
-	if opt.Dataset != "" {
-		project.Datasets = append(project.Datasets, types.NewDataset(opt.Dataset))
-	}
+
 	bqServer, err := server.New(db)
 	if err != nil {
 		return err
 	}
-	if err := bqServer.SetProject(project.ID); err != nil {
-		return err
+	
+		if opt.Project != "" {
+		project := types.NewProject(opt.Project)
+		if err := bqServer.SetProject(project.ID); err != nil {
+			return err
+		}
+		
+		if opt.Dataset != "" {
+			project.Datasets = append(project.Datasets, types.NewDataset(opt.Dataset))
+		}
+
+		if err := bqServer.Load(server.StructSource(project)); err != nil {
+			return err
+		}
 	}
-	if err := bqServer.Load(server.StructSource(project)); err != nil {
-		return err
+
+	if opt.DataFromYAML != "" {
+		if err := bqServer.Load(server.YAMLSource(opt.DataFromYAML)); err != nil {
+			return err
+		}
 	}
+	
 	if err := bqServer.SetLogLevel(opt.LogLevel); err != nil {
 		return err
 	}
 	if err := bqServer.SetLogFormat(opt.LogFormat); err != nil {
 		return err
 	}
-	if opt.DataFromYAML != "" {
-		if err := bqServer.Load(server.YAMLSource(opt.DataFromYAML)); err != nil {
-			return err
-		}
-	}
-
+	
 	ctx := context.Background()
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)

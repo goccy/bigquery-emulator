@@ -40,6 +40,7 @@ Query execution is powered by [googlesqlite](https://github.com/goccy/googlesqli
 - Wildcard tables
 - Templated-argument functions
 - JavaScript UDF
+- Multi-project, multi-dataset support
 
 For the authoritative, per-function and per-type support matrix, see the [googlesqlite status](https://github.com/goccy/googlesqlite#status).
 
@@ -98,14 +99,14 @@ Usage:
   bigquery-emulator [OPTIONS]
 
 Application Options:
-      --project=        specify the project name
-      --dataset=        specify the dataset name
+      --project=        specify the project name, unless --data-from-yaml is specified
+      --dataset=        specify the dataset name, unless --data-from-yaml is specified
       --port=           specify the http port number. this port used by bigquery api (default: 9050)
       --grpc-port=      specify the grpc port number. this port used by bigquery storage api (default: 9060)
       --log-level=      specify the log level (debug/info/warn/error) (default: error)
       --log-format=     specify the log format (console/json) (default: console)
       --database=       specify the database file if required. if not specified, it will be on memory
-      --data-from-yaml= specify the path to the YAML file that contains the initial data
+      --data-from-yaml= specify the path to a YAML file which defines the projects and datasets and contains the initial data
   -v, --version         print version
 
 Help Options:
