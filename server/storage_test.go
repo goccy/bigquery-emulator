@@ -241,6 +241,79 @@ func TestStorageReadARROW(t *testing.T) {
 	wg.Wait()
 }
 
+// TestStorageReadARROWHighLevel reads a table through the high-level
+// bigquery.Client with the Storage Read API enabled. Unlike TestStorageReadARROW
+// (which hand-decodes the frames and tolerates the old framing), the client's
+// RowIterator only returns rows when serialized_schema and serialized_record_batch
+// are bare IPC messages — so this test fails unless the emulator emits them.
+func TestStorageReadARROWHighLevel(t *testing.T) {
+	const (
+		project = "test"
+		dataset = "dataset1"
+		table   = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	grpcOpts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bqClient, err := bigquery.NewClient(
+		ctx,
+		project,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqClient.Close()
+
+	// Route RowIterator through the Storage Read API (gRPC) rather than the
+	// REST tabledata.list path; pass the test server's gRPC connection.
+	if err := bqClient.EnableStorageReadClient(ctx, grpcOpts...); err != nil {
+		t.Fatalf("EnableStorageReadClient: %v", err)
+	}
+
+	iter := bqClient.Dataset(dataset).Table(table).Read(ctx)
+
+	ids := map[int64]bool{}
+	for {
+		row := map[string]bigquery.Value{}
+		if err := iter.Next(&row); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatalf("reading rows over the Storage Read API: %v", err)
+		}
+		if len(row) != len(outputColumns) {
+			t.Fatalf("expected %d columns but got %d: %+v", len(outputColumns), len(row), row)
+		}
+		id, ok := row["id"].(int64)
+		if !ok {
+			t.Fatalf("expected int64 id, got %T (%v)", row["id"], row["id"])
+		}
+		ids[id] = true
+	}
+
+	if len(ids) != 2 || !ids[1] || !ids[2] {
+		t.Fatalf("expected to read table_a rows with ids {1,2} over the Storage Read API, got %v", ids)
+	}
+}
+
 func processStream(t *testing.T, ctx context.Context, client *bqStorage.BigQueryReadClient, st string, ch chan<- *storagepb.ReadRowsResponse) error {
 	var offset int64
 
@@ -355,12 +428,6 @@ func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *st
 
 func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *storagepb.ReadRowsResponse) error {
 	mem := memory.NewGoAllocator()
-	buf := bytes.NewBuffer(schema)
-	r, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
-	if err != nil {
-		return err
-	}
-	aschema := r.Schema()
 	for {
 		select {
 		case <-ctx.Done():
@@ -373,18 +440,27 @@ func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *s
 			}
 			undecoded := rows.GetArrowRecordBatch().GetSerializedRecordBatch()
 			if len(undecoded) > 0 {
-				buf = bytes.NewBuffer(undecoded)
-				r, err = ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
-				if err != nil {
+				if err := validateArrowBatch(t, mem, schema, undecoded); err != nil {
 					return err
-				}
-				for r.Next() {
-					rec := r.Record()
-					validateArrowRecord(t, rec)
 				}
 			}
 		}
 	}
+}
+
+func validateArrowBatch(t *testing.T, mem memory.Allocator, schema, recordBatch []byte) error {
+	buf := bytes.NewBuffer(nil)
+	buf.Write(schema)
+	buf.Write(recordBatch)
+	reader, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
+	if err != nil {
+		return err
+	}
+	defer reader.Release()
+	for reader.Next() {
+		validateArrowRecord(t, reader.Record())
+	}
+	return nil
 }
 
 func validateArrowRecord(t *testing.T, record arrow.Record) {
