@@ -29,7 +29,11 @@ func (s *Server) addProject(ctx context.Context, project *types.Project) error {
 	for _, dataset := range project.Datasets {
 		for _, table := range dataset.Tables {
 			table.SetupMetadata(project.ID, dataset.ID)
-			if err := s.addTableData(ctx, tx, project, dataset, table); err != nil {
+			tableDef, err := types.NewTableWithSchema(table.ToBigqueryV2(project.ID, dataset.ID), table.Data)
+			if err != nil {
+				return err
+			}
+			if err := s.addTableData(ctx, tx, project, dataset, tableDef); err != nil {
 				return err
 			}
 		}
