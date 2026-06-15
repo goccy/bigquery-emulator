@@ -20,3 +20,6 @@ dist
 
 # Local output of the e2e conformance suite
 /test/e2e/.out/
+
+# Local reproduction scripts and logs
+/repro/
