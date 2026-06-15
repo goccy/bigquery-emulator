@@ -239,6 +239,9 @@ func formatCell(field *bigqueryv2.TableFieldSchema, cell *TableCell, useInt64Tim
 	if cell.V == nil {
 		return cell
 	}
+	if field == nil {
+		return cell
+	}
 
 	if field.Mode == "REPEATED" {
 		if cells, ok := cell.V.([]*TableCell); ok {
@@ -257,17 +260,21 @@ func formatCell(field *bigqueryv2.TableFieldSchema, cell *TableCell, useInt64Tim
 	}
 
 	if field.Type == "RECORD" {
-		if row, ok := cell.V.(TableRow); ok {
-			formattedF := make([]*TableCell, 0, len(row.F))
-			for i, c := range row.F {
-				var nestedField *bigqueryv2.TableFieldSchema
-				if i < len(field.Fields) {
-					nestedField = field.Fields[i]
-				}
-				formattedF = append(formattedF, formatCell(nestedField, c, useInt64Timestamp))
-			}
+		switch row := cell.V.(type) {
+		case TableRow:
+			formattedRow := formatRecordRow(field, &row, useInt64Timestamp)
 			return &TableCell{
-				V:     TableRow{F: formattedF},
+				V:     *formattedRow,
+				Bytes: cell.Bytes,
+				Name:  cell.Name,
+			}
+		case *TableRow:
+			if row == nil {
+				return cell
+			}
+			formattedRow := formatRecordRow(field, row, useInt64Timestamp)
+			return &TableCell{
+				V:     formattedRow,
 				Bytes: cell.Bytes,
 				Name:  cell.Name,
 			}
@@ -283,6 +290,18 @@ func formatCell(field *bigqueryv2.TableFieldSchema, cell *TableCell, useInt64Tim
 	}
 
 	return cell
+}
+
+func formatRecordRow(field *bigqueryv2.TableFieldSchema, row *TableRow, useInt64Timestamp bool) *TableRow {
+	formattedF := make([]*TableCell, 0, len(row.F))
+	for i, c := range row.F {
+		var nestedField *bigqueryv2.TableFieldSchema
+		if i < len(field.Fields) {
+			nestedField = field.Fields[i]
+		}
+		formattedF = append(formattedF, formatCell(nestedField, c, useInt64Timestamp))
+	}
+	return &TableRow{F: formattedF}
 }
 
 // formatTimestampCell renders one TIMESTAMP cell value. A non-string value or

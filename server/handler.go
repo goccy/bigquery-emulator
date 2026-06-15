@@ -3165,7 +3165,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		r.table.TableReference.DatasetId = r.dataset.ID
 	}
 	if r.table.TableReference.TableId == "" {
-		r.table.TableReference.TableId = r.table.Id
+		r.table.TableReference.TableId = terminalTableID(r.table.Id)
 	}
 
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
@@ -3206,6 +3206,20 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
 	}
 	return table, nil
+}
+
+func terminalTableID(id string) string {
+	if id == "" {
+		return ""
+	}
+	trimmed := id
+	if colon := strings.LastIndex(trimmed, ":"); colon >= 0 {
+		trimmed = trimmed[colon+1:]
+	}
+	if dot := strings.LastIndex(trimmed, "."); dot >= 0 {
+		trimmed = trimmed[dot+1:]
+	}
+	return trimmed
 }
 
 // handleExternalTable materializes an external table's source data into a

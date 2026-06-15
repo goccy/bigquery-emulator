@@ -83,10 +83,10 @@ func (t *Tx) ContentRepoMode() error {
 		if !ok {
 			return fmt.Errorf("failed to get *googlesqlite.Conn from %T", c)
 		}
-		namePath := []string{}
-		if t.conn.ProjectID != "" {
-			namePath = append(namePath, t.conn.ProjectID)
+		if t.conn.ProjectID == "" {
+			return fmt.Errorf("invalid projectID. projectID is empty")
 		}
+		namePath := []string{t.conn.ProjectID}
 		if t.conn.DatasetID != "" {
 			namePath = append(namePath, t.conn.DatasetID)
 		}
