@@ -119,11 +119,10 @@ func (t *Tx) RawExec(ctx context.Context, query string, args ...interface{}) err
 		if !ok {
 			return fmt.Errorf("unexpected driver connection type %T", c)
 		}
-		f := reflect.ValueOf(gsqlConn).Elem().FieldByName("conn")
-		if !f.IsValid() {
-			return fmt.Errorf("googlesqlite.Conn has no 'conn' field")
+		innerConn, err := innerSQLConn(gsqlConn)
+		if err != nil {
+			return err
 		}
-		innerConn := *(**sql.Conn)(unsafe.Pointer(f.UnsafeAddr()))
 		_, execErr = innerConn.ExecContext(ctx, query, args...)
 		return nil
 	}); err != nil {
@@ -141,17 +140,32 @@ func (t *Tx) RawQueryRow(ctx context.Context, query string, args ...interface{})
 		if !ok {
 			return fmt.Errorf("unexpected driver connection type %T", c)
 		}
-		f := reflect.ValueOf(gsqlConn).Elem().FieldByName("conn")
-		if !f.IsValid() {
-			return fmt.Errorf("googlesqlite.Conn has no 'conn' field")
+		innerConn, err := innerSQLConn(gsqlConn)
+		if err != nil {
+			return err
 		}
-		innerConn := *(**sql.Conn)(unsafe.Pointer(f.UnsafeAddr()))
 		row = innerConn.QueryRowContext(ctx, query, args...)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	return row, nil
+}
+
+// innerSQLConn extracts the unexported *sql.Conn from a *googlesqlite.Conn via
+// reflect. It validates the field name, kind, and exact type before the unsafe
+// pointer reinterpretation so a layout change in googlesqlite surfaces as a
+// clear error rather than a panic or memory corruption.
+func innerSQLConn(gsqlConn *googlesqlite.Conn) (*sql.Conn, error) {
+	f := reflect.ValueOf(gsqlConn).Elem().FieldByName("conn")
+	if !f.IsValid() {
+		return nil, fmt.Errorf("googlesqlite.Conn has no 'conn' field")
+	}
+	wantType := reflect.TypeOf((*sql.Conn)(nil))
+	if f.Kind() != reflect.Ptr || f.Type() != wantType {
+		return nil, fmt.Errorf("googlesqlite.Conn.conn has unexpected type %s (want %s)", f.Type(), wantType)
+	}
+	return *(**sql.Conn)(unsafe.Pointer(f.UnsafeAddr())), nil
 }
 
 // WithGSQLConn calls f with the underlying *googlesqlite.Conn. Use this to

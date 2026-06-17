@@ -1907,50 +1907,51 @@ func queryProjectAndDataset(defaultDataset *bigqueryv2.DatasetReference, fallbac
 // isAlterTableQuery returns true when the SQL statement is an ALTER TABLE.
 func isAlterTableQuery(query string) bool {
 	q := strings.ToUpper(strings.TrimSpace(query))
-	return strings.HasPrefix(q, "ALTER") && strings.Contains(q, "TABLE")
+	return strings.HasPrefix(q, "ALTER TABLE ")
 }
 
 // bqTypeKind maps a BigQuery type name (as returned by the ZetaSQL parser) to
 // the go-googlesql TypeKind integer stored in googlesqlite's catalog JSON.
-// This is the standard BigQuery type system — not application-specific logic.
-func bqTypeKind(typeName string) int {
+// Returns (kind, true) on success or (0, false) for unrecognised type names so
+// callers can surface a clear error instead of silently defaulting to STRING.
+func bqTypeKind(typeName string) (int, bool) {
 	switch strings.ToUpper(typeName) {
 	case "INT64", "INT", "INTEGER", "SMALLINT", "BIGINT", "TINYINT", "BYTEINT":
-		return int(googlesql.TypeKindTypeInt64)
+		return int(googlesql.TypeKindTypeInt64), true
 	case "INT32":
-		return int(googlesql.TypeKindTypeInt32)
+		return int(googlesql.TypeKindTypeInt32), true
 	case "FLOAT64", "FLOAT":
-		return int(googlesql.TypeKindTypeDouble)
+		return int(googlesql.TypeKindTypeDouble), true
 	case "FLOAT32":
-		return int(googlesql.TypeKindTypeFloat)
+		return int(googlesql.TypeKindTypeFloat), true
 	case "BOOL", "BOOLEAN":
-		return int(googlesql.TypeKindTypeBool)
+		return int(googlesql.TypeKindTypeBool), true
 	case "STRING":
-		return int(googlesql.TypeKindTypeString)
+		return int(googlesql.TypeKindTypeString), true
 	case "BYTES":
-		return int(googlesql.TypeKindTypeBytes)
+		return int(googlesql.TypeKindTypeBytes), true
 	case "DATE":
-		return int(googlesql.TypeKindTypeDate)
+		return int(googlesql.TypeKindTypeDate), true
 	case "DATETIME":
-		return int(googlesql.TypeKindTypeDatetime)
+		return int(googlesql.TypeKindTypeDatetime), true
 	case "TIME":
-		return int(googlesql.TypeKindTypeTime)
+		return int(googlesql.TypeKindTypeTime), true
 	case "TIMESTAMP":
-		return int(googlesql.TypeKindTypeTimestamp)
+		return int(googlesql.TypeKindTypeTimestamp), true
 	case "NUMERIC", "DECIMAL":
-		return int(googlesql.TypeKindTypeNumeric)
+		return int(googlesql.TypeKindTypeNumeric), true
 	case "BIGNUMERIC", "BIGDECIMAL":
-		return int(googlesql.TypeKindTypeBignumeric)
+		return int(googlesql.TypeKindTypeBignumeric), true
 	case "JSON":
-		return int(googlesql.TypeKindTypeJson)
+		return int(googlesql.TypeKindTypeJson), true
 	case "GEOGRAPHY":
-		return int(googlesql.TypeKindTypeGeography)
+		return int(googlesql.TypeKindTypeGeography), true
 	case "ARRAY":
-		return int(googlesql.TypeKindTypeArray)
+		return int(googlesql.TypeKindTypeArray), true
 	case "STRUCT", "RECORD":
-		return int(googlesql.TypeKindTypeStruct)
+		return int(googlesql.TypeKindTypeStruct), true
 	default:
-		return int(googlesql.TypeKindTypeString)
+		return 0, false
 	}
 }
 
@@ -2095,6 +2096,8 @@ func parseAlterTable(query string) (tablePath []string, actions []parsedAlterAct
 				colName: colName,
 				newName: newName,
 			})
+		default:
+			return nil, nil, fmt.Errorf("alter table: unsupported action type %T", node)
 		}
 	}
 	return tablePath, actions, nil
@@ -2171,7 +2174,11 @@ func updateZetaSQLCatalogForAlter(
 		if action.kind != "ADD_COLUMN" {
 			continue
 		}
-		colType, err := tf.MakeSimpleType(googlesql.TypeKind(bqTypeKind(action.colType)))
+		kind, ok := bqTypeKind(action.colType)
+		if !ok {
+			return fmt.Errorf("unsupported column type %q for ZetaSQL catalog", action.colType)
+		}
+		colType, err := tf.MakeSimpleType(googlesql.TypeKind(kind))
 		if err != nil {
 			return fmt.Errorf("failed to make ZetaSQL type for column %q: %w", action.colName, err)
 		}
@@ -2250,9 +2257,13 @@ func executeAlterTableDDL(
 	columns := make([]*googlesqlite.ColumnSpec, 0)
 	if tableMeta.Schema != nil {
 		for _, f := range tableMeta.Schema.Fields {
+			kind, ok := bqTypeKind(f.Type)
+			if !ok {
+				return nil, fmt.Errorf("unsupported column type %q in existing schema", f.Type)
+			}
 			columns = append(columns, &googlesqlite.ColumnSpec{
 				Name: f.Name,
-				Type: &googlesqlite.Type{Kind: bqTypeKind(f.Type)},
+				Type: &googlesqlite.Type{Kind: kind},
 			})
 		}
 	}
@@ -2262,9 +2273,13 @@ func executeAlterTableDDL(
 	for _, action := range actions {
 		switch action.kind {
 		case "ADD_COLUMN":
+			kind, ok := bqTypeKind(action.colType)
+			if !ok {
+				return nil, fmt.Errorf("unsupported column type %q", action.colType)
+			}
 			columns = append(columns, &googlesqlite.ColumnSpec{
 				Name: action.colName,
-				Type: &googlesqlite.Type{Kind: bqTypeKind(action.colType)},
+				Type: &googlesqlite.Type{Kind: kind},
 			})
 			ddl := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s",
 				sqliteTableName, action.colName, bqTypeToSQLite(action.colType))
