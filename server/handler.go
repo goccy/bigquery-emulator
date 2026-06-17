@@ -3097,6 +3097,15 @@ const (
 
 func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server, project *metadata.Project, dataset *metadata.Dataset, table *bigqueryv2.Table) (*bigqueryv2.Table, *ServerError) {
 	now := time.Now().Unix()
+	if table.TableReference == nil {
+		table.TableReference = &bigqueryv2.TableReference{}
+	}
+	if table.TableReference.ProjectId == "" {
+		table.TableReference.ProjectId = project.ID
+	}
+	if table.TableReference.DatasetId == "" {
+		table.TableReference.DatasetId = dataset.ID
+	}
 	table.Id = fmt.Sprintf("%s:%s.%s", project.ID, dataset.ID, table.TableReference.TableId)
 	table.CreationTime = now
 	table.LastModifiedTime = uint64(now)
@@ -3146,6 +3155,19 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if r.table.ExternalDataConfiguration != nil {
 		return h.handleExternalTable(ctx, r)
 	}
+	if r.table.TableReference == nil {
+		r.table.TableReference = &bigqueryv2.TableReference{}
+	}
+	if r.table.TableReference.ProjectId == "" {
+		r.table.TableReference.ProjectId = r.project.ID
+	}
+	if r.table.TableReference.DatasetId == "" {
+		r.table.TableReference.DatasetId = r.dataset.ID
+	}
+	if r.table.TableReference.TableId == "" {
+		r.table.TableReference.TableId = terminalTableID(r.table.Id)
+	}
+
 	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
 	if err != nil {
 		return nil, errInternalError(err.Error())
@@ -3184,6 +3206,20 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())
 	}
 	return table, nil
+}
+
+func terminalTableID(id string) string {
+	if id == "" {
+		return ""
+	}
+	trimmed := id
+	if colon := strings.LastIndex(trimmed, ":"); colon >= 0 {
+		trimmed = trimmed[colon+1:]
+	}
+	if dot := strings.LastIndex(trimmed, "."); dot >= 0 {
+		trimmed = trimmed[dot+1:]
+	}
+	return trimmed
 }
 
 // handleExternalTable materializes an external table's source data into a
