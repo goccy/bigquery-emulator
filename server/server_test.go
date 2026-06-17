@@ -941,6 +941,88 @@ func TestDDLCreateView(t *testing.T) {
 	}
 }
 
+func TestDDLAlterTable(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "customers"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(projectName, types.NewDataset(datasetName)))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	runQuery := func(q string) {
+		t.Helper()
+		job, err := client.Query(q).Run(ctx)
+		if err != nil {
+			t.Fatalf("Query(%q) run: %v", q, err)
+		}
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatalf("Query(%q) wait: %v", q, err)
+		}
+		if status.Err() != nil {
+			t.Fatalf("Query(%q) status: %v", q, status.Err())
+		}
+	}
+
+	runQuery(fmt.Sprintf("CREATE TABLE %s.%s (name STRING)", datasetName, tableName))
+	runQuery(fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN age INT64", datasetName, tableName))
+
+	// Schema must reflect the new column.
+	md, err := client.Dataset(datasetName).Table(tableName).Metadata(ctx)
+	if err != nil {
+		t.Fatalf("table metadata after ALTER TABLE: %v", err)
+	}
+	if len(md.Schema) != 2 {
+		t.Fatalf("schema has %d fields after ALTER TABLE, want 2: %v", len(md.Schema), md.Schema)
+	}
+	if md.Schema[1].Name != "age" {
+		t.Errorf("second field = %q, want %q", md.Schema[1].Name, "age")
+	}
+
+	// INSERT and SELECT must work with the new column.
+	runQuery(fmt.Sprintf("INSERT INTO %s.%s (name, age) VALUES ('Alice', 30)", datasetName, tableName))
+
+	it, err := client.Query(fmt.Sprintf("SELECT name, age FROM %s.%s", datasetName, tableName)).Read(ctx)
+	if err != nil {
+		t.Fatalf("SELECT after ALTER TABLE: %v", err)
+	}
+	var row struct {
+		Name string
+		Age  int64
+	}
+	if err := it.Next(&row); err != nil {
+		t.Fatalf("reading row: %v", err)
+	}
+	if row.Name != "Alice" || row.Age != 30 {
+		t.Errorf("got row {%q, %d}, want {Alice, 30}", row.Name, row.Age)
+	}
+}
+
 func TestDuplicateTable(t *testing.T) {
 	const (
 		projectName = "test"

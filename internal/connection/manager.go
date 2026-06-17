@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
+	"unsafe"
 
 	"github.com/goccy/googlesqlite"
 )
@@ -105,6 +107,64 @@ type Conn struct {
 	ProjectID string
 	DatasetID string
 	Conn      *sql.Conn
+}
+
+// RawExec executes a raw SQLite statement directly on the inner connection,
+// bypassing googlesqlite's ZetaSQL parser. Safe to call while a transaction
+// is active (after Begin, before Commit/Rollback).
+func (t *Tx) RawExec(ctx context.Context, query string, args ...interface{}) error {
+	var execErr error
+	if err := t.conn.Conn.Raw(func(c interface{}) error {
+		gsqlConn, ok := c.(*googlesqlite.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected driver connection type %T", c)
+		}
+		f := reflect.ValueOf(gsqlConn).Elem().FieldByName("conn")
+		if !f.IsValid() {
+			return fmt.Errorf("googlesqlite.Conn has no 'conn' field")
+		}
+		innerConn := *(**sql.Conn)(unsafe.Pointer(f.UnsafeAddr()))
+		_, execErr = innerConn.ExecContext(ctx, query, args...)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return execErr
+}
+
+// RawQueryRow executes a raw SQLite query, bypassing ZetaSQL, and returns
+// the single-row result. The caller must scan the row before the next call.
+func (t *Tx) RawQueryRow(ctx context.Context, query string, args ...interface{}) (*sql.Row, error) {
+	var row *sql.Row
+	if err := t.conn.Conn.Raw(func(c interface{}) error {
+		gsqlConn, ok := c.(*googlesqlite.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected driver connection type %T", c)
+		}
+		f := reflect.ValueOf(gsqlConn).Elem().FieldByName("conn")
+		if !f.IsValid() {
+			return fmt.Errorf("googlesqlite.Conn has no 'conn' field")
+		}
+		innerConn := *(**sql.Conn)(unsafe.Pointer(f.UnsafeAddr()))
+		row = innerConn.QueryRowContext(ctx, query, args...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// WithGSQLConn calls f with the underlying *googlesqlite.Conn. Use this to
+// manipulate googlesqlite internals (e.g. the in-memory ZetaSQL catalog)
+// from outside the package.
+func (t *Tx) WithGSQLConn(f func(*googlesqlite.Conn) error) error {
+	return t.conn.Conn.Raw(func(c interface{}) error {
+		gsqlConn, ok := c.(*googlesqlite.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected driver connection type %T", c)
+		}
+		return f(gsqlConn)
+	})
 }
 
 func (c *Conn) Begin(ctx context.Context) (*Tx, error) {

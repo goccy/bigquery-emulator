@@ -18,8 +18,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"cloud.google.com/go/storage"
+	googlesql "github.com/goccy/go-googlesql"
 	"github.com/goccy/go-json"
 	"github.com/goccy/googlesqlite"
 	"go.uber.org/zap"
@@ -1751,14 +1753,22 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	defer tx.RollbackIfNotCommitted()
 	hasDestinationTable := job.Configuration.Query.DestinationTable != nil
 	startTime := time.Now()
-	response, jobErr := r.server.contentRepo.Query(
-		ctx,
-		tx,
-		queryProjectID,
-		datasetID,
-		job.Configuration.Query.Query,
-		job.Configuration.Query.QueryParameters,
-	)
+	queryText := job.Configuration.Query.Query
+	var alteredSpec *googlesqlite.TableSpec
+	var response *internaltypes.QueryResponse
+	var jobErr error
+	if isAlterTableQuery(queryText) {
+		alteredSpec, jobErr = executeAlterTableDDL(ctx, r.server, tx, queryProjectID, datasetID, queryText)
+	} else {
+		response, jobErr = r.server.contentRepo.Query(
+			ctx,
+			tx,
+			queryProjectID,
+			datasetID,
+			queryText,
+			job.Configuration.Query.QueryParameters,
+		)
+	}
 	endTime := time.Now()
 	if job.JobReference.JobId == "" {
 		job.JobReference.JobId = randomID() // generate job id
@@ -1872,6 +1882,11 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 				return nil, err
 			}
 		}
+		if alteredSpec != nil {
+			if err := updateTableMetadata(ctx, r.server, alteredSpec); err != nil {
+				return nil, fmt.Errorf("failed to update table metadata after ALTER TABLE: %w", err)
+			}
+		}
 	}
 
 	return job, nil
@@ -1889,9 +1904,442 @@ func queryProjectAndDataset(defaultDataset *bigqueryv2.DatasetReference, fallbac
 	return projectID, datasetID
 }
 
+// isAlterTableQuery returns true when the SQL statement is an ALTER TABLE.
+func isAlterTableQuery(query string) bool {
+	q := strings.ToUpper(strings.TrimSpace(query))
+	return strings.HasPrefix(q, "ALTER") && strings.Contains(q, "TABLE")
+}
+
+// bqTypeKind maps a BigQuery type name (as returned by the ZetaSQL parser) to
+// the go-googlesql TypeKind integer stored in googlesqlite's catalog JSON.
+// This is the standard BigQuery type system — not application-specific logic.
+func bqTypeKind(typeName string) int {
+	switch strings.ToUpper(typeName) {
+	case "INT64", "INT", "INTEGER", "SMALLINT", "BIGINT", "TINYINT", "BYTEINT":
+		return int(googlesql.TypeKindTypeInt64)
+	case "INT32":
+		return int(googlesql.TypeKindTypeInt32)
+	case "FLOAT64", "FLOAT":
+		return int(googlesql.TypeKindTypeDouble)
+	case "FLOAT32":
+		return int(googlesql.TypeKindTypeFloat)
+	case "BOOL", "BOOLEAN":
+		return int(googlesql.TypeKindTypeBool)
+	case "STRING":
+		return int(googlesql.TypeKindTypeString)
+	case "BYTES":
+		return int(googlesql.TypeKindTypeBytes)
+	case "DATE":
+		return int(googlesql.TypeKindTypeDate)
+	case "DATETIME":
+		return int(googlesql.TypeKindTypeDatetime)
+	case "TIME":
+		return int(googlesql.TypeKindTypeTime)
+	case "TIMESTAMP":
+		return int(googlesql.TypeKindTypeTimestamp)
+	case "NUMERIC", "DECIMAL":
+		return int(googlesql.TypeKindTypeNumeric)
+	case "BIGNUMERIC", "BIGDECIMAL":
+		return int(googlesql.TypeKindTypeBignumeric)
+	case "JSON":
+		return int(googlesql.TypeKindTypeJson)
+	case "GEOGRAPHY":
+		return int(googlesql.TypeKindTypeGeography)
+	case "ARRAY":
+		return int(googlesql.TypeKindTypeArray)
+	case "STRUCT", "RECORD":
+		return int(googlesql.TypeKindTypeStruct)
+	default:
+		return int(googlesql.TypeKindTypeString)
+	}
+}
+
+// bqTypeToSQLite maps a BigQuery type name to the SQLite column affinity.
+// Mirrors googlesqlite's internal ColumnSpec.SQLiteSchema() mapping.
+func bqTypeToSQLite(typeName string) string {
+	switch strings.ToUpper(typeName) {
+	case "INT64", "INT", "INTEGER", "SMALLINT", "BIGINT", "TINYINT", "BYTEINT", "INT32":
+		return "INT"
+	case "BOOL", "BOOLEAN":
+		return "BOOLEAN"
+	case "FLOAT32":
+		return "FLOAT"
+	case "BYTES":
+		return "BLOB"
+	case "FLOAT64", "FLOAT", "DOUBLE":
+		return "DOUBLE"
+	case "JSON":
+		return "JSON"
+	default:
+		return "TEXT"
+	}
+}
+
+// parsedAlterAction describes a single action extracted from an ALTER TABLE AST.
+type parsedAlterAction struct {
+	kind    string // "ADD_COLUMN", "DROP_COLUMN", "RENAME_COLUMN"
+	colName string // column name (all actions)
+	colType string // BigQuery type string (ADD_COLUMN)
+	newName string // new column name (RENAME_COLUMN)
+}
+
+// parseAlterTable parses an ALTER TABLE query using the ZetaSQL AST and
+// returns the table path components and the list of actions.
+func parseAlterTable(query string) (tablePath []string, actions []parsedAlterAction, err error) {
+	opts, err := googlesql.NewParserOptions()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: parser options: %w", err)
+	}
+	out, err := googlesql.ParseStatement(query, opts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: parse: %w", err)
+	}
+	stmt, err := out.Statement()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: get statement: %w", err)
+	}
+	altStmt, ok := stmt.(*googlesql.ASTAlterTableStatement)
+	if !ok {
+		return nil, nil, fmt.Errorf("alter table: expected ASTAlterTableStatement, got %T", stmt)
+	}
+	// Extract table path (e.g. ["dataset", "table"] or ["project","dataset","table"])
+	target, err := altStmt.GetDdlTarget()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: get DDL target: %w", err)
+	}
+	tablePath, err = target.ToIdentifierVector()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: table path: %w", err)
+	}
+	// Extract actions
+	actionList, err := altStmt.ActionList()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: action list: %w", err)
+	}
+	nChildren, err := actionList.NumChildren()
+	if err != nil {
+		return nil, nil, fmt.Errorf("alter table: num children: %w", err)
+	}
+	for i := int32(0); i < nChildren; i++ {
+		node, err := actionList.Actions(i)
+		if err != nil {
+			return nil, nil, fmt.Errorf("alter table: action %d: %w", i, err)
+		}
+		switch a := node.(type) {
+		case *googlesql.ASTAddColumnAction:
+			colDef, err := a.ColumnDefinition()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: add column definition: %w", err)
+			}
+			nameNode, err := colDef.Name()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: column name: %w", err)
+			}
+			colName, err := nameNode.GetAsString()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: column name string: %w", err)
+			}
+			schemaNode, err := colDef.Schema()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: column schema: %w", err)
+			}
+			simpleSchema, ok := schemaNode.(*googlesql.ASTSimpleColumnSchema)
+			if !ok {
+				return nil, nil, fmt.Errorf("alter table: unsupported column schema type %T", schemaNode)
+			}
+			typePath, err := simpleSchema.TypeName()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: type name: %w", err)
+			}
+			typeName, err := typePath.ToIdentifierPathString(0)
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: type path string: %w", err)
+			}
+			actions = append(actions, parsedAlterAction{
+				kind:    "ADD_COLUMN",
+				colName: colName,
+				colType: typeName,
+			})
+		case *googlesql.ASTDropColumnAction:
+			nameNode, err := a.ColumnName()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: drop column name: %w", err)
+			}
+			colName, err := nameNode.GetAsString()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: drop column name string: %w", err)
+			}
+			actions = append(actions, parsedAlterAction{
+				kind:    "DROP_COLUMN",
+				colName: colName,
+			})
+		case *googlesql.ASTRenameColumnAction:
+			nameNode, err := a.ColumnName()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: rename column name: %w", err)
+			}
+			colName, err := nameNode.GetAsString()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: rename column name string: %w", err)
+			}
+			newNameNode, err := a.NewColumnName()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: rename new column name: %w", err)
+			}
+			newName, err := newNameNode.GetAsString()
+			if err != nil {
+				return nil, nil, fmt.Errorf("alter table: rename new column name string: %w", err)
+			}
+			actions = append(actions, parsedAlterAction{
+				kind:    "RENAME_COLUMN",
+				colName: colName,
+				newName: newName,
+			})
+		}
+	}
+	return tablePath, actions, nil
+}
+
+// updateZetaSQLCatalogForAlter updates the in-memory ZetaSQL SimpleCatalog
+// after an ALTER TABLE ADD COLUMN, bypassing googlesqlite's Sync path which
+// returns early for tables already present in c.tableMap and never propagates
+// schema changes to the WASM-side C++ SimpleCatalog.
+//
+// Strategy: reach through reflect+unsafe to get (*googlesqlite.Conn).catalog
+// (*internal.Catalog) → .catalog (*googlesql.SimpleCatalog), enumerate the
+// root-level tables, find the handle whose Name() equals the SQLite storage
+// name, and call AddColumn on it. Because googlesqlite aliases the SAME
+// *SimpleTable pointer under every lookup name in the catalog hierarchy, a
+// single AddColumn call makes the new column visible to the ZetaSQL analyzer
+// for all qualified references (e.g. "project.dataset.table" and "table").
+func updateZetaSQLCatalogForAlter(
+	gsqlConn *googlesqlite.Conn,
+	sqliteTableName string,
+	actions []parsedAlterAction,
+) error {
+	connVal := reflect.ValueOf(gsqlConn).Elem()
+
+	// (*googlesqlite.Conn).catalog → *internal.Catalog (unexported field)
+	catalogField := connVal.FieldByName("catalog")
+	if !catalogField.IsValid() {
+		return fmt.Errorf("googlesqlite.Conn has no 'catalog' field")
+	}
+	internalCatalogPtr := reflect.NewAt(catalogField.Type(), unsafe.Pointer(catalogField.UnsafeAddr())).Elem()
+
+	// (*internal.Catalog).catalog → *googlesql.SimpleCatalog (unexported field)
+	internalCatalogVal := internalCatalogPtr.Elem()
+	simpleCatalogField := internalCatalogVal.FieldByName("catalog")
+	if !simpleCatalogField.IsValid() {
+		return fmt.Errorf("internal.Catalog has no 'catalog' field")
+	}
+	simpleCatalogPtr := reflect.NewAt(simpleCatalogField.Type(), unsafe.Pointer(simpleCatalogField.UnsafeAddr())).Elem()
+	simpleCatalog, ok := simpleCatalogPtr.Interface().(*googlesql.SimpleCatalog)
+	if !ok {
+		return fmt.Errorf("expected *googlesql.SimpleCatalog, got %T", simpleCatalogPtr.Interface())
+	}
+
+	// The same *SimpleTable handle is aliased under multiple lookup names in
+	// the root catalog (e.g. "p.d.t", "d.t", "t"). Tables() returns them all;
+	// match on Name() which is always the storage name (strings.Join(path,"_")).
+	tables, err := simpleCatalog.Tables()
+	if err != nil {
+		return fmt.Errorf("failed to enumerate SimpleCatalog tables: %w", err)
+	}
+	var target *googlesql.SimpleTable
+	for _, node := range tables {
+		tbl, ok := node.(*googlesql.SimpleTable)
+		if !ok {
+			continue
+		}
+		name, err := tbl.Name()
+		if err != nil || name != sqliteTableName {
+			continue
+		}
+		target = tbl
+		break
+	}
+	if target == nil {
+		return fmt.Errorf("table %q not found in ZetaSQL SimpleCatalog", sqliteTableName)
+	}
+
+	tf, err := simpleCatalog.TypeFactory()
+	if err != nil {
+		return fmt.Errorf("failed to get TypeFactory from SimpleCatalog: %w", err)
+	}
+
+	for _, action := range actions {
+		if action.kind != "ADD_COLUMN" {
+			continue
+		}
+		colType, err := tf.MakeSimpleType(googlesql.TypeKind(bqTypeKind(action.colType)))
+		if err != nil {
+			return fmt.Errorf("failed to make ZetaSQL type for column %q: %w", action.colName, err)
+		}
+		newCol, err := googlesql.NewSimpleColumn(sqliteTableName, action.colName, colType, false, true)
+		if err != nil {
+			return fmt.Errorf("failed to create SimpleColumn %q: %w", action.colName, err)
+		}
+		if err := target.AddColumn(newCol); err != nil {
+			return fmt.Errorf("failed to add column %q to ZetaSQL table: %w", action.colName, err)
+		}
+	}
+	return nil
+}
+
+// executeAlterTableDDL handles ALTER TABLE by:
+//  1. Parsing the ZetaSQL AST to extract table path + actions (dynamic)
+//  2. Building the updated TableSpec from the current metadata
+//  3. Executing raw SQLite DDL on the inner connection (bypassing ZetaSQL)
+//  4. Upserting googlesqlite_catalog with the new spec JSON
+//
+// Returns the updated TableSpec, to be persisted to metadata after tx commit.
+func executeAlterTableDDL(
+	ctx context.Context,
+	server *Server,
+	tx *connection.Tx,
+	requestProjectID, requestDatasetID string,
+	query string,
+) (*googlesqlite.TableSpec, error) {
+	tablePath, actions, err := parseAlterTable(query)
+	if err != nil {
+		return nil, err
+	}
+	if len(actions) == 0 {
+		return nil, nil
+	}
+
+	// Resolve the full 3-part path (project, dataset, table).
+	var projectID, datasetID, tableID string
+	switch len(tablePath) {
+	case 1:
+		projectID = requestProjectID
+		datasetID = requestDatasetID
+		tableID = tablePath[0]
+	case 2:
+		projectID = requestProjectID
+		datasetID = tablePath[0]
+		tableID = tablePath[1]
+	case 3:
+		projectID = tablePath[0]
+		datasetID = tablePath[1]
+		tableID = tablePath[2]
+	default:
+		return nil, fmt.Errorf("unexpected ALTER TABLE path length: %v", tablePath)
+	}
+
+	// Load the current table metadata to get existing columns.
+	project, err := server.metaRepo.FindProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	dataset := project.Dataset(datasetID)
+	if dataset == nil {
+		return nil, fmt.Errorf("dataset %q not found", datasetID)
+	}
+	table := dataset.Table(tableID)
+	if table == nil {
+		return nil, fmt.Errorf("table %q not found", tableID)
+	}
+	tableMeta, err := table.Content()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read table content: %w", err)
+	}
+
+	// Build the current ColumnSpec slice from BigQuery schema.
+	namePath := []string{projectID, datasetID, tableID}
+	columns := make([]*googlesqlite.ColumnSpec, 0)
+	if tableMeta.Schema != nil {
+		for _, f := range tableMeta.Schema.Fields {
+			columns = append(columns, &googlesqlite.ColumnSpec{
+				Name: f.Name,
+				Type: &googlesqlite.Type{Kind: bqTypeKind(f.Type)},
+			})
+		}
+	}
+
+	// Apply each parsed action to derive the new column list.
+	sqliteTableName := strings.Join(namePath, "_")
+	for _, action := range actions {
+		switch action.kind {
+		case "ADD_COLUMN":
+			columns = append(columns, &googlesqlite.ColumnSpec{
+				Name: action.colName,
+				Type: &googlesqlite.Type{Kind: bqTypeKind(action.colType)},
+			})
+			ddl := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s",
+				sqliteTableName, action.colName, bqTypeToSQLite(action.colType))
+			if err := tx.RawExec(ctx, ddl); err != nil {
+				return nil, fmt.Errorf("failed to add column %q: %w", action.colName, err)
+			}
+		case "DROP_COLUMN":
+			newCols := columns[:0]
+			for _, c := range columns {
+				if !strings.EqualFold(c.Name, action.colName) {
+					newCols = append(newCols, c)
+				}
+			}
+			columns = newCols
+			ddl := fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`",
+				sqliteTableName, action.colName)
+			if err := tx.RawExec(ctx, ddl); err != nil {
+				return nil, fmt.Errorf("failed to drop column %q: %w", action.colName, err)
+			}
+		case "RENAME_COLUMN":
+			for _, c := range columns {
+				if strings.EqualFold(c.Name, action.colName) {
+					c.Name = action.newName
+					break
+				}
+			}
+			ddl := fmt.Sprintf("ALTER TABLE `%s` RENAME COLUMN `%s` TO `%s`",
+				sqliteTableName, action.colName, action.newName)
+			if err := tx.RawExec(ctx, ddl); err != nil {
+				return nil, fmt.Errorf("failed to rename column %q: %w", action.colName, err)
+			}
+		}
+	}
+
+	// Construct the updated TableSpec.
+	newSpec := &googlesqlite.TableSpec{
+		NamePath: namePath,
+		Columns:  columns,
+	}
+
+	// Persist the updated spec to googlesqlite_catalog so the catalog is
+	// consistent when future queries are analyzed against this table.
+	specJSON, err := json.Marshal(newSpec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal updated table spec: %w", err)
+	}
+	upsertSQL := `
+INSERT INTO googlesqlite_catalog (name, kind, spec, updatedAt, createdAt)
+VALUES (?, 'table', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(name) DO UPDATE SET spec = excluded.spec, updatedAt = CURRENT_TIMESTAMP`
+	if err := tx.RawExec(ctx, upsertSQL, sqliteTableName, string(specJSON)); err != nil {
+		return nil, fmt.Errorf("failed to update googlesqlite_catalog: %w", err)
+	}
+
+	// Update the in-memory ZetaSQL SimpleCatalog so subsequent query analysis
+	// sees the new columns without waiting for a Sync cycle. googlesqlite's
+	// addTableSpec takes the "existing table" branch for tables already in
+	// c.tableMap and returns early without touching the WASM-side catalog.
+	if err := tx.WithGSQLConn(func(gsqlConn *googlesqlite.Conn) error {
+		return updateZetaSQLCatalogForAlter(gsqlConn, sqliteTableName, actions)
+	}); err != nil {
+		return nil, fmt.Errorf("failed to update ZetaSQL in-memory catalog: %w", err)
+	}
+
+	return newSpec, nil
+}
+
 func syncCatalog(ctx context.Context, server *Server, cat *googlesqlite.ChangedCatalog) error {
 	for _, table := range cat.Table.Added {
 		if err := addTableMetadata(ctx, server, table); err != nil {
+			return err
+		}
+	}
+	for _, table := range cat.Table.Updated {
+		if err := updateTableMetadata(ctx, server, table); err != nil {
 			return err
 		}
 	}
@@ -1946,6 +2394,56 @@ func addTableMetadata(ctx context.Context, server *Server, spec *googlesqlite.Ta
 	}
 	if _, err := createTableMetadata(ctx, tx, server, project, dataset, table); err != nil {
 		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func updateTableMetadata(ctx context.Context, server *Server, spec *googlesqlite.TableSpec) error {
+	if len(spec.NamePath) != 3 {
+		return fmt.Errorf("unexpected table name path: %v", spec.NamePath)
+	}
+	projectID := spec.NamePath[0]
+	datasetID := spec.NamePath[1]
+	tableID := spec.NamePath[2]
+	project, err := server.metaRepo.FindProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	dataset := project.Dataset(datasetID)
+	if dataset == nil {
+		return fmt.Errorf("dataset %s is not found", datasetID)
+	}
+	table := dataset.Table(tableID)
+	if table == nil {
+		return fmt.Errorf("table %s is not found", tableID)
+	}
+	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(spec.Columns))
+	for _, column := range spec.Columns {
+		fields = append(fields, types.TableFieldSchemaFromColumnType(column.Name, column.Type))
+	}
+	schema := &bigqueryv2.TableSchema{Fields: fields}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("failed to encode updated schema: %w", err)
+	}
+	var schemaMap interface{}
+	if err := json.Unmarshal(encoded, &schemaMap); err != nil {
+		return fmt.Errorf("failed to decode updated schema: %w", err)
+	}
+	conn, err := server.connMgr.Connection(ctx, projectID, datasetID)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.RollbackIfNotCommitted()
+	if err := table.Patch(ctx, tx.Tx(), map[string]interface{}{"schema": schemaMap}); err != nil {
+		return fmt.Errorf("failed to update table schema metadata: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2132,14 +2630,21 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	}
 	defer tx.RollbackIfNotCommitted()
 	startTime := time.Now()
-	response, queryErr := r.server.contentRepo.Query(
-		ctx,
-		tx,
-		queryProjectID,
-		datasetID,
-		r.queryRequest.Query,
-		r.queryRequest.QueryParameters,
-	)
+	var alteredSpec *googlesqlite.TableSpec
+	var response *internaltypes.QueryResponse
+	var queryErr error
+	if isAlterTableQuery(r.queryRequest.Query) {
+		alteredSpec, queryErr = executeAlterTableDDL(ctx, r.server, tx, queryProjectID, datasetID, r.queryRequest.Query)
+	} else {
+		response, queryErr = r.server.contentRepo.Query(
+			ctx,
+			tx,
+			queryProjectID,
+			datasetID,
+			r.queryRequest.Query,
+			r.queryRequest.QueryParameters,
+		)
+	}
 	if queryErr != nil {
 		return nil, queryErr
 	}
@@ -2225,11 +2730,19 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
-		if response.ChangedCatalog.Changed() {
+		if response != nil && response.ChangedCatalog.Changed() {
 			if err := syncCatalog(ctx, r.server, response.ChangedCatalog); err != nil {
 				return nil, err
 			}
 		}
+		if alteredSpec != nil {
+			if err := updateTableMetadata(ctx, r.server, alteredSpec); err != nil {
+				return nil, fmt.Errorf("failed to update table metadata after ALTER TABLE: %w", err)
+			}
+		}
+	}
+	if response == nil {
+		response = &internaltypes.QueryResponse{}
 	}
 	response.Rows = internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
 	response.JobReference = job.JobReference
