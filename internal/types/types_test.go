@@ -23,7 +23,7 @@ func TestAppendValueToARROWBuilder_List(t *testing.T) {
 	listBldr := rb.Field(0).(*array.ListBuilder)
 
 	rows := []struct {
-		cells  []*TableCell
+		cells   []*TableCell
 		wantLen int
 	}{
 		{
@@ -37,6 +37,14 @@ func TestAppendValueToARROWBuilder_List(t *testing.T) {
 		{
 			cells:   []*TableCell{{V: "4"}},
 			wantLen: 1,
+		},
+		{
+			// A nil []*TableCell is a typed nil stored in the interface V field.
+			// BigQuery has no null-array concept for REPEATED columns, so nil
+			// must behave identically to an empty slice: a valid, non-null,
+			// zero-length list slot.
+			cells:   nil,
+			wantLen: 0,
 		},
 	}
 
@@ -60,6 +68,19 @@ func TestAppendValueToARROWBuilder_List(t *testing.T) {
 		start, end := col.ValueOffsets(i)
 		if got := int(end - start); got != row.wantLen {
 			t.Errorf("row %d: list length = %d, want %d", i, got, row.wantLen)
+		}
+	}
+
+	// Verify actual element values in the first row (cells "1","2","3" → 1,2,3).
+	valCol := col.ListValues().(*array.Int64)
+	start, end := col.ValueOffsets(0)
+	wantVals := []int64{1, 2, 3}
+	if got := int(end - start); got != len(wantVals) {
+		t.Fatalf("row 0 element count = %d, want %d", got, len(wantVals))
+	}
+	for i, wv := range wantVals {
+		if got := valCol.Value(int(start) + i); got != wv {
+			t.Errorf("row 0 element %d = %d, want %d", i, got, wv)
 		}
 	}
 }
