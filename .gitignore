@@ -23,3 +23,6 @@ dist
 
 # Local reproduction scripts and logs
 /repro/
+
+# Local development log
+devlog.md
