@@ -195,9 +195,16 @@ func (c *TableCell) AppendValueToARROWBuilder(builder array.Builder) error {
 		if !ok {
 			return fmt.Errorf("failed to convert to list builder from %T", builder)
 		}
+		// BigQuery REPEATED fields are always non-null: a REPEATED column is
+		// either empty or populated, never null. Append(true) marks this list
+		// slot as valid (non-null) and opens it for elements. The slot is closed
+		// implicitly when Append is next called (for the following row). A nil
+		// []*TableCell is therefore treated identically to an empty slice.
+		// The original bug (issue #399) placed this call inside the element
+		// loop, opening N slots instead of 1 and causing a NewRecord panic.
+		listBuilder.Append(true)
 		b := listBuilder.ValueBuilder()
 		for _, vv := range v {
-			listBuilder.Append(true)
 			if err := vv.AppendValueToARROWBuilder(b); err != nil {
 				return err
 			}
