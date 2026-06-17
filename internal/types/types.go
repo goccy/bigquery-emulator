@@ -195,9 +195,14 @@ func (c *TableCell) AppendValueToARROWBuilder(builder array.Builder) error {
 		if !ok {
 			return fmt.Errorf("failed to convert to list builder from %T", builder)
 		}
+		// Append(true) opens one list slot for this row. All element appends to
+		// ValueBuilder() that follow belong to this slot. Calling Append again
+		// (for the next row) implicitly closes the current slot. Placing this
+		// call inside the element loop is the root cause of issue #399: it opens
+		// N slots instead of 1, causing a row-count mismatch panic in NewRecord.
+		listBuilder.Append(true)
 		b := listBuilder.ValueBuilder()
 		for _, vv := range v {
-			listBuilder.Append(true)
 			if err := vv.AppendValueToARROWBuilder(b); err != nil {
 				return err
 			}
