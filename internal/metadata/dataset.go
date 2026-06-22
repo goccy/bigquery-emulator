@@ -153,6 +153,38 @@ func (d *Dataset) AddTable(ctx context.Context, tx *sql.Tx, table *Table) error 
 	return nil
 }
 
+func (d *Dataset) DeleteTable(ctx context.Context, tx *sql.Tx, tableId string) error {
+	d.mu.Lock()
+	table, exists := d.tableMap[tableId]
+	if !exists {
+		d.mu.Unlock()
+		return fmt.Errorf("table %s does not exist", tableId)
+	}
+
+	if err := table.Delete(ctx, tx); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	var newTables []*Table
+	for _, currentTable := range d.tables {
+		if currentTable.ID == tableId {
+			continue
+		}
+		newTables = append(newTables, currentTable)
+	}
+	d.tables = newTables
+	delete(d.tableMap, tableId)
+	// We should unlock the mutex before calling UpdateDataset
+	// because UpdateDataset requires the read lock of d.
+	d.mu.Unlock()
+
+	if err := d.repo.UpdateDataset(ctx, tx, d); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (d *Dataset) Table(id string) *Table {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
