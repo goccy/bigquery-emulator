@@ -88,6 +88,12 @@ $ gh attestation verify bigquery-emulator_v0.0.0_linux_amd64.tar.gz --repo goccy
 $ gh attestation verify oci://ghcr.io/goccy/bigquery-emulator:latest --repo goccy/bigquery-emulator
 ```
 
+You can also install bigquery-emulator with [aqua](https://aquaproj.github.io/), which is a declarative CLI Version Manager.
+
+```console
+$ aqua g -i goccy/bigquery-emulator
+```
+
 # How to start the standalone server
 
 If you can install the `bigquery-emulator` CLI, you can start the server using the following options.
