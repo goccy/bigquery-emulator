@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$defs": {
+    "Job": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "required": true },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "Model": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "required": true },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "Routine": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "required": true },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "TableField": { "type": "object", "additionalProperties": false },
+    "TableColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "required": true },
+        "type": {
+          "type": "string",
+          "enum": [
+            "INT64",
+            "INT",
+            "SMALLINT",
+            "INTEGER",
+            "BIGINT",
+            "TINYINT",
+            "BYTEINT",
+            "NUMERIC",
+            "BIGNUMERIC",
+            "DECIMAL",
+            "BIGDECIMAL",
+            "BOOLEAN",
+            "BOOL",
+            "FLOAT",
+            "FLOAT64",
+            "DOUBLE",
+            "STRING",
+            "BYTES",
+            "DATE",
+            "DATETIME",
+            "TIME",
+            "TIMESTAMP",
+            "INTERVAL",
+            "ARRAY",
+            "STRUCT",
+            "GEOGRAPHY",
+            "JSON",
+            "RECORD"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["NULLABLE", "REQUIRED", "REPEATED"]
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TableColumn" },
+          "additionalItems": false
+        }
+      }
+    },
+    "TableData": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {}
+    },
+    "Table": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "required": true },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TableColumn" },
+          "additionalItems": false
+        },
+        "data": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TableData" },
+          "additionalItems": false
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": true
+        }
+      }
+    },
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "required": true },
+        "datasets": {
+          "type": "array",
+          "additionalItems": false,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "required": true },
+              "tables": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/Table" },
+                "additionalItems": false
+              },
+              "models": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/Model" },
+                "additionalItems": false
+              },
+              "routines": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/Routine" },
+                "additionalItems": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "required": true
+        },
+        "jobs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Job" },
+          "additionalItems": false
+        }
+      }
+    }
+  },
+  "type": "object",
+  "properties": {
+    "projects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Project" },
+      "additionalItems": false
+    }
+  },
+  "additionalProperties": false
+}
