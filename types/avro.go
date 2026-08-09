@@ -12,7 +12,10 @@ import (
 )
 
 type AVROSchema struct {
-	Namespace string             `json:"namespace"`
+	// Namespace is omitted when empty: a BigQuery project id may contain a
+	// hyphen, which is not a legal character in an Avro namespace, so a
+	// namespace built from one makes the whole schema unparseable.
+	Namespace string             `json:"namespace,omitempty"`
 	Name      string             `json:"name"`
 	Type      string             `json:"type"`
 	Fields    []*AVROFieldSchema `json:"fields"`
@@ -197,11 +200,14 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 }
 
 func TableToAVRO(t *bigqueryv2.Table) *AVROSchema {
+	// No namespace: it was built from the project and dataset ids, and a
+	// project id is allowed to contain a hyphen while an Avro name is not,
+	// so any hyphenated project produced a schema no Avro reader could parse
+	// (issue #221). BigQuery itself sends no namespace either.
 	return &AVROSchema{
-		Namespace: fmt.Sprintf("%s.%s", t.TableReference.ProjectId, t.TableReference.DatasetId),
-		Name:      t.TableReference.TableId,
-		Type:      "record",
-		Fields:    TableFieldSchemasToAVRO(t.Schema.Fields),
+		Name:   t.TableReference.TableId,
+		Type:   "record",
+		Fields: TableFieldSchemasToAVRO(t.Schema.Fields),
 	}
 }
 

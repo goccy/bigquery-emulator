@@ -894,3 +894,115 @@ func TestCreateReadSessionDefaultsToOneStream(t *testing.T) {
 		t.Fatalf("session has %d streams; want 1 (unset MaxStreamCount must default to one)", got)
 	}
 }
+
+// TestIssue221ReadSessionSchemaParsesForHyphenatedProject is a regression test
+// for https://github.com/goccy/bigquery-emulator/issues/221: the Avro schema a
+// read session returned carried a namespace built from the project and dataset
+// ids, and a BigQuery project id may contain a hyphen while an Avro name may
+// not. Every read against such a project failed in the client's schema parser
+// before a row was decoded.
+func TestIssue221ReadSessionSchemaParsesForHyphenatedProject(t *testing.T) {
+	const (
+		project = "test-project"
+		dataset = "dataset1"
+		table   = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				project,
+				types.NewDataset(
+					dataset,
+					types.NewTable(
+						table,
+						[]*types.Column{
+							types.NewColumn("id", types.INT64),
+							types.NewColumn("name", types.STRING),
+						},
+						types.Data{
+							{"id": 1, "name": "alice"},
+							{"id": 2, "name": "bob"},
+						},
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	session, err := bqReadClient.CreateReadSession(ctx, &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", project),
+		ReadSession: &storagepb.ReadSession{
+			Table: fmt.Sprintf("projects/%s/datasets/%s/tables/%s",
+				project, dataset, table),
+			DataFormat: storagepb.DataFormat_AVRO,
+		},
+		MaxStreamCount: 1,
+	}, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession: %v", err)
+	}
+
+	// The schema every Avro client parses before it reads a row. Without the
+	// fix this fails with "schema name ought to have second and remaining
+	// characters contain only [A-Za-z0-9_]: test-project".
+	schema := session.GetAvroSchema().GetSchema()
+	codec, err := goavro.NewCodec(schema)
+	if err != nil {
+		t.Fatalf("the session's Avro schema does not parse: %v (schema: %s)", err, schema)
+	}
+
+	// And the rows encoded against it still decode, which is what says the
+	// value encoder did not depend on the namespace either.
+	stream, err := bqReadClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+		ReadStream: session.GetStreams()[0].Name,
+	}, rpcOpts)
+	if err != nil {
+		t.Fatalf("ReadRows: %v", err)
+	}
+	var rows int
+	for {
+		res, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream.Recv: %v", err)
+		}
+		undecoded := res.GetAvroRows().GetSerializedBinaryRows()
+		for len(undecoded) > 0 {
+			datum, remaining, err := codec.NativeFromBinary(undecoded)
+			if err != nil {
+				t.Fatalf("decoding a row: %v", err)
+			}
+			undecoded = remaining
+			if _, ok := datum.(map[string]interface{}); !ok {
+				t.Fatalf("decoded a %T, want a record", datum)
+			}
+			rows++
+		}
+	}
+	if rows != 2 {
+		t.Fatalf("read %d rows; want 2", rows)
+	}
+}
