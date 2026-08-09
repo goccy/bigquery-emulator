@@ -20,6 +20,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -582,11 +583,13 @@ func (s *storageWriteServer) getOrCreateWriteStreamStatus(ctx context.Context, s
 		return status, canonicalName, nil
 	}
 	if !isDefaultWriteStreamName(streamName) {
-		return nil, "", fmt.Errorf("failed to get stream from %s", streamName)
+		return nil, "", grpcstatus.Errorf(codes.NotFound, "failed to get stream from %s", streamName)
 	}
 	status, canonicalName, err := s.createDefaultStreamStatus(ctx, streamName)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get stream from %s", streamName)
+		// %w keeps the gRPC status (NotFound for a missing table) visible to
+		// grpc-go's status.FromError, which unwraps the chain.
+		return nil, "", fmt.Errorf("failed to get stream from %s: %w", streamName, err)
 	}
 	return status, canonicalName, nil
 }
@@ -780,7 +783,9 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.GetWriteStreamRequest) (*storagepb.WriteStream, error) {
 	status, _, err := s.getOrCreateWriteStreamStatus(ctx, req.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find stream from %s", req.Name)
+		// %w keeps the gRPC status (NotFound for a missing stream or table)
+		// visible to grpc-go's status.FromError, which unwraps the chain.
+		return nil, fmt.Errorf("failed to find stream from %s: %w", req.Name, err)
 	}
 	return status.stream, nil
 }
@@ -788,7 +793,7 @@ func (s *storageWriteServer) GetWriteStream(ctx context.Context, req *storagepb.
 func (s *storageWriteServer) FinalizeWriteStream(ctx context.Context, req *storagepb.FinalizeWriteStreamRequest) (*storagepb.FinalizeWriteStreamResponse, error) {
 	status, _, exists := s.lookupWriteStreamStatus(req.GetName())
 	if !exists {
-		return nil, fmt.Errorf("failed to get stream from %s", req.GetName())
+		return nil, grpcstatus.Errorf(codes.NotFound, "failed to get stream from %s", req.GetName())
 	}
 	status.mu.Lock()
 	status.finalized = true
@@ -851,7 +856,7 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 	streamName := req.GetWriteStream()
 	status, _, exists := s.lookupWriteStreamStatus(streamName)
 	if !exists {
-		return nil, fmt.Errorf("failed to find stream from %s", streamName)
+		return nil, grpcstatus.Errorf(codes.NotFound, "failed to find stream from %s", streamName)
 	}
 	if req.GetOffset() == nil {
 		return nil, fmt.Errorf("offset is required")
@@ -988,15 +993,15 @@ func getTableMetadata(ctx context.Context, server *Server, projectID, datasetID,
 		return nil, err
 	}
 	if project == nil {
-		return nil, fmt.Errorf("project %s is not found", projectID)
+		return nil, grpcstatus.Errorf(codes.NotFound, "project %s is not found", projectID)
 	}
 	dataset := project.Dataset(datasetID)
 	if dataset == nil {
-		return nil, fmt.Errorf("dataset %s is not found in project %s", datasetID, projectID)
+		return nil, grpcstatus.Errorf(codes.NotFound, "dataset %s is not found in project %s", datasetID, projectID)
 	}
 	table := dataset.Table(tableID)
 	if table == nil {
-		return nil, fmt.Errorf("table %s is not found in dataset %s", tableID, datasetID)
+		return nil, grpcstatus.Errorf(codes.NotFound, "table %s is not found in dataset %s", tableID, datasetID)
 	}
 	return table.Content()
 }

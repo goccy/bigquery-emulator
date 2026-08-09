@@ -894,3 +894,72 @@ func TestCreateReadSessionDefaultsToOneStream(t *testing.T) {
 		t.Fatalf("session has %d streams; want 1 (unset MaxStreamCount must default to one)", got)
 	}
 }
+
+// TestStorageWriteMissingTableReturnsNotFound is a regression test for
+// https://github.com/goccy/bigquery-emulator/issues/504: a Storage Write API
+// RPC naming a table that does not exist surfaced as codes.Unknown ("failed
+// to get table metadata: table ... is not found in dataset ..."), because the
+// handler returned a plain error carrying no gRPC status. Clients implementing
+// create-if-needed logic key on NOT_FOUND to decide to create the table;
+// Unknown reads as a transient failure and gets retried instead.
+func TestStorageWriteMissingTableReturnsNotFound(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject(
+		projectID,
+		types.NewDataset(datasetID),
+	))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := bqStorage.NewBigQueryWriteClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	missingTablePath := fmt.Sprintf("projects/%s/datasets/%s/tables/missing", projectID, datasetID)
+
+	t.Run("CreateWriteStream", func(t *testing.T) {
+		_, err := client.CreateWriteStream(ctx, &storagepb.CreateWriteStreamRequest{
+			Parent:      missingTablePath,
+			WriteStream: &storagepb.WriteStream{Type: storagepb.WriteStream_BUFFERED},
+		})
+		if got := status.Code(err); got != codes.NotFound {
+			t.Fatalf("CreateWriteStream on a missing table = %v (%v); want %v", got, err, codes.NotFound)
+		}
+	})
+
+	t.Run("GetWriteStreamDefaultForm", func(t *testing.T) {
+		_, err := client.GetWriteStream(ctx, &storagepb.GetWriteStreamRequest{
+			Name: missingTablePath + "/streams/_default",
+		})
+		if got := status.Code(err); got != codes.NotFound {
+			t.Fatalf("GetWriteStream on a missing table's default stream = %v (%v); want %v", got, err, codes.NotFound)
+		}
+	})
+
+	t.Run("GetWriteStreamUnknownStream", func(t *testing.T) {
+		_, err := client.GetWriteStream(ctx, &storagepb.GetWriteStreamRequest{
+			Name: missingTablePath + "/streams/nonexistent",
+		})
+		if got := status.Code(err); got != codes.NotFound {
+			t.Fatalf("GetWriteStream on an unknown stream = %v (%v); want %v", got, err, codes.NotFound)
+		}
+	})
+}
