@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
@@ -316,10 +317,36 @@ func (s *storageReadServer) getARROWSchema(tableMetadata *bigqueryv2.Table, outp
 	}, nil
 }
 
+// splitIPCStream splits an Arrow IPC stream that contains exactly one schema
+// message followed by one record-batch message (no EOS marker) into the two
+// bare IPC-encapsulated messages required by the BigQuery Storage Read API.
+//
+// Each IPC message on the wire is framed as:
+//
+//	[continuation: 4 bytes][metaLen: 4 bytes LE][metadata: metaLen bytes][padding to 8-byte][body]
+//
+// The schema message body is always empty, so its total byte length is
+// 4+4+metaLen rounded up to the next 8-byte boundary. Everything that follows
+// is the record-batch message.
+func splitIPCStream(data []byte) (schemaMsg, recordBatchMsg []byte, err error) {
+	if len(data) < 8 {
+		return nil, nil, fmt.Errorf("arrow IPC data too short (%d bytes)", len(data))
+	}
+	metaLen := int(binary.LittleEndian.Uint32(data[4:8]))
+	schemaEnd := 8 + metaLen
+	if pad := schemaEnd % 8; pad != 0 {
+		schemaEnd += 8 - pad
+	}
+	if schemaEnd > len(data) {
+		return nil, nil, fmt.Errorf("schema IPC message overruns buffer (need %d, have %d)", schemaEnd, len(data))
+	}
+	return data[:schemaEnd], data[schemaEnd:], nil
+}
+
 func (s *storageReadServer) getSerializedARROWSchema(schema *arrow.Schema) ([]byte, error) {
 	mem := memory.NewGoAllocator()
-	buf := new(bytes.Buffer)
-	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(schema))
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithAllocator(mem), ipc.WithSchema(schema))
 	builder := array.NewRecordBuilder(mem, schema)
 	defer builder.Release()
 	record := builder.NewRecord()
@@ -327,10 +354,13 @@ func (s *storageReadServer) getSerializedARROWSchema(schema *arrow.Schema) ([]by
 		return nil, err
 	}
 	record.Release()
-	if err := writer.Close(); err != nil {
-		return nil, err
+	// Do not call writer.Close(): we do not want the EOS marker.
+	// buf now holds [schema_message][empty_record_batch_message].
+	schemaBytes, _, err := splitIPCStream(buf.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract schema IPC message: %w", err)
 	}
-	return buf.Bytes(), nil
+	return schemaBytes, nil
 }
 
 func (s *storageReadServer) sendARROWRows(status *readStreamStatus, response *internaltypes.QueryResponse, stream storagepb.BigQueryRead_ReadRowsServer) error {
@@ -347,18 +377,21 @@ func (s *storageReadServer) sendARROWRows(status *readStreamStatus, response *in
 		}
 	}
 	record := builder.NewRecord()
-	buf := new(bytes.Buffer)
-	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(status.arrowSchema))
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithAllocator(mem), ipc.WithSchema(status.arrowSchema))
 	if err := writer.Write(record); err != nil {
 		return err
 	}
 	record.Release()
-	if err := writer.Close(); err != nil {
-		return err
+	// Do not call writer.Close(): we do not want the EOS marker.
+	// buf now holds [schema_message][record_batch_message]; extract only the record batch.
+	_, recordBatchBytes, err := splitIPCStream(buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to extract record batch IPC message: %w", err)
 	}
 	rows := &storagepb.ReadRowsResponse_ArrowRecordBatch{
 		ArrowRecordBatch: &storagepb.ArrowRecordBatch{
-			SerializedRecordBatch: buf.Bytes(),
+			SerializedRecordBatch: recordBatchBytes,
 			RowCount:              int64(response.TotalRows),
 		},
 	}

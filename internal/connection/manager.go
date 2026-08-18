@@ -83,11 +83,15 @@ func (t *Tx) ContentRepoMode() error {
 		if !ok {
 			return fmt.Errorf("failed to get *googlesqlite.Conn from %T", c)
 		}
-		if t.conn.DatasetID == "" {
-			_ = gsqlConn.SetNamePath([]string{t.conn.ProjectID})
-		} else {
-			_ = gsqlConn.SetNamePath([]string{t.conn.ProjectID, t.conn.DatasetID})
+		if t.conn.ProjectID == "" {
+			return fmt.Errorf("invalid projectID. projectID is empty")
 		}
+		namePath := []string{t.conn.ProjectID}
+		if t.conn.DatasetID != "" {
+			namePath = append(namePath, t.conn.DatasetID)
+		}
+		_ = gsqlConn.SetNamePath(namePath)
+
 		const maxNamePath = 3 // projectID and datasetID and tableID
 		gsqlConn.SetMaxNamePath(maxNamePath)
 		return nil

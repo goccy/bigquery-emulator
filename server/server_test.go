@@ -4797,3 +4797,128 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestRepeatedRecordFieldOrder verifies that REPEATED RECORD (array-of-struct)
+// columns preserve field ordering when data is inserted via the streaming-insert
+// API and then read back via a SQL query.  This is a regression guard for a bug
+// where field values were assigned to the wrong sub-field non-deterministically.
+func TestRepeatedRecordFieldOrder(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+		tableID   = "repeated_rec"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(projectID,
+			types.NewDataset(datasetID,
+				types.NewTable(tableID,
+					[]*types.Column{
+						types.NewColumn("id", types.INT64),
+						types.NewColumn(
+							"tags",
+							types.STRUCT,
+							types.ColumnFields(
+								types.NewColumn("label", types.STRING),
+								types.NewColumn("score", types.INT64),
+							),
+							types.ColumnMode(types.RepeatedMode),
+						),
+					},
+					nil,
+				),
+			),
+		),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(ctx, projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	type tagRow struct {
+		Label string
+		Score int64
+	}
+	type row struct {
+		ID   int64
+		Tags []tagRow
+	}
+	inserter := client.Dataset(datasetID).Table(tableID).Inserter()
+	saver := &bigquery.StructSaver{
+		Schema: bigquery.Schema{
+			{Name: "id", Type: bigquery.IntegerFieldType},
+			{Name: "tags", Type: bigquery.RecordFieldType, Repeated: true, Schema: bigquery.Schema{
+				{Name: "label", Type: bigquery.StringFieldType},
+				{Name: "score", Type: bigquery.IntegerFieldType},
+			}},
+		},
+		InsertID: "",
+		Struct: &row{
+			ID: 1,
+			Tags: []tagRow{
+				{Label: "alpha", Score: 10},
+				{Label: "beta", Score: 20},
+			},
+		},
+	}
+	if err := inserter.Put(ctx, saver); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	it, err := client.Query(
+		"SELECT id, tags FROM `" + projectID + "." + datasetID + "." + tableID + "` WHERE id = 1",
+	).Read(ctx)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	var row0 []bigquery.Value
+	if err := it.Next(&row0); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if len(row0) != 2 {
+		t.Fatalf("expected 2 columns, got %d", len(row0))
+	}
+	tags, ok := row0[1].([]bigquery.Value)
+	if !ok {
+		t.Fatalf("tags field type %T, want []bigquery.Value", row0[1])
+	}
+	if len(tags) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(tags))
+	}
+	for i, want := range []struct {
+		label string
+		score int64
+	}{{"alpha", 10}, {"beta", 20}} {
+		fields, ok := tags[i].([]bigquery.Value)
+		if !ok {
+			t.Fatalf("tags[%d] type %T, want []bigquery.Value", i, tags[i])
+		}
+		if len(fields) != 2 {
+			t.Fatalf("tags[%d] length %d, want 2", i, len(fields))
+		}
+		label, _ := fields[0].(string)
+		score, _ := fields[1].(int64)
+		if label != want.label {
+			t.Errorf("tags[%d].label = %q, want %q", i, label, want.label)
+		}
+		if score != want.score {
+			t.Errorf("tags[%d].score = %d, want %d", i, score, want.score)
+		}
+	}
+}

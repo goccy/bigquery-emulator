@@ -541,7 +541,7 @@ func (r *Repository) convertValueToCell(value interface{}, schema *bigqueryv2.Ta
 
 func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
 	tx.SetProjectAndDataset(projectID, datasetID)
-	if err := tx.ContentRepoMode(); err != nil {
+	if err := tx.MetadataRepoMode(); err != nil {
 		return err
 	}
 	defer func() {
@@ -577,7 +577,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		return nil
 	}
 	tx.SetProjectAndDataset(projectID, datasetID)
-	if err := tx.ContentRepoMode(); err != nil {
+	if err := tx.MetadataRepoMode(); err != nil {
 		return err
 	}
 	defer func() {

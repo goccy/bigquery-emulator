@@ -355,12 +355,6 @@ func processAvro(t *testing.T, ctx context.Context, schema string, ch <-chan *st
 
 func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *storagepb.ReadRowsResponse) error {
 	mem := memory.NewGoAllocator()
-	buf := bytes.NewBuffer(schema)
-	r, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
-	if err != nil {
-		return err
-	}
-	aschema := r.Schema()
 	for {
 		select {
 		case <-ctx.Done():
@@ -373,8 +367,11 @@ func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *s
 			}
 			undecoded := rows.GetArrowRecordBatch().GetSerializedRecordBatch()
 			if len(undecoded) > 0 {
-				buf = bytes.NewBuffer(undecoded)
-				r, err = ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
+				// Reconstruct a valid IPC stream: bare schema message + bare record batch message.
+				// The BigQuery Storage API sends them as separate bare messages; ipc.NewReader
+				// requires a stream that starts with a schema message.
+				stream := append(schema, undecoded...)
+				r, err := ipc.NewReader(bytes.NewBuffer(stream), ipc.WithAllocator(mem))
 				if err != nil {
 					return err
 				}

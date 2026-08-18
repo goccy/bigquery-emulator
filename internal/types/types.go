@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -22,12 +23,12 @@ type (
 	}
 
 	QueryResponse struct {
-		JobReference   *bigqueryv2.JobReference   `json:"jobReference"`
-		Schema         *bigqueryv2.TableSchema    `json:"schema"`
-		Rows           []*TableRow                `json:"rows"`
-		TotalRows      uint64                     `json:"totalRows,string"`
-		JobComplete    bool                       `json:"jobComplete"`
-		TotalBytes     int64                      `json:"-"`
+		JobReference   *bigqueryv2.JobReference     `json:"jobReference"`
+		Schema         *bigqueryv2.TableSchema      `json:"schema"`
+		Rows           []*TableRow                  `json:"rows"`
+		TotalRows      uint64                       `json:"totalRows,string"`
+		JobComplete    bool                         `json:"jobComplete"`
+		TotalBytes     int64                        `json:"-"`
 		ChangedCatalog *googlesqlite.ChangedCatalog `json:"-"`
 	}
 
@@ -195,9 +196,11 @@ func (c *TableCell) AppendValueToARROWBuilder(builder array.Builder) error {
 		if !ok {
 			return fmt.Errorf("failed to convert to list builder from %T", builder)
 		}
+		// A BigQuery REPEATED field is a single non-null list slot per row.
+		// Append once before writing its elements; nil behaves as an empty list.
+		listBuilder.Append(true)
 		b := listBuilder.ValueBuilder()
 		for _, vv := range v {
-			listBuilder.Append(true)
 			if err := vv.AppendValueToARROWBuilder(b); err != nil {
 				return err
 			}
@@ -226,19 +229,90 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 	for _, row := range rows {
 		cells := make([]*TableCell, 0, len(row.F))
 		for colIdx, cell := range row.F {
-			if schema.Fields[colIdx].Type == "TIMESTAMP" && cell.V != nil {
-				cells = append(cells, &TableCell{
-					V: formatTimestampCell(cell.V, useInt64Timestamp),
-				})
-			} else {
-				cells = append(cells, cell)
-			}
+			cells = append(cells, formatCell(schema.Fields[colIdx], cell, useInt64Timestamp))
 		}
 		formattedRows = append(formattedRows, &TableRow{
 			F: cells,
 		})
 	}
 	return formattedRows
+}
+
+func formatCell(field *bigqueryv2.TableFieldSchema, cell *TableCell, useInt64Timestamp bool) *TableCell {
+	if cell.V == nil {
+		return cell
+	}
+	if field == nil {
+		return cell
+	}
+
+	if field.Mode == "REPEATED" {
+		if cells, ok := cell.V.([]*TableCell); ok {
+			elemField := *field
+			elemField.Mode = "NULLABLE"
+			formattedCells := make([]*TableCell, 0, len(cells))
+			for _, c := range cells {
+				formattedCells = append(formattedCells, formatCell(&elemField, c, useInt64Timestamp))
+			}
+			return &TableCell{
+				V:     formattedCells,
+				Bytes: cell.Bytes,
+				Name:  cell.Name,
+			}
+		}
+	}
+
+	if field.Type == "RECORD" {
+		switch row := cell.V.(type) {
+		case TableRow:
+			formattedRow := formatRecordRow(field, &row, useInt64Timestamp)
+			return &TableCell{
+				V:     *formattedRow,
+				Bytes: cell.Bytes,
+				Name:  cell.Name,
+			}
+		case *TableRow:
+			if row == nil {
+				return cell
+			}
+			formattedRow := formatRecordRow(field, row, useInt64Timestamp)
+			return &TableCell{
+				V:     formattedRow,
+				Bytes: cell.Bytes,
+				Name:  cell.Name,
+			}
+		}
+	}
+
+	if field.Type == "TIMESTAMP" {
+		return &TableCell{
+			V:     formatTimestampCell(cell.V, useInt64Timestamp),
+			Bytes: cell.Bytes,
+			Name:  cell.Name,
+		}
+	}
+
+	if field.Type == "DATE" {
+		return &TableCell{
+			V:     formatDateCell(cell.V),
+			Bytes: cell.Bytes,
+			Name:  cell.Name,
+		}
+	}
+
+	return cell
+}
+
+func formatRecordRow(field *bigqueryv2.TableFieldSchema, row *TableRow, useInt64Timestamp bool) *TableRow {
+	formattedF := make([]*TableCell, 0, len(row.F))
+	for i, c := range row.F {
+		var nestedField *bigqueryv2.TableFieldSchema
+		if i < len(field.Fields) {
+			nestedField = field.Fields[i]
+		}
+		formattedF = append(formattedF, formatCell(nestedField, c, useInt64Timestamp))
+	}
+	return &TableRow{F: formattedF}
 }
 
 // formatTimestampCell renders one TIMESTAMP cell value. A non-string value or
@@ -263,4 +337,25 @@ func formatTimestampCell(v interface{}, useInt64Timestamp bool) interface{} {
 		sec--
 	}
 	return fmt.Sprintf("%d.%06d", sec, frac)
+}
+
+// formatDateCell renders one DATE cell value. Inside a REPEATED RECORD the
+// raw value can arrive JSON-quoted (e.g. the literal string `"2025-03-29"`,
+// quote characters included) instead of the bare "2025-03-29" BigQuery
+// clients expect; unquote it when that's the shape we see. Anything that
+// isn't a quoted string, or doesn't unquote into a valid date, is passed
+// through unchanged.
+func formatDateCell(v interface{}) interface{} {
+	raw, ok := v.(string)
+	if !ok {
+		return v
+	}
+	unquoted, err := strconv.Unquote(raw)
+	if err != nil {
+		return v
+	}
+	if _, err := time.Parse("2006-01-02", unquoted); err != nil {
+		return v
+	}
+	return unquoted
 }
