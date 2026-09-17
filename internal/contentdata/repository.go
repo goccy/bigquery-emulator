@@ -190,19 +190,16 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 
 	values := []interface{}{}
 	for _, param := range params {
+		// queryParameterValueToGoValue coerces every scalar leaf it reaches
+		// (the parameter itself, or — recursively — each ARRAY element /
+		// STRUCT field) from the BigQuery REST API's JSON-string encoding
+		// into the Go type (or, for DATE/NUMERIC/BIGNUMERIC, the typed
+		// googlesqlite wrapper) that matches its declared type. See
+		// coerceScalarParameterValue for why this can't be a single
+		// top-level pass.
 		value, err := r.queryParameterValueToGoValue(param.ParameterType, param.ParameterValue)
 		if err != nil {
 			return nil, err
-		}
-		// The BigQuery REST API encodes every scalar parameter as a
-		// JSON string, regardless of its declared type. The accompanying
-		// ParameterType.Type ("INT64", "BOOL", "FLOAT64", ...) is the
-		// only signal of what Go type the analyzer needs. Predecessor
-		// drivers were lenient about implicit STRING -> INT64 coercion;
-		// googlesqlite follows the GoogleSQL spec and refuses, so coerce
-		// here instead.
-		if param.ParameterType != nil {
-			value = coerceScalarParameterValue(value, param.ParameterType.Type)
 		}
 		if param.Name != "" {
 			values = append(values, sql.Named(param.Name, value))
@@ -321,17 +318,37 @@ func emptyTypedArray(arrayType *bigqueryv2.QueryParameterType) interface{} {
 	}
 }
 
-// coerceScalarParameterValue converts the JSON-string representation
-// of a scalar query parameter into the Go type that matches the
-// declared BigQuery parameter type. Returns the original value
-// untouched for non-scalar shapes (already converted by
-// queryParameterValueToGoValue) and for unknown / unhandled type
-// names so the caller can fall back to the analyzer's undeclared
-// inference.
-func coerceScalarParameterValue(value interface{}, paramType string) interface{} {
+// coerceScalarParameterValue converts the JSON-string representation of
+// a scalar query-parameter *leaf* into the Go type — or, for DATE /
+// NUMERIC / BIGNUMERIC, the typed googlesqlite wrapper those need
+// (see package googlesqlite's Date / NewNumeric / NewBigNumeric) —
+// that matches the declared BigQuery parameter type.
+//
+// queryParameterValueToGoValue calls this at every scalar leaf it
+// reaches, whether the parameter itself is scalar or this is one
+// element of an ARRAY / one field of a STRUCT. That "every leaf"
+// part is the fix, not just the type cases below: a prior version of
+// this function ran once, on the top-level parameter only, so a DATE
+// array's elements (or a STRUCT field) reached the query as
+// unconverted JSON strings — googlesqlite then inferred their type
+// from the raw Go string instead of the declared one, and e.g.
+// `date_col IN UNNEST(@dates)` failed to analyze as
+// `DATE IN UNNEST(ARRAY<DATE>)` because the array elements were typed
+// STRING (see also: NUMERIC parameters generally, googlesqlite#issue
+// for BigQuery's `NUMERIC`/`BIGNUMERIC` — the same "every leaf" gap).
+//
+// Returns the original value untouched for non-scalar shapes (already
+// converted by queryParameterValueToGoValue) and for unknown /
+// unhandled type names, so the caller falls back to the analyzer's
+// undeclared-parameter inference. Malformed DATE / NUMERIC / BIGNUMERIC
+// strings are reported as an error instead — unlike the other cases,
+// there's no plausible "fall back to STRING" for those: a value that
+// fails to parse as the declared type is a malformed request, not
+// something to silently paper over.
+func coerceScalarParameterValue(value interface{}, paramType string) (interface{}, error) {
 	s, ok := value.(string)
 	if !ok {
-		return value
+		return value, nil
 	}
 	upper := strings.ToUpper(paramType)
 	// An empty scalar value for a numeric or temporal parameter denotes NULL:
@@ -345,21 +362,21 @@ func coerceScalarParameterValue(value interface{}, paramType string) interface{}
 			"BOOL", "BOOLEAN",
 			"NUMERIC", "BIGNUMERIC", "DECIMAL", "BIGDECIMAL",
 			"DATE", "TIME", "DATETIME", "TIMESTAMP":
-			return nil
+			return nil, nil
 		}
 	}
 	switch upper {
 	case "INT64", "INTEGER", "INT":
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return n
+			return n, nil
 		}
 	case "FLOAT64", "FLOAT", "DOUBLE":
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			return f
+			return f, nil
 		}
 	case "BOOL", "BOOLEAN":
 		if b, err := strconv.ParseBool(s); err == nil {
-			return b
+			return b, nil
 		}
 	case "TIMESTAMP":
 		for _, layout := range []string{
@@ -370,7 +387,7 @@ func coerceScalarParameterValue(value interface{}, paramType string) interface{}
 			"2006-01-02 15:04:05",
 		} {
 			if t, err := time.Parse(layout, s); err == nil {
-				return t.UTC()
+				return t.UTC(), nil
 			}
 		}
 	case "DATETIME":
@@ -381,11 +398,29 @@ func coerceScalarParameterValue(value interface{}, paramType string) interface{}
 			"2006-01-02 15:04:05",
 		} {
 			if t, err := time.Parse(layout, s); err == nil {
-				return t
+				return t, nil
 			}
 		}
+	case "DATE":
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DATE parameter value %q: %w", s, err)
+		}
+		return googlesqlite.Date(t), nil
+	case "NUMERIC", "DECIMAL":
+		n, err := googlesqlite.NewNumeric(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NUMERIC parameter value %q: %w", s, err)
+		}
+		return n, nil
+	case "BIGNUMERIC", "BIGDECIMAL":
+		n, err := googlesqlite.NewBigNumeric(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid BIGNUMERIC parameter value %q: %w", s, err)
+		}
+		return n, nil
 	}
-	return value
+	return value, nil
 }
 
 func (r *Repository) queryParameterValueToGoValue(ptype *bigqueryv2.QueryParameterType, value *bigqueryv2.QueryParameterValue) (interface{}, error) {
@@ -454,6 +489,9 @@ func (r *Repository) queryParameterValueToGoValue(ptype *bigqueryv2.QueryParamet
 			st[k] = elem
 		}
 		return st, nil
+	}
+	if ptype != nil {
+		return coerceScalarParameterValue(value.Value, ptype.Type)
 	}
 	return value.Value, nil
 }
