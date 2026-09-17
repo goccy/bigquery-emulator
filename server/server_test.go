@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"cloud.google.com/go/civil"
 	"cloud.google.com/go/storage"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 	"github.com/goccy/bigquery-emulator/server"
@@ -413,6 +414,88 @@ func TestQuery(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Log("row = ", row)
+	}
+}
+
+// TestQueryDateArrayParameterInUnnest is the end-to-end regression for
+// the bug reported against zozo-work-compass's production report SQL:
+// `date_col IN UNNEST(@dates)` with @dates bound as an ARRAY<DATE>
+// query parameter failed to analyze with "No matching signature for
+// operator IN UNNEST for argument types: DATE, ARRAY<STRING>", because
+// coerceScalarParameterValue only ran once, on the top-level ARRAY
+// parameter — never on its elements — so every element reached
+// googlesqlite as an unconverted JSON string and the analyzer inferred
+// ARRAY<STRING> instead of the declared ARRAY<DATE>.
+//
+// This drives the full stack a real client exercises: cloud.google.com/go/bigquery's
+// own parameter encoding (civil.Date → the REST QueryParameter JSON body)
+// through the HTTP handler, repository.Query, and into googlesqlite —
+// not just the unit-level coercion this fix touches directly.
+func TestQueryDateArrayParameterInUnnest(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectID = "test"
+		datasetID = "dataset1"
+	)
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectID, types.NewDataset(datasetID))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	tableName := fmt.Sprintf("%s.%s.placements", projectID, datasetID)
+	if _, err := client.Query(fmt.Sprintf("CREATE TABLE %s(placed_on DATE)", tableName)).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	insert := fmt.Sprintf(
+		"INSERT INTO %s (placed_on) VALUES (DATE '2026-09-13'), (DATE '2026-09-14'), (DATE '2026-09-20')",
+		tableName,
+	)
+	if _, err := client.Query(insert).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	query := client.Query(fmt.Sprintf("SELECT COUNT(*) AS n FROM %s WHERE placed_on IN UNNEST(@workdays)", tableName))
+	query.QueryConfig.Parameters = []bigquery.QueryParameter{
+		{
+			Name: "workdays",
+			Value: []civil.Date{
+				{Year: 2026, Month: 9, Day: 14},
+				{Year: 2026, Month: 9, Day: 15},
+			},
+		},
+	}
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatalf("IN UNNEST(@workdays) with an ARRAY<DATE> parameter failed to analyze: %v", err)
+	}
+	var row []bigquery.Value
+	if err := it.Next(&row); err != nil {
+		t.Fatal(err)
+	}
+	// Only 2026-09-14 (of the three inserted rows) is in @workdays.
+	if got := row[0].(int64); got != 1 {
+		t.Errorf("COUNT(*) = %d; want 1", got)
 	}
 }
 
