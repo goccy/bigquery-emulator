@@ -1944,6 +1944,13 @@ func addTableMetadata(ctx context.Context, server *Server, spec *googlesqlite.Ta
 	if spec.IsView {
 		table.View = &bigqueryv2.ViewDefinition{Query: spec.Query}
 	}
+	// googlesqlite reports CREATE OR REPLACE of an existing table as an
+	// added table, so replace any metadata already recorded for it.
+	if dataset.Table(tableID) != nil {
+		if err := dataset.DeleteTable(ctx, tx.Tx(), tableID); err != nil {
+			return err
+		}
+	}
 	if _, err := createTableMetadata(ctx, tx, server, project, dataset, table); err != nil {
 		return err
 	}

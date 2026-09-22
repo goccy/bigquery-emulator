@@ -153,6 +153,34 @@ func (d *Dataset) AddTable(ctx context.Context, tx *sql.Tx, table *Table) error 
 	return nil
 }
 
+// DeleteTable removes the table metadata for id, both from the
+// repository and from this dataset's in-memory table list.
+func (d *Dataset) DeleteTable(ctx context.Context, tx *sql.Tx, id string) error {
+	d.mu.Lock()
+	table, exists := d.tableMap[id]
+	if !exists {
+		d.mu.Unlock()
+		return fmt.Errorf("table '%s' is not found in dataset '%s'", id, d.ID)
+	}
+	if err := table.Delete(ctx, tx); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	newTables := make([]*Table, 0, len(d.tables))
+	for _, table := range d.tables {
+		if table.ID == id {
+			continue
+		}
+		newTables = append(newTables, table)
+	}
+	d.tables = newTables
+	delete(d.tableMap, id)
+	d.mu.Unlock()
+
+	// UpdateDataset reads TableIDs, which takes d.mu.
+	return d.repo.UpdateDataset(ctx, tx, d)
+}
+
 func (d *Dataset) Table(id string) *Table {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
