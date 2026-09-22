@@ -1849,6 +1849,9 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		EndTime:             endTime.Unix(),
 		TotalBytesProcessed: totalBytes,
 	}
+	if jobErr == nil && response != nil {
+		applyStatementStatistics(job, job.Configuration.Query.Query, response.ChangedCatalog)
+	}
 	if err := r.project.AddJob(
 		ctx,
 		tx.Tx(),
@@ -2206,6 +2209,9 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 			r.project.ID,
 			jobID,
 		),
+	}
+	if response != nil {
+		applyStatementStatistics(job, r.queryRequest.Query, response.ChangedCatalog)
 	}
 	if !r.queryRequest.DryRun {
 		if err := r.project.AddJob(
