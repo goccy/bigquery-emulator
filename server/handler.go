@@ -1890,12 +1890,21 @@ func queryProjectAndDataset(defaultDataset *bigqueryv2.DatasetReference, fallbac
 }
 
 func syncCatalog(ctx context.Context, server *Server, cat *googlesqlite.ChangedCatalog) error {
+	// Temp tables live only for the script that created them and belong to
+	// no dataset (their name path is [project, table]), so they have no
+	// dataset metadata to add or remove.
 	for _, table := range cat.Table.Added {
+		if table.IsTemp {
+			continue
+		}
 		if err := addTableMetadata(ctx, server, table); err != nil {
 			return err
 		}
 	}
 	for _, table := range cat.Table.Deleted {
+		if table.IsTemp {
+			continue
+		}
 		if err := deleteTableMetadata(ctx, server, table); err != nil {
 			return err
 		}
