@@ -22,6 +22,17 @@ type Job struct {
 	repo      *Repository
 }
 
+// QueryFailedError is the error a finished job recorded: its query failed.
+// Wait wraps it so a caller can tell it apart from a failure to look the
+// job up, and report it the way BigQuery does (invalidQuery, not retried).
+type QueryFailedError struct {
+	Err error
+}
+
+func (e *QueryFailedError) Error() string { return e.Err.Error() }
+
+func (e *QueryFailedError) Unwrap() error { return e.Err }
+
 func (j *Job) Query() string {
 	return j.content.Configuration.Query.Query
 }
@@ -57,7 +68,10 @@ func (j *Job) Wait(ctx context.Context) (*internaltypes.QueryResponse, error) {
 				return nil, err
 			}
 			if foundJob != nil {
-				return foundJob.response, foundJob.err
+				if foundJob.err != nil {
+					return foundJob.response, &QueryFailedError{Err: foundJob.err}
+				}
+				return foundJob.response, nil
 			}
 		case <-ctx.Done():
 			return nil, ctx.Err()

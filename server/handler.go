@@ -1221,6 +1221,11 @@ func (h *jobsGetQueryResultsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		startIndex:        startIndex,
 	})
 	if err != nil {
+		var serr *ServerError
+		if errors.As(err, &serr) {
+			errorResponse(ctx, w, serr)
+			return
+		}
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
@@ -1240,6 +1245,10 @@ type jobsGetQueryResultsRequest struct {
 func (h *jobsGetQueryResultsHandler) Handle(ctx context.Context, r *jobsGetQueryResultsRequest) (*internaltypes.GetQueryResultsResponse, error) {
 	response, err := r.job.Wait(ctx)
 	if err != nil {
+		var failed *metadata.QueryFailedError
+		if errors.As(err, &failed) {
+			return nil, errInvalidQuery(err.Error())
+		}
 		return nil, err
 	}
 	rows := internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp)
@@ -1828,9 +1837,12 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 	)
 	status := &bigqueryv2.JobStatus{State: "DONE"}
 	if jobErr != nil {
-		internalErr := errJobInternalError(jobErr.Error())
-		status.ErrorResult = internalErr.ErrorProto()
-		status.Errors = []*bigqueryv2.ErrorProto{internalErr.ErrorProto()}
+		// The query itself failed (analysis, execution, ERROR(), ASSERT):
+		// BigQuery reports that as invalidQuery. jobInternalError would make
+		// the client libraries re-run the job until their deadline.
+		queryErr := errInvalidQuery(jobErr.Error())
+		status.ErrorResult = queryErr.ErrorProto()
+		status.Errors = []*bigqueryv2.ErrorProto{queryErr.ErrorProto()}
 	}
 	job.Status = status
 	var totalBytes int64
@@ -2107,6 +2119,11 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		useInt64Timestamp: useInt64Timestamp,
 	})
 	if err != nil {
+		var serr *ServerError
+		if errors.As(err, &serr) {
+			errorResponse(ctx, w, serr)
+			return
+		}
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
@@ -2141,7 +2158,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 		r.queryRequest.QueryParameters,
 	)
 	if queryErr != nil {
-		return nil, queryErr
+		return nil, errInvalidQuery(queryErr.Error())
 	}
 	endTime := time.Now()
 	// jobs.query allocates jobIDs server-side (real BigQuery does the
