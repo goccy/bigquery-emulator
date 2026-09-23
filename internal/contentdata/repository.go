@@ -229,6 +229,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
+	colNames = bigQueryColumnNames(colNames)
 	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column types: %w", err)
@@ -848,4 +849,22 @@ func (r *Repository) AddRoutineByMetaData(ctx context.Context, tx *connection.Tx
 		return fmt.Errorf("failed to create function %s: %w", query, err)
 	}
 	return nil
+}
+
+// bigQueryColumnNames renames the analyzer's internal names for anonymous
+// result columns ("$col1", ...; GoogleSQL's internal aliases start with "$")
+// to the names BigQuery returns: f0_, f1_, ..., numbered over the anonymous
+// columns only, so `SELECT val, f(val)` yields `val, f0_`.
+func bigQueryColumnNames(names []string) []string {
+	out := make([]string, len(names))
+	anon := 0
+	for i, name := range names {
+		if strings.HasPrefix(name, "$") {
+			out[i] = fmt.Sprintf("f%d_", anon)
+			anon++
+			continue
+		}
+		out[i] = name
+	}
+	return out
 }
