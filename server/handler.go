@@ -1289,6 +1289,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+	body = normalizeQueryParameterJSON(body)
 	var job bigqueryv2.Job
 	if err := json.Unmarshal(body, &job); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
@@ -2084,6 +2085,7 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+	body = normalizeQueryParameterJSON(body)
 	var req bigqueryv2.QueryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
