@@ -4797,3 +4797,68 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestNonStringScalarQueryParameterValues sends scalar parameter values as
+// JSON numbers rather than strings. The Python client sends FLOAT64 values
+// this way, at the top level and inside ARRAY and STRUCT parameters.
+func TestNonStringScalarQueryParameterValues(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test", types.NewDataset("dataset1")))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		param string
+		want  [][]string
+	}{
+		{
+			name:  "scalar number",
+			query: "SELECT @p * 2",
+			param: `{"name":"p","parameterType":{"type":"FLOAT64"},"parameterValue":{"value":1.25}}`,
+			want:  [][]string{{"2.5"}},
+		},
+		{
+			name:  "struct field number",
+			query: "SELECT @p IS NULL",
+			param: `{"name":"p","parameterType":{"type":"STRUCT","structTypes":[{"name":"x","type":{"type":"FLOAT64"}}]},"parameterValue":{"structValues":{"x":{"value":0.5}}}}`,
+			want:  [][]string{{"false"}},
+		},
+		{
+			name:  "array element number",
+			query: "SELECT ARRAY_LENGTH(@p)",
+			param: `{"name":"p","parameterType":{"type":"ARRAY","arrayType":{"type":"FLOAT64"}},"parameterValue":{"arrayValues":[{"value":1.5},{"value":2}]}}`,
+			want:  [][]string{{"2"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, endpoint := range []struct {
+				path, body string
+			}{
+				{"/projects/test/queries", fmt.Sprintf(`{"query":%q,"useLegacySql":false,"parameterMode":"NAMED","queryParameters":[%s]}`, tc.query, tc.param)},
+				{"/projects/test/jobs", fmt.Sprintf(`{"jobReference":{},"configuration":{"query":{"query":%q,"useLegacySql":false,"parameterMode":"NAMED","queryParameters":[%s]}}}`, tc.query, tc.param)},
+			} {
+				code, resp := httpJSON(t, http.MethodPost, testServer.URL+endpoint.path, endpoint.body, nil)
+				if code != http.StatusOK {
+					t.Fatalf("%s: %d (%v)", endpoint.path, code, resp)
+				}
+				if endpoint.path != "/projects/test/queries" {
+					continue
+				}
+				if diff := cmp.Diff(tc.want, queryRows(t, resp)); diff != "" {
+					t.Fatalf("rows (-want +got):\n%s", diff)
+				}
+			}
+		})
+	}
+}
