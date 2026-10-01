@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/goccy/bigquery-emulator/internal/connection"
 	"github.com/goccy/bigquery-emulator/internal/logger"
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
+	"github.com/goccy/bigquery-emulator/internal/zsqltypes"
 	"github.com/goccy/bigquery-emulator/types"
 )
 
@@ -203,6 +205,12 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 		// here instead.
 		if param.ParameterType != nil {
 			value = coerceScalarParameterValue(value, param.ParameterType.Type)
+			// An ARRAY or STRUCT value decodes to Go slices and maps, from
+			// which googlesqlite cannot recover struct field order or the
+			// type of a NULL field or an empty array: pass the declared type.
+			if typ := googleSQLTypeForParameterType(param.ParameterType); typ != nil && (typ.IsArray() || typ.IsStruct()) {
+				value = googlesqlite.TypedValue{Type: typ, Value: value}
+			}
 		}
 		if param.Name != "" {
 			values = append(values, sql.Named(param.Name, value))
@@ -299,6 +307,37 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 	}, nil
 }
 
+// googleSQLTypeForParameterType converts a BigQuery parameterType into a
+// googlesqlite type, or returns nil when any leaf type is unknown.
+func googleSQLTypeForParameterType(ptype *bigqueryv2.QueryParameterType) *googlesqlite.Type {
+	if ptype == nil {
+		return nil
+	}
+	switch strings.ToUpper(ptype.Type) {
+	case "ARRAY":
+		elem := googleSQLTypeForParameterType(ptype.ArrayType)
+		if elem == nil {
+			return nil
+		}
+		return &googlesqlite.Type{Kind: int(zsqltypes.ARRAY), ElementType: elem}
+	case "STRUCT", "RECORD":
+		fields := make([]*googlesqlite.NameWithType, 0, len(ptype.StructTypes))
+		for _, f := range ptype.StructTypes {
+			ft := googleSQLTypeForParameterType(f.Type)
+			if ft == nil {
+				return nil
+			}
+			fields = append(fields, &googlesqlite.NameWithType{Name: f.Name, Type: ft})
+		}
+		return &googlesqlite.Type{Kind: int(zsqltypes.STRUCT), FieldTypes: fields}
+	}
+	kind := types.Type(strings.ToUpper(ptype.Type)).TypeKind()
+	if kind == zsqltypes.TYPE_UNKNOWN {
+		return nil
+	}
+	return &googlesqlite.Type{Kind: int(kind)}
+}
+
 // emptyTypedArray returns a typed empty Go slice for the given BigQuery array
 // element type. Using a typed slice (e.g. []string{}) rather than
 // []interface{}{} lets googlesqlite infer the correct ARRAY<T> declaration
@@ -390,8 +429,9 @@ func coerceScalarParameterValue(value interface{}, paramType string) interface{}
 
 func (r *Repository) queryParameterValueToGoValue(ptype *bigqueryv2.QueryParameterType, value *bigqueryv2.QueryParameterValue) (interface{}, error) {
 	// A nil parameter value denotes an explicit NULL: the handler clears it
-	// when the request JSON carried `null` (or no value) for the parameter.
-	if value == nil {
+	// when the request JSON carried `null` (or no value) for the parameter,
+	// and marks a NULL nested inside an ARRAY or STRUCT with NullFields.
+	if value == nil || slices.Contains(value.NullFields, "Value") {
 		return nil, nil
 	}
 	// When the declared type is known, use it as the primary signal. This

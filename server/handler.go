@@ -731,7 +731,8 @@ func parseQueryValueAsUint64(r *http.Request, key string) (uint64, bool) {
 // parameterValue is empty (e.g. an empty []string{} omits "arrayValues"
 // entirely due to JSON omitempty). The parameter type is used as the
 // authoritative signal: any parameter whose type is "ARRAY" or "STRUCT" is
-// left untouched.
+// not cleared; instead every NULL scalar nested inside it is marked with
+// markNullParameterValues.
 func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.QueryParameter) {
 	for i, raw := range rawParams {
 		if i >= len(params) || params[i] == nil {
@@ -751,6 +752,9 @@ func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.
 		if p.ParameterType != nil {
 			switch p.ParameterType.Type {
 			case "ARRAY", "STRUCT":
+				if p.ParameterValue != nil {
+					markNullParameterValues(*p.ParameterValue, params[i].ParameterType, params[i].ParameterValue)
+				}
 				continue
 			}
 		}
@@ -769,6 +773,51 @@ func applyNullQueryParameters(rawParams []json.RawMessage, params []*bigqueryv2.
 		valueRaw, hasValue := pv["value"]
 		if !hasValue || string(valueRaw) == "null" {
 			params[i].ParameterValue = nil
+		}
+	}
+}
+
+// markNullParameterValues walks the raw JSON of an ARRAY or STRUCT
+// parameterValue alongside its declared type and decoded value, and marks
+// every scalar whose "value" is JSON null or absent by adding "Value" to its
+// NullFields. A nested value cannot be cleared the way a top-level one is,
+// since StructValues holds values rather than pointers; NullFields is
+// bigqueryv2's own way of saying a field is NULL.
+func markNullParameterValues(raw json.RawMessage, ptype *bigqueryv2.QueryParameterType, value *bigqueryv2.QueryParameterValue) {
+	if ptype == nil || value == nil {
+		return
+	}
+	var pv struct {
+		Value        json.RawMessage            `json:"value"`
+		ArrayValues  []json.RawMessage          `json:"arrayValues"`
+		StructValues map[string]json.RawMessage `json:"structValues"`
+	}
+	if err := json.Unmarshal(raw, &pv); err != nil {
+		return
+	}
+	switch strings.ToUpper(ptype.Type) {
+	case "ARRAY":
+		for i, elem := range pv.ArrayValues {
+			if i < len(value.ArrayValues) {
+				markNullParameterValues(elem, ptype.ArrayType, value.ArrayValues[i])
+			}
+		}
+	case "STRUCT", "RECORD":
+		for _, field := range ptype.StructTypes {
+			fieldRaw, ok := pv.StructValues[field.Name]
+			if !ok {
+				continue
+			}
+			fieldValue, ok := value.StructValues[field.Name]
+			if !ok {
+				continue
+			}
+			markNullParameterValues(fieldRaw, field.Type, &fieldValue)
+			value.StructValues[field.Name] = fieldValue
+		}
+	default:
+		if len(pv.Value) == 0 || string(pv.Value) == "null" {
+			value.NullFields = append(value.NullFields, "Value")
 		}
 	}
 }

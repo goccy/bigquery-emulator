@@ -4797,3 +4797,91 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestArrayAndStructQueryParameterTypes binds ARRAY and STRUCT query
+// parameters whose declared parameterType carries information the values
+// alone do not: struct field order (structValues is a JSON object), the
+// type of a NULL field, the element type of an empty array, and the
+// INT64 type of a value the REST API sends as a JSON string.
+func TestArrayAndStructQueryParameterTypes(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test", types.NewDataset("dataset1")))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	const recordType = `{"type":"STRUCT","structTypes":[` +
+		`{"name":"id","type":{"type":"INT64"}},` +
+		`{"name":"name","type":{"type":"STRING"}},` +
+		`{"name":"tags","type":{"type":"ARRAY","arrayType":{"type":"STRING"}}}]}`
+	for _, tc := range []struct {
+		name  string
+		query string
+		param string
+		want  [][]string
+	}{
+		{
+			name:  "array of struct",
+			query: "SELECT TO_JSON_STRING(@p)",
+			param: `{"name":"p","parameterType":{"type":"ARRAY","arrayType":` + recordType + `},"parameterValue":{"arrayValues":[` +
+				`{"structValues":{"tags":{"arrayValues":[{"value":"a"}]},"name":{"value":"x"},"id":{"value":"1"}}},` +
+				`{"structValues":{"name":{"value":null},"id":{"value":"2"},"tags":{}}}]}}`,
+			want: [][]string{{`[{"id":1,"name":"x","tags":["a"]},{"id":2,"name":null,"tags":[]}]`}},
+		},
+		{
+			name:  "struct field access",
+			query: "SELECT @p.id + 1, @p.name IS NULL, ARRAY_LENGTH(@p.tags)",
+			param: `{"name":"p","parameterType":` + recordType + `,"parameterValue":{"structValues":` +
+				`{"tags":{},"id":{"value":"41"},"name":{"value":null}}}}`,
+			want: [][]string{{"42", "true", "0"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"query":%q,"useLegacySql":false,"parameterMode":"NAMED","queryParameters":[%s]}`, tc.query, tc.param)
+			code, resp := httpJSON(t, http.MethodPost, testServer.URL+"/projects/test/queries", body, nil)
+			if code != http.StatusOK {
+				t.Fatalf("query: %d (%v)", code, resp)
+			}
+			if diff := cmp.Diff(tc.want, queryRows(t, resp)); diff != "" {
+				t.Fatalf("rows (-want +got):\n%s", diff)
+			}
+		})
+	}
+
+	t.Run("go client", func(t *testing.T) {
+		client, err := bigquery.NewClient(ctx, "test", option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		type record struct {
+			ID   int64
+			Name bigquery.NullString
+			Tags []string
+		}
+		q := client.Query("SELECT TO_JSON_STRING(@p)")
+		q.Parameters = []bigquery.QueryParameter{{Name: "p", Value: []record{
+			{ID: 1, Name: bigquery.NullString{StringVal: "x", Valid: true}, Tags: []string{"a"}},
+			{ID: 2},
+		}}}
+		it, err := q.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			t.Fatal(err)
+		}
+		if want := `[{"ID":1,"Name":"x","Tags":["a"]},{"ID":2,"Name":null,"Tags":[]}]`; row[0] != want {
+			t.Fatalf("got %v; want %s", row[0], want)
+		}
+	})
+}
