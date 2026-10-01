@@ -226,7 +226,8 @@ func (t Type) TypeKind() zsqltypes.TypeKind {
 	case BIGDECIMAL:
 		return zsqltypes.BIG_NUMERIC
 	case FLOAT:
-		return zsqltypes.FLOAT
+		// BigQuery's legacy FLOAT is FLOAT64, not GoogleSQL's 32-bit FLOAT.
+		return zsqltypes.DOUBLE
 	case FLOAT64:
 		return zsqltypes.DOUBLE
 	case DOUBLE:
