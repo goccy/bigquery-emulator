@@ -304,11 +304,7 @@ func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInternalError(err.Error()))
 		return
 	}
-	addr := server.httpServer.Addr
-	if !strings.HasPrefix(addr, "http") {
-		addr = "http://" + addr
-	}
-	addr = strings.TrimRight(addr, "/")
+	addr := uploadBaseURL(r, server.httpServer.Addr)
 	w.Header().Add(
 		"Location",
 		fmt.Sprintf(
@@ -3500,4 +3496,25 @@ type defaultHandler struct{}
 func (h *defaultHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	errorResponse(ctx, w, errInternalError(fmt.Sprintf("unexpected request path: %s", html.EscapeString(r.URL.Path))))
+}
+
+// uploadBaseURL returns the scheme and host the client used for r, so the
+// resumable upload session URL is reachable by that client. The listen
+// address (e.g. 0.0.0.0:9050) is only a fallback when r carries no Host.
+func uploadBaseURL(r *http.Request, listenAddr string) string {
+	if r.Host == "" {
+		addr := listenAddr
+		if !strings.HasPrefix(addr, "http") {
+			addr = "http://" + addr
+		}
+		return strings.TrimRight(addr, "/")
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto == "http" || proto == "https" {
+		scheme = proto
+	}
+	return scheme + "://" + r.Host
 }
