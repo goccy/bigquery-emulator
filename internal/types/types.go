@@ -142,7 +142,7 @@ func (c *TableCell) AVROValue(namespace string, schema *types.AVROFieldSchema) (
 		return ret, nil
 	default:
 		if v == nil {
-			return map[string]interface{}{schema.Type.Key(): nil}, nil
+			return nil, nil
 		}
 		text, ok := v.(string)
 		if !ok {

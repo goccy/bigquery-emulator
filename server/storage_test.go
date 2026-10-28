@@ -915,7 +915,7 @@ func TestStorageReadAVROMatchesBigQuery(t *testing.T) {
 				types.NewColumn("referrer", types.STRING),
 			},
 			types.Data{
-				{"id": "a", "referrer": "https://example.org"},
+				{"id": "a", "referrer": nil},
 				{"id": "b", "referrer": "https://example.com"},
 			},
 		))),
@@ -963,7 +963,7 @@ func TestStorageReadAVROMatchesBigQuery(t *testing.T) {
 	result := config.(*bigquery.QueryConfig).Dst
 
 	expected := []interface{}{
-		map[string]interface{}{"id": map[string]interface{}{"string": "a"}, "referrer": map[string]interface{}{"string": "https://example.org"}},
+		map[string]interface{}{"id": map[string]interface{}{"string": "a"}, "referrer": nil},
 		map[string]interface{}{"id": map[string]interface{}{"string": "b"}, "referrer": map[string]interface{}{"string": "https://example.com"}},
 	}
 
