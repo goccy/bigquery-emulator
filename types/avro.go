@@ -12,7 +12,7 @@ import (
 )
 
 type AVROSchema struct {
-	Namespace string             `json:"namespace"`
+	Namespace string             `json:"namespace,omitempty"`
 	Name      string             `json:"name"`
 	Type      string             `json:"type"`
 	Fields    []*AVROFieldSchema `json:"fields"`
@@ -196,12 +196,15 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported avro type %s", t.Type)
 }
 
+// TableToAVRO returns the Avro schema of the table's rows. Like BigQuery, it
+// names the record __root__ and gives it no namespace: project, dataset and
+// table IDs can hold characters, such as hyphens or a leading digit, that Avro
+// names do not allow.
 func TableToAVRO(t *bigqueryv2.Table) *AVROSchema {
 	return &AVROSchema{
-		Namespace: fmt.Sprintf("%s.%s", t.TableReference.ProjectId, t.TableReference.DatasetId),
-		Name:      t.TableReference.TableId,
-		Type:      "record",
-		Fields:    TableFieldSchemasToAVRO(t.Schema.Fields),
+		Name:   "__root__",
+		Type:   "record",
+		Fields: TableFieldSchemasToAVRO(t.Schema.Fields),
 	}
 }
 

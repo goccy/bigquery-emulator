@@ -23,6 +23,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/goccy/go-json"
+	"github.com/google/go-cmp/cmp"
 	gax "github.com/googleapis/gax-go/v2"
 	goavro "github.com/linkedin/goavro/v2"
 	"google.golang.org/api/iterator"
@@ -893,4 +894,140 @@ func TestCreateReadSessionDefaultsToOneStream(t *testing.T) {
 	if got := len(session.GetStreams()); got != 1 {
 		t.Fatalf("session has %d streams; want 1 (unset MaxStreamCount must default to one)", got)
 	}
+}
+
+func TestStorageReadAVROMatchesBigQuery(t *testing.T) {
+	const (
+		project = "test-project"
+		dataset = "my-dataset"
+		table   = "pageviews"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject(project, types.NewDataset(dataset, types.NewTable(
+			table,
+			[]*types.Column{
+				types.NewColumn("id", types.STRING),
+				types.NewColumn("referrer", types.STRING),
+			},
+			types.Data{
+				{"id": "a", "referrer": "https://example.org"},
+				{"id": "b", "referrer": "https://example.com"},
+			},
+		))),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+	client, err := bigquery.NewClient(
+		ctx,
+		project,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	job, err := client.Query(fmt.Sprintf("SELECT id, referrer FROM `%s.%s` ORDER BY id", dataset, table)).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := job.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	config, err := job.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The query's anonymous result table has a random ID, which can start
+	// with a digit.
+	result := config.(*bigquery.QueryConfig).Dst
+
+	expected := []interface{}{
+		map[string]interface{}{"id": map[string]interface{}{"string": "a"}, "referrer": map[string]interface{}{"string": "https://example.org"}},
+		map[string]interface{}{"id": map[string]interface{}{"string": "b"}, "referrer": map[string]interface{}{"string": "https://example.com"}},
+	}
+
+	for name, readTable := range map[string]string{
+		"table":              fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table),
+		"query result table": fmt.Sprintf("projects/%s/datasets/%s/tables/%s", result.ProjectID, result.DatasetID, result.TableID),
+	} {
+		t.Run(name, func(t *testing.T) {
+			session, err := bqReadClient.CreateReadSession(ctx, &storagepb.CreateReadSessionRequest{
+				Parent: fmt.Sprintf("projects/%s", project),
+				ReadSession: &storagepb.ReadSession{
+					Table:      readTable,
+					DataFormat: storagepb.DataFormat_AVRO,
+				},
+				MaxStreamCount: 1,
+			}, rpcOpts)
+			if err != nil {
+				t.Fatalf("CreateReadSession: %v", err)
+			}
+			// BigQuery names the record __root__ and gives it no namespace.
+			var schema map[string]interface{}
+			if err := json.Unmarshal([]byte(session.GetAvroSchema().GetSchema()), &schema); err != nil {
+				t.Fatal(err)
+			}
+			if namespace, exists := schema["namespace"]; schema["name"] != "__root__" || exists {
+				t.Errorf("schema has name %v and namespace %v; want name __root__ and no namespace", schema["name"], namespace)
+			}
+			if diff := cmp.Diff(expected, readAVRORows(t, ctx, bqReadClient, session)); diff != "" {
+				t.Errorf("(-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func readAVRORows(t *testing.T, ctx context.Context, client *bqStorage.BigQueryReadClient, session *storagepb.ReadSession) []interface{} {
+	t.Helper()
+	codec, err := goavro.NewCodec(session.GetAvroSchema().GetSchema())
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	var rows []interface{}
+	for _, stream := range session.GetStreams() {
+		rowStream, err := client.ReadRows(ctx, &storagepb.ReadRowsRequest{ReadStream: stream.GetName()}, rpcOpts)
+		if err != nil {
+			t.Fatalf("ReadRows: %v", err)
+		}
+		for {
+			response, err := rowStream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("Recv: %v", err)
+			}
+			undecoded := response.GetAvroRows().GetSerializedBinaryRows()
+			for len(undecoded) > 0 {
+				row, rest, err := codec.NativeFromBinary(undecoded)
+				if err != nil {
+					t.Fatalf("NativeFromBinary: %v", err)
+				}
+				rows = append(rows, row)
+				undecoded = rest
+			}
+		}
+	}
+	return rows
 }
