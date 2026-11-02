@@ -4797,3 +4797,89 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestUploadMultipartReportsJobStatus: jobs.insert returns a Job whose output-only
+// status is always populated. Clients such as google-cloud-bigquery's LoadJob treat
+// a missing status as "not started yet" and re-submit the job through the plain
+// jobs.insert endpoint, which does not support media uploads.
+func TestUploadMultipartReportsJobStatus(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject("test", types.NewDataset("dataset1")),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	jobJSON := `{"jobReference":{"projectId":"test","jobId":"upload-job"},` +
+		`"configuration":{"load":{"sourceFormat":"CSV","autodetect":true,` +
+		`"destinationTable":{"projectId":"test","datasetId":"dataset1","tableId":"uploaded"}}}}`
+	contentType, body := multipartUpload(jobJSON, "x,y\r\n1,a\r\n2,b")
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+		body, map[string]string{"Content-Type": contentType})
+	if code != http.StatusOK {
+		t.Fatalf("multipart upload: expected 200, got %d (%v)", code, resp)
+	}
+	status, _ := resp["status"].(map[string]any)
+	if state, _ := status["state"].(string); state != "DONE" {
+		t.Fatalf("multipart upload: expected status.state DONE, got %v", resp["status"])
+	}
+}
+
+// TestAnonymousQueryDatasetIDIsValid: a query without a destination stores its
+// result in a hidden dataset. Its id must satisfy BigQuery's dataset-id rule
+// (letters, digits, underscores) even when the job id has '-' (Python clients
+// use UUIDs), otherwise clients that quote the id (e.g. ibis) cannot look up
+// tables the query created in it.
+func TestAnonymousQueryDatasetIDIsValid(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/projects/test/jobs",
+		`{"jobReference":{"projectId":"test","jobId":"3f2c1d9e-8a4b-4c1f-9d7e-0b6a5c4d3e2f"},`+
+			`"configuration":{"query":{"query":"SELECT 1 AS x","useLegacySql":false}}}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("jobs.insert: %d (%v)", code, resp)
+	}
+	configuration, _ := resp["configuration"].(map[string]any)
+	query, _ := configuration["query"].(map[string]any)
+	destination, _ := query["destinationTable"].(map[string]any)
+	datasetID, _ := destination["datasetId"].(string)
+	tableID, _ := destination["tableId"].(string)
+	if datasetID == "" || tableID == "" {
+		t.Fatalf("expected an anonymous destinationTable, got %v", query["destinationTable"])
+	}
+	for _, r := range datasetID {
+		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_'
+		if !valid {
+			t.Fatalf("anonymous dataset id %q is not a valid BigQuery dataset id", datasetID)
+		}
+	}
+
+	code, resp = httpJSON(t, http.MethodGet,
+		testServer.URL+"/projects/test/datasets/"+datasetID+"/tables/"+tableID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("tables.get on the anonymous table: %d (%v)", code, resp)
+	}
+}
