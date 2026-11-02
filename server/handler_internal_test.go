@@ -51,3 +51,16 @@ func TestQueryProjectAndDataset(t *testing.T) {
 		})
 	}
 }
+
+func TestAnonymousDatasetID(t *testing.T) {
+	tests := map[string]string{
+		"job_123":                              "_job_123",
+		"3f2c1d9e-8a4b-4c1f-9d7e-0b6a5c4d3e2f": "_3f2c1d9e_8a4b_4c1f_9d7e_0b6a5c4d3e2f",
+		"Mixed-Case_9":                         "_Mixed_Case_9",
+	}
+	for jobID, want := range tests {
+		if got := anonymousDatasetID(jobID); got != want {
+			t.Errorf("anonymousDatasetID(%q) = %q, want %q", jobID, got, want)
+		}
+	}
+}

@@ -4834,3 +4834,52 @@ func TestUploadMultipartReportsJobStatus(t *testing.T) {
 		t.Fatalf("multipart upload: expected status.state DONE, got %v", resp["status"])
 	}
 }
+
+// TestAnonymousQueryDatasetIDIsValid: a query without a destination stores its
+// result in a hidden dataset. Its id must satisfy BigQuery's dataset-id rule
+// (letters, digits, underscores) even when the job id has '-' (Python clients
+// use UUIDs), otherwise clients that quote the id (e.g. ibis) cannot look up
+// tables the query created in it.
+func TestAnonymousQueryDatasetIDIsValid(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(types.NewProject("test"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/projects/test/jobs",
+		`{"jobReference":{"projectId":"test","jobId":"3f2c1d9e-8a4b-4c1f-9d7e-0b6a5c4d3e2f"},`+
+			`"configuration":{"query":{"query":"SELECT 1 AS x","useLegacySql":false}}}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("jobs.insert: %d (%v)", code, resp)
+	}
+	configuration, _ := resp["configuration"].(map[string]any)
+	query, _ := configuration["query"].(map[string]any)
+	destination, _ := query["destinationTable"].(map[string]any)
+	datasetID, _ := destination["datasetId"].(string)
+	tableID, _ := destination["tableId"].(string)
+	if datasetID == "" || tableID == "" {
+		t.Fatalf("expected an anonymous destinationTable, got %v", query["destinationTable"])
+	}
+	for _, r := range datasetID {
+		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_'
+		if !valid {
+			t.Fatalf("anonymous dataset id %q is not a valid BigQuery dataset id", datasetID)
+		}
+	}
+
+	code, resp = httpJSON(t, http.MethodGet,
+		testServer.URL+"/projects/test/datasets/"+datasetID+"/tables/"+tableID, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("tables.get on the anonymous table: %d (%v)", code, resp)
+	}
+}
