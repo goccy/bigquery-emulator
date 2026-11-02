@@ -4797,3 +4797,40 @@ func TestExportDataStatement(t *testing.T) {
 		}
 	})
 }
+
+// TestUploadMultipartReportsJobStatus: jobs.insert returns a Job whose output-only
+// status is always populated. Clients such as google-cloud-bigquery's LoadJob treat
+// a missing status as "not started yet" and re-submit the job through the plain
+// jobs.insert endpoint, which does not support media uploads.
+func TestUploadMultipartReportsJobStatus(t *testing.T) {
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.StructSource(
+		types.NewProject("test", types.NewDataset("dataset1")),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	jobJSON := `{"jobReference":{"projectId":"test","jobId":"upload-job"},` +
+		`"configuration":{"load":{"sourceFormat":"CSV","autodetect":true,` +
+		`"destinationTable":{"projectId":"test","datasetId":"dataset1","tableId":"uploaded"}}}}`
+	contentType, body := multipartUpload(jobJSON, "x,y\r\n1,a\r\n2,b")
+	code, resp := httpJSON(t, http.MethodPost,
+		testServer.URL+"/upload/bigquery/v2/projects/test/jobs?uploadType=multipart",
+		body, map[string]string{"Content-Type": contentType})
+	if code != http.StatusOK {
+		t.Fatalf("multipart upload: expected 200, got %d (%v)", code, resp)
+	}
+	status, _ := resp["status"].(map[string]any)
+	if state, _ := status["state"].(string); state != "DONE" {
+		t.Fatalf("multipart upload: expected status.state DONE, got %v", resp["status"])
+	}
+}

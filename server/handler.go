@@ -279,7 +279,12 @@ func (h *uploadHandler) serveMultipart(w http.ResponseWriter, r *http.Request) {
 		uploadErrorResponse(ctx, w, err)
 		return
 	}
-	encodeResponse(ctx, w, uploadJob.Content())
+	content := uploadJob.Content()
+	// jobs.insert returns a Job whose output-only status is always populated,
+	// as the resumable upload path below already does. Without it, clients
+	// (e.g. google-cloud-bigquery's LoadJob) see no state and re-submit the job.
+	content.Status = &bigqueryv2.JobStatus{State: "DONE"}
+	encodeResponse(ctx, w, content)
 }
 
 func (h *uploadHandler) serveResumable(w http.ResponseWriter, r *http.Request) {
